@@ -23,6 +23,8 @@ and it backfills into every existing clip it covers, without anything being recr
 **Latest release:** [v1.1.0](https://github.com/Omega248/RipperClipper/releases/latest) — Windows
 installer, unsigned (see [Getting it running](#getting-it-running)).
 
+![The Video page — player, POV bar and timeline](docs/screenshots/video-page.png)
+
 ---
 
 ## Getting it running
@@ -324,6 +326,8 @@ when an edit needs undoing after the fact rather than in the moment.
 
 The `dev` build channel adds a fourth, **Editor**, page — see [Build channels](#build-channels).
 
+<img src="docs/screenshots/properties-page.png" width="49%" alt="The Properties page"> <img src="docs/screenshots/export-page.png" width="49%" alt="The Export page">
+
 ---
 
 ## Platform notes
@@ -395,6 +399,8 @@ design tokens rather than per-component colours. Follows Windows' own light/dark
 default; pick one explicitly in **Settings → Appearance**. One design system: one implementation of
 every button, dropdown, menu, dialog and status indicator, so every page looks like it belongs to
 the same application.
+
+![Settings](docs/screenshots/settings-appearance.png)
 
 ## Architecture
 
