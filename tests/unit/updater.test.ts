@@ -20,7 +20,10 @@ const fakeAutoUpdater = Object.assign(new EventEmitter(), {
   quitAndInstall: vi.fn()
 })
 
-vi.mock('electron-updater', () => ({ autoUpdater: fakeAutoUpdater }))
+// The real module is CommonJS and is consumed via its default export (see
+// updater.ts) — the mock has to shape up the same way, or the destructure
+// there finds nothing.
+vi.mock('electron-updater', () => ({ default: { autoUpdater: fakeAutoUpdater } }))
 
 const { UpdateService } = await import('../../src/main/services/updater.js')
 const { Logger } = await import('../../src/main/services/logger.js')

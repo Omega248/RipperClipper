@@ -1,7 +1,13 @@
 import { EventEmitter } from 'node:events'
-import { autoUpdater } from 'electron-updater'
+// electron-updater ships as CommonJS; Electron's ESM loader can't destructure
+// a named export from a CJS module at runtime (only bundler-mode tooling like
+// Vite/tsc allow that syntax), so the default export has to be unwrapped by
+// hand — see https://github.com/electron-userland/electron-builder/issues/7976.
+import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../../shared/ipc.js'
 import type { Logger } from './logger.js'
+
+const { autoUpdater } = electronUpdater
 
 /**
  * The GitHub-releases update feed. Only the `stable` channel is ever
