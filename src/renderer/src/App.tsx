@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatTimecode } from '@shared/time'
 import type { ClipSegment, ClipStatus, JobStage, VodSource } from '@shared/types'
 import { resolveWatermark, streamerFor } from '@shared/watermark'
@@ -14,7 +14,6 @@ import ClipList from './components/ClipList.js'
 import Properties from './components/Properties.js'
 import MarkerPanel from './components/MarkerPanel.js'
 import MediaLibrary from './components/MediaLibrary.js'
-import EditorPage from './components/EditorPage.js'
 import PropertiesPage from './components/PropertiesPage.js'
 import ExportPage from './components/ExportPage.js'
 import PovGrid from './components/PovGrid.js'
@@ -48,6 +47,17 @@ import {
 } from './ui/index.js'
 
 type Tab = 'clips' | 'library' | 'edit' | 'markers'
+
+/**
+ * The Editor is a development-only feature — a production build must not
+ * ship its UI at all, not merely hide it. `__EDITOR_ENABLED__` (see
+ * electron.vite.config.ts) is replaced with a literal `true`/`false` at
+ * build time, which lets Rollup prove the `import()` below is unreachable in
+ * a production build and drop the whole module graph (Editor page,
+ * Inspector, TimelineEditor, and everything only they use) from the built
+ * output rather than just from what's rendered.
+ */
+const EditorPage = __EDITOR_ENABLED__ ? lazy(() => import('./components/EditorPage.js')) : null
 
 /** What each component is called everywhere the editor can see it. */
 const SETUP_NAME: Record<string, string> = {
@@ -811,7 +821,7 @@ export default function App(): JSX.Element {
           {(
             [
               ['video', 'Video'],
-              ['editor', 'Editor'],
+              ...(EditorPage ? ([['editor', 'Editor']] as const) : []),
               ['properties', 'Properties'],
               ['export', 'Export']
             ] as const
@@ -977,11 +987,13 @@ export default function App(): JSX.Element {
         onManualSync={() => setShowWaveform('pov')}
       />
 
-      {page === 'editor' && (
-        <EditorPage
-          onExport={() => setSequenceExportPrompt(store.project?.name ?? 'Sequence')}
-          onShowGuide={() => setShowGuide(true)}
-        />
+      {EditorPage && page === 'editor' && (
+        <Suspense fallback={null}>
+          <EditorPage
+            onExport={() => setSequenceExportPrompt(store.project?.name ?? 'Sequence')}
+            onShowGuide={() => setShowGuide(true)}
+          />
+        </Suspense>
       )}
       {page === 'properties' && (
         <div className="page">
