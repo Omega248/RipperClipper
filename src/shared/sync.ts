@@ -21,6 +21,7 @@ export type SyncMethod =
   | 'upload_metadata'
   | 'event_anchor'
   | 'transcript_anchor'
+  | 'audio_anchor'
   | 'manual'
   | 'unsynced'
 
@@ -32,6 +33,7 @@ export const METHOD_BASE_CONFIDENCE: Record<SyncMethod, number> = {
   upload_metadata: 0.6,
   event_anchor: 0.9,
   transcript_anchor: 0.75,
+  audio_anchor: 0.85,
   manual: 1,
   unsynced: 0
 }
@@ -43,6 +45,7 @@ export const METHOD_LABEL: Record<SyncMethod, string> = {
   upload_metadata: 'Upload metadata',
   event_anchor: 'Event anchor',
   transcript_anchor: 'Transcript alignment',
+  audio_anchor: 'Audio cross-check',
   manual: 'Manual',
   unsynced: 'Not synchronised'
 }

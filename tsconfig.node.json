@@ -31,5 +31,5 @@
     "tests/**/*.ts",
     "electron.vite.config.ts"
   ],
-  "exclude": ["tests/unit/povSwitch.test.ts", "tests/unit/diagnose.test.ts", "tests/unit/latePov.test.ts", "tests/unit/playerBus.test.ts"]
+  "exclude": ["tests/unit/povSwitch.test.ts", "tests/unit/diagnose.test.ts", "tests/unit/latePov.test.ts", "tests/unit/playerBus.test.ts", "tests/unit/audioCrossCheck.test.ts", "tests/unit/audioAnchors.test.ts"]
 }

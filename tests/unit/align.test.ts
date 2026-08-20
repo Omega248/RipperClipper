@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { alignByAudio, MIN_SCORE } from '../../src/shared/align.js'
+import { alignByAudio, buildAudioAnchors, MIN_SCORE } from '../../src/shared/align.js'
+import type { AlignmentResult } from '../../src/shared/align.js'
 
 /**
  * Two POVs of one event hear the same bangs at the same instant. Sliding one
@@ -68,5 +69,57 @@ describe('aligning POVs by their audio', () => {
   it('says nothing rather than something on too little audio', () => {
     expect(alignByAudio([0.1, 0.9], [0.9, 0.1], 0.05).confident).toBe(false)
     expect(alignByAudio([], [], 0.05).offsetSeconds).toBe(0)
+  })
+})
+
+describe('turning a match into sync evidence', () => {
+  const confident: AlignmentResult = { offsetSeconds: 0.6, score: 0.9, margin: 0.4, confident: true }
+  const weak: AlignmentResult = { offsetSeconds: 0.6, score: 0.3, margin: 0.05, confident: false }
+
+  it('refuses to turn a weak match into evidence', () => {
+    expect(
+      buildAudioAnchors(
+        { vodId: 'A', localTime: 100 },
+        { vodId: 'B', localTime: 110 },
+        1_700_000_000,
+        weak,
+        (p) => `${p}_1`
+      )
+    ).toBeNull()
+  })
+
+  it('anchors both POVs at the shared instant, folding the offset into the target only', () => {
+    const anchors = buildAudioAnchors(
+      { vodId: 'A', localTime: 100 },
+      { vodId: 'B', localTime: 110 },
+      1_700_000_000,
+      confident,
+      (p) => `${p}_1`
+    )!
+    expect(anchors).toHaveLength(2)
+    expect(anchors.every((a) => a.eventTime === 1_700_000_000)).toBe(true)
+    expect(anchors.every((a) => a.source === 'audio_anchor')).toBe(true)
+    expect(anchors.find((a) => a.vodId === 'A')?.localTime).toBe(100)
+    // The target's local time shifts by the alignment's offset — the
+    // reference is trusted as-is, the target's estimate gets corrected.
+    expect(anchors.find((a) => a.vodId === 'B')?.localTime).toBeCloseTo(110.6, 6)
+  })
+
+  it('weighs a clean, decisive match higher than a merely-confident one', () => {
+    const decisive = buildAudioAnchors(
+      { vodId: 'A', localTime: 0 },
+      { vodId: 'B', localTime: 0 },
+      0,
+      { offsetSeconds: 0, score: 0.95, margin: 0.5, confident: true },
+      (p) => `${p}_1`
+    )!
+    const barelyConfident = buildAudioAnchors(
+      { vodId: 'A', localTime: 0 },
+      { vodId: 'B', localTime: 0 },
+      0,
+      { offsetSeconds: 0, score: MIN_SCORE, margin: 0.12, confident: true },
+      (p) => `${p}_1`
+    )!
+    expect(decisive[0].weight).toBeGreaterThan(barelyConfident[0].weight)
   })
 })

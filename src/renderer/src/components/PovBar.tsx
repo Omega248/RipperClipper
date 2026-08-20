@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { formatDuration } from '@shared/time'
+import { isSynced } from '@shared/sync'
 import type { VodSource } from '@shared/types'
 import { useStore } from '../store.js'
+import { crossCheckByAudio, strongestSyncedSibling } from '../sync/audioCrossCheck.js'
+import { message, title } from './QualityPanel.js'
 import { Badge, Button, ConfirmDialog, IconButton, Tooltip } from '../ui/index.js'
 
 interface Props {
@@ -23,10 +26,55 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
   const activeSourceId = useStore((s) => s.activeSourceId)
   const switchPov = useStore((s) => s.setActiveSource)
   const removeSource = useStore((s) => s.removeSource)
+  const addSyncAnchors = useStore((s) => s.addSyncAnchors)
+  const toast = useStore((s) => s.toast)
   const clips = useStore((s) => s.project?.clips)
   const [confirmRemove, setConfirmRemove] = useState<{ id: string; name: string; clips: number } | null>(
     null
   )
+  const [revalidating, setRevalidating] = useState<string | null>(null)
+
+  const revalidate = async (source: VodSource, index: number): Promise<void> => {
+    const name = povLabel(source, index)
+    const all = sources ?? []
+    const sibling = strongestSyncedSibling(all, source.id)
+    if (!sibling) {
+      toast({
+        kind: 'info',
+        title: 'Nothing to check against',
+        message: 'No other POV has trusted timing yet to cross-check this one against.'
+      })
+      return
+    }
+    setRevalidating(source.id)
+    try {
+      const outcome = await crossCheckByAudio(sibling, source)
+      if (!outcome) {
+        toast({
+          kind: 'info',
+          title: 'Could not check',
+          message: "The two POVs' estimated recording windows don't overlap enough to compare."
+        })
+      } else if (!outcome.anchors) {
+        toast({
+          kind: 'warning',
+          title: 'No confident match',
+          message: `Audio near the shared moment didn't line up clearly enough to confirm ${name}'s timing. It's unchanged.`
+        })
+      } else {
+        addSyncAnchors(outcome.anchors)
+        toast({
+          kind: 'success',
+          title: 'Timing re-validated',
+          message: `${name}'s timing was checked against ${povLabel(sibling, all.indexOf(sibling))} by sound and confirmed.`
+        })
+      }
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not re-validate'), message: message(err) })
+    } finally {
+      setRevalidating(null)
+    }
+  }
 
   if (!sources || sources.length === 0) return null
 
@@ -59,6 +107,14 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
                 </span>
                 <SyncBadge source={source} />
               </button>
+              <IconButton
+                icon="refresh"
+                size="compact"
+                className="pov-revalidate"
+                label={`Re-validate ${name}'s timing by audio`}
+                disabled={!isSynced(source.syncMapping) || revalidating !== null}
+                onClick={() => void revalidate(source, index)}
+              />
               <IconButton
                 icon="close"
                 size="compact"

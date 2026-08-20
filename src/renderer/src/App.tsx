@@ -6,6 +6,7 @@ import type { ResolvedWatermark, WatermarkConfig } from '@shared/watermark'
 import type { EnqueueRequest, EventOverlapReply, TimelineExportSegment } from '@shared/ipc'
 import { planExport } from '@shared/povMapping'
 import { computeExportSegments } from '@shared/timeline'
+import { crossCheckByAudio, hasAudioAnchor, strongestSyncedSibling } from './sync/audioCrossCheck.js'
 import { useActiveClips, useActiveSource, useStore } from './store.js'
 import Timeline from './components/Timeline.js'
 import ClipTimeline from './components/ClipTimeline.js'
@@ -26,7 +27,7 @@ import StreamersDialog from './components/StreamersDialog.js'
 import VersionHistoryDialog from './components/VersionHistoryDialog.js'
 import FindInPovs from './components/FindInPovs.js'
 import WaveformSync from './components/WaveformSync.js'
-import PovBar from './components/PovBar.js'
+import PovBar, { povLabel } from './components/PovBar.js'
 import WatermarkEditor from './components/WatermarkEditor.js'
 import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
@@ -287,6 +288,42 @@ export default function App(): JSX.Element {
       }
     })
   }, [])
+
+  /**
+   * Corroborate a POV's timing by audio the first time it's actually
+   * opened in this session — the same cross-correlation the manual
+   * "Align POVs" dialog already runs on request, just triggered
+   * automatically instead of by hand. Covers a freshly loaded POV (which
+   * becomes active immediately) and switching to an older one that was
+   * never checked; each POV is only ever attempted once per session,
+   * whether or not the match turns out confident.
+   */
+  const audioCrossCheckAttempted = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    const state = useStore.getState()
+    const activeId = state.activeSourceId
+    const project = state.project
+    if (!activeId || !project) return
+    if (audioCrossCheckAttempted.current.has(activeId)) return
+    const active = project.sources.find((s) => s.id === activeId)
+    if (!active || hasAudioAnchor(project.syncAnchors ?? [], activeId)) return
+    const sibling = strongestSyncedSibling(project.sources, activeId)
+    if (!sibling) return
+
+    audioCrossCheckAttempted.current.add(activeId)
+    void crossCheckByAudio(sibling, active).then((outcome) => {
+      if (!outcome?.anchors) return
+      const latest = useStore.getState()
+      latest.addSyncAnchors(outcome.anchors)
+      const sources = latest.project?.sources ?? project.sources
+      latest.toast({
+        kind: 'info',
+        title: 'Timing cross-checked by audio',
+        message: `${povLabel(active, sources.indexOf(active))}'s timing was confirmed against ${povLabel(sibling, sources.indexOf(sibling))} by matching sound.`
+      })
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store.activeSourceId, store.project?.sources.length])
 
   // Job updates -> clip status, and completion notices.
   useEffect(() => {

@@ -489,7 +489,7 @@ hr.rule {
   gap: 2px;
   width: 178px;
   padding: var(--space-2) var(--space-3);
-  padding-right: 26px;
+  padding-right: 48px;
   border: 1px solid transparent;
   border-radius: var(--radius-medium);
   background: var(--surface-raised);
@@ -574,6 +574,39 @@ hr.rule {
 .pov-remove:hover {
   background: var(--danger-subtle);
   color: var(--danger-text);
+}
+
+.pov-revalidate {
+  position: absolute;
+  top: 5px;
+  right: 27px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-tertiary);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.pov-slot:hover .pov-revalidate,
+.pov-revalidate:hover,
+.pov-revalidate:focus-visible {
+  opacity: 1;
+}
+
+.pov-revalidate:hover {
+  background: var(--surface-hover);
+  color: var(--accent);
+}
+
+.pov-revalidate:disabled {
+  opacity: 0.2;
+  cursor: default;
 }
 
 /* ============================ video page =============================== */

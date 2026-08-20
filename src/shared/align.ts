@@ -1,3 +1,6 @@
+import { anchorsFromPairing } from './sync.js'
+import type { SyncAnchor } from './sync.js'
+
 /**
  * Aligning two POVs by their sound.
  *
@@ -99,4 +102,36 @@ export function alignByAudio(
     margin: Math.round(margin * 1000) / 1000,
     confident: best.score >= MIN_SCORE && margin >= MIN_MARGIN
   }
+}
+
+/**
+ * Turn a confident audio match into sync evidence for both POVs, the same
+ * shape a manual "this moment in A is this moment in B" pairing produces —
+ * so it flows through the existing anchor pool and weighted solver exactly
+ * like any other evidence, and a `manual` mapping still cannot be overridden
+ * by it. Returns null for a weak match: an unconvincing alignment must never
+ * become evidence, since a bad anchor is worse than no anchor.
+ */
+export function buildAudioAnchors(
+  reference: { vodId: string; localTime: number },
+  target: { vodId: string; localTime: number },
+  eventTime: number,
+  alignment: AlignmentResult,
+  makeId: (prefix: string) => string
+): SyncAnchor[] | null {
+  if (!alignment.confident) return null
+  // A clean, decisive match earns close to full trust; a merely-confident one
+  // (right at the MIN_SCORE/MIN_MARGIN thresholds) earns less, so it still
+  // corroborates without dominating a stronger existing anchor.
+  const weight = Math.max(0.3, Math.min(0.95, alignment.score * (0.5 + alignment.margin)))
+  return anchorsFromPairing(
+    [
+      { vodId: reference.vodId, localTime: reference.localTime },
+      { vodId: target.vodId, localTime: target.localTime + alignment.offsetSeconds }
+    ],
+    eventTime,
+    'audio_anchor',
+    makeId,
+    weight
+  )
 }

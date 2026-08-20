@@ -139,6 +139,7 @@ interface Actions {
   markClean: (project?: ProjectFile) => void
   addSource: (source: VodSource) => void
   setSourceFormats: (sourceId: string, formats: StreamInfo[]) => void
+  addSyncAnchors: (anchors: SyncAnchor[]) => void
   setActiveSource: (id: string | null) => void
   removeSource: (id: string) => void
 
@@ -326,6 +327,24 @@ export const useStore = create<Store>((set, get) => ({
           )
         }
       }
+    }),
+
+  /**
+   * Fold new evidence (currently only audio cross-checks) into the anchor
+   * pool and re-solve just the POVs it actually references — the same
+   * weighted solver every other kind of evidence already goes through, so a
+   * `manual` mapping still cannot be overridden by it.
+   */
+  addSyncAnchors: (anchors) =>
+    set((s) => {
+      if (!s.project || anchors.length === 0) return {}
+      const syncAnchors = [...(s.project.syncAnchors ?? []), ...anchors]
+      const affected = new Set(anchors.map((a) => a.vodId))
+      const sources = s.project.sources.map((src) =>
+        affected.has(src.id) ? withSyncMapping(src, src, syncAnchors) : src
+      )
+      const clips = refreshClipMappings(s.project.clips, sources, new Date().toISOString())
+      return { project: { ...s.project, syncAnchors, sources, clips }, dirty: true }
     }),
 
   /**
