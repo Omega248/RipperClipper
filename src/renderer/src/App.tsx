@@ -357,6 +357,16 @@ export default function App(): JSX.Element {
     setLoading(true)
     try {
       const resolved = await window.api.resolveSource(target.trim())
+      const existing = useStore.getState().project?.sources.find((s) => s.id === resolved.id)
+      if (existing) {
+        store.setActiveSource(existing.id)
+        store.toast({
+          kind: 'info',
+          title: 'Already in your library',
+          message: `${existing.title} is already loaded — switched to it instead of adding a duplicate.`
+        })
+        return
+      }
       store.addSource(resolved)
       store.toast({
         kind: 'success',
