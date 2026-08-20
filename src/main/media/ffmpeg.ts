@@ -141,7 +141,7 @@ export class FfmpegService {
   }
 
   /** Best hardware encoder for the requested family, or null for software. */
-  pickHwEncoder(preference: HwAccelPreference, targetCodec: 'h264' | 'hevc'): string | null {
+  pickHwEncoder(preference: HwAccelPreference, targetCodec: 'h264' | 'hevc' | 'av1'): string | null {
     if (preference === 'none') return null
     const candidates = HW_ENCODERS.filter(
       (e) =>

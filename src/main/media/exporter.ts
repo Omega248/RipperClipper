@@ -233,7 +233,7 @@ export class Exporter {
         message: decision.mode === 'precise' ? 'Cutting (frame accurate)…' : 'Muxing…'
       })
 
-      const cutArgsFor = (forceSoftware: boolean): string[] =>
+      const cutArgsFor = (forceSoftware: boolean): { args: string[]; videoEncoding: string } =>
         this.buildCutArgs({
           videoWindow,
           audioWindow,
@@ -260,8 +260,9 @@ export class Exporter {
           bleepAmplitude: req.bleep?.amplitude
         })
 
-      const runCut = (forceSoftware: boolean): Promise<void> =>
-        this.ffmpeg.exec(cutArgsFor(forceSoftware), {
+      const runCut = async (forceSoftware: boolean): Promise<string> => {
+        const { args, videoEncoding } = cutArgsFor(forceSoftware)
+        await this.ffmpeg.exec(args, {
           signal: req.signal,
           label: `cut ${req.clipName}${forceSoftware ? ' (software)' : ''}`,
           onProgress: (p) =>
@@ -275,16 +276,24 @@ export class Exporter {
               bytes: p.totalSizeBytes
             })
         })
+        return videoEncoding
+      }
 
+      const sourceFamily = codecFamily(realVideo?.codec_name)
       const usedHardware =
         decision.mode === 'precise' &&
         this.ffmpeg.pickHwEncoder(
           req.settings.hwAccel,
-          hevcFamily(realVideo?.codec_name) ? 'hevc' : 'h264'
+          sourceFamily === 'av1'
+            ? this.ffmpeg.pickHwEncoder(req.settings.hwAccel, 'av1') !== null
+              ? 'av1'
+              : 'hevc'
+            : sourceFamily
         ) !== null
 
+      let videoEncodingUsed: string
       try {
-        await runCut(false)
+        videoEncodingUsed = await runCut(false)
       } catch (err) {
         await rm(outputPath, { force: true }).catch(() => undefined)
         if (!usedHardware || req.signal?.aborted) throw err
@@ -296,12 +305,16 @@ export class Exporter {
         })
         notes.push('Hardware encoding was unavailable at run time, so the clip was encoded in software.')
         try {
-          await runCut(true)
+          videoEncodingUsed = await runCut(true)
         } catch (softwareErr) {
           await rm(outputPath, { force: true }).catch(() => undefined)
           throw softwareErr
         }
       }
+      // Always stated plainly, so it's never a guess whether a given export
+      // actually used the GPU — including the common case of no re-encode
+      // happening at all.
+      notes.push(`Video: ${videoEncodingUsed}.`)
 
       // ---------------------------------------------------------- verify ----
       req.onProgress({ stage: 'verifying', fraction: 0.5, message: 'Verifying output…' })
@@ -416,7 +429,7 @@ export class Exporter {
     audioGain?: number
     bleepHz?: number
     bleepAmplitude?: number
-  }): string[] {
+  }): { args: string[]; videoEncoding: string } {
     const args: string[] = ['-y', '-progress', 'pipe:1', '-nostats']
     const duration = roundMs(opts.endSeconds - opts.startSeconds)
 
@@ -574,16 +587,18 @@ export class Exporter {
     else if (opts.muxed && videoInput !== null) args.push('-map', `${videoInput}:a:0?`)
 
     // Video codec
+    let videoEncoding = 'no video'
     if (videoInput !== null) {
       if (opts.decision.mode === 'copy' && !videoPlan && !transformPlan) {
         args.push('-c:v', 'copy')
+        videoEncoding = 'stream copy (no re-encode)'
       } else {
-        args.push(
-          ...this.videoEncoderArgs(
-            opts.forceSoftware ? { ...opts.settings, hwAccel: 'none' } : opts.settings,
-            opts.sourceVideoCodec
-          )
+        const encoded = this.videoEncoderArgs(
+          opts.forceSoftware ? { ...opts.settings, hwAccel: 'none' } : opts.settings,
+          opts.sourceVideoCodec
         )
+        args.push(...encoded.args)
+        videoEncoding = encoded.description
       }
     }
 
@@ -596,16 +611,29 @@ export class Exporter {
     if (opts.plan.container === 'mp4') args.push('-movflags', '+faststart')
     args.push('-map_metadata', '-1', '-map_chapters', '-1')
     args.push(opts.outputPath)
-    return args
+    return { args, videoEncoding }
   }
 
   /**
    * Encoder selection for the accurate path. Hardware is preferred when
    * available, but only ever reached when re-encoding is genuinely required.
+   *
+   * The target family normally mirrors the source's own (AV1/VP9 sources get
+   * a more efficient re-encode, everything else stays H.264) — except AV1
+   * only stays AV1 when there's an AV1-capable *hardware* encoder to make it
+   * cheap. Software AV1 (libsvtav1) is dramatically slower than libx264 or
+   * libx265, so a machine without recent-enough hardware still gets the
+   * proven HEVC software path rather than a much slower export for a codec
+   * choice nobody asked for.
    */
-  private videoEncoderArgs(settings: ExportSettings, sourceCodec: string | undefined): string[] {
-    const targetFamily: 'h264' | 'hevc' = hevcFamily(sourceCodec) ? 'hevc' : 'h264'
-    const hw = this.ffmpeg.pickHwEncoder(settings.hwAccel, targetFamily)
+  private videoEncoderArgs(
+    settings: ExportSettings,
+    sourceCodec: string | undefined
+  ): { args: string[]; description: string } {
+    const sourceFamily = codecFamily(sourceCodec)
+    const av1Hw = sourceFamily === 'av1' ? this.ffmpeg.pickHwEncoder(settings.hwAccel, 'av1') : null
+    const targetFamily: 'h264' | 'hevc' | 'av1' = av1Hw ? 'av1' : sourceFamily === 'av1' ? 'hevc' : sourceFamily
+    const hw = targetFamily === 'av1' ? av1Hw : this.ffmpeg.pickHwEncoder(settings.hwAccel, targetFamily)
 
     /*
      * No B-frames on this path, on every encoder. A GOP with B-frames needs a
@@ -616,23 +644,39 @@ export class Exporter {
      * short clip export has nothing to gain from B-frames that is worth that.
      */
     if (hw?.includes('nvenc')) {
-      return ['-c:v', hw, '-preset', 'p5', '-rc', 'vbr', '-cq', '19', '-b:v', '0', '-bf', '0']
+      const cq = targetFamily === 'av1' ? '25' : '19'
+      return {
+        args: ['-c:v', hw, '-preset', 'p5', '-rc', 'vbr', '-cq', cq, '-b:v', '0', '-bf', '0'],
+        description: `${hw} (NVIDIA hardware)`
+      }
     }
     if (hw?.includes('qsv')) {
-      return ['-c:v', hw, '-global_quality', '20', '-look_ahead', '1', '-bf', '0']
+      return {
+        args: ['-c:v', hw, '-global_quality', '20', '-look_ahead', '1', '-bf', '0'],
+        description: `${hw} (Intel hardware)`
+      }
     }
     if (hw?.includes('amf')) {
-      return ['-c:v', hw, '-rc', 'cqp', '-qp_i', '20', '-qp_p', '20', '-bf', '0']
+      return {
+        args: ['-c:v', hw, '-rc', 'cqp', '-qp_i', '20', '-qp_p', '20', '-bf', '0'],
+        description: `${hw} (AMD hardware)`
+      }
     }
     if (hw?.includes('videotoolbox')) {
-      return ['-c:v', hw, '-q:v', '60', '-bf', '0']
+      return { args: ['-c:v', hw, '-q:v', '60', '-bf', '0'], description: `${hw} (Apple hardware)` }
     }
     if (hw?.includes('vaapi')) {
-      return ['-c:v', hw, '-qp', '20', '-bf', '0']
+      return { args: ['-c:v', hw, '-qp', '20', '-bf', '0'], description: `${hw} (VA-API hardware)` }
+    }
+    if (targetFamily === 'av1') {
+      // Only reachable if av1Hw was picked and the encode then falls back to
+      // software mid-export (see forceSoftware) — kept for that edge case
+      // rather than ever being the everyday path.
+      return { args: ['-c:v', 'libsvtav1', '-crf', '30', '-preset', '8', '-bf', '0'], description: 'libsvtav1 (software)' }
     }
     return targetFamily === 'hevc'
-      ? ['-c:v', 'libx265', '-crf', '20', '-preset', 'medium', '-bf', '0']
-      : ['-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-bf', '0']
+      ? { args: ['-c:v', 'libx265', '-crf', '20', '-preset', 'medium', '-bf', '0'], description: 'libx265 (software)' }
+      : { args: ['-c:v', 'libx264', '-crf', '18', '-preset', 'medium', '-bf', '0'], description: 'libx264 (software)' }
   }
 
   /** ffprobe-based output verification. */
@@ -753,11 +797,14 @@ export class Exporter {
 
     if (uniform) {
       args.push('-c', 'copy')
+      notes.push('Video: stream copy (no re-encode).')
     } else {
       notes.push(
         'The selected clips do not share identical video/audio parameters, so they were re-encoded to a single consistent stream.'
       )
-      args.push(...this.videoEncoderArgs(opts.settings, probes[0].streams[0]?.codec_name))
+      const encoded = this.videoEncoderArgs(opts.settings, probes[0].streams[0]?.codec_name)
+      args.push(...encoded.args)
+      notes.push(`Video: ${encoded.description}.`)
       args.push('-c:a', 'aac', '-b:a', '320k')
     }
     if (opts.outputPath.toLowerCase().endsWith('.mp4')) args.push('-movflags', '+faststart')
@@ -784,9 +831,16 @@ export class Exporter {
   }
 }
 
-/** Sources already in a modern codec are re-encoded as HEVC rather than H.264. */
-function hevcFamily(codec: string | undefined): boolean {
-  return Boolean(codec && /hevc|h265|av1|vp9/i.test(codec))
+/**
+ * Which family a re-encode should target. AV1 sources get their own family
+ * (see `videoEncoderArgs` for why that only sticks when hardware can do it);
+ * other already-modern sources (HEVC, VP9) get re-encoded as HEVC rather
+ * than H.264; everything else stays H.264.
+ */
+function codecFamily(codec: string | undefined): 'h264' | 'hevc' | 'av1' {
+  if (codec && /av1|av01/i.test(codec)) return 'av1'
+  if (codec && /hevc|h265|vp9/i.test(codec)) return 'hevc'
+  return 'h264'
 }
 
 function parseFrameRate(value: string | undefined): number | undefined {
