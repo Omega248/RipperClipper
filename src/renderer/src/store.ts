@@ -59,7 +59,7 @@ import type {
 } from '@shared/types'
 import type { SavedStreamer } from '@shared/ipc'
 import type { WatermarkConfig } from '@shared/watermark'
-import type { EnvInfo, InstallProgress, ToastEvent } from '@shared/ipc'
+import type { EnvInfo, InstallProgress, ToastEvent, UpdateStatus } from '@shared/ipc'
 
 /** The three workspaces inside a clip. The multi-track editor lives inside 'video', as a timeline mode. */
 export type WorkspacePage = 'video' | 'editor' | 'properties' | 'export'
@@ -88,6 +88,7 @@ interface State {
   // environment
   env: EnvInfo | null
   settings: AppSettings | null
+  updateStatus: UpdateStatus
 
   // selection & editing
   activeSourceId: string | null
@@ -132,6 +133,7 @@ interface State {
 interface Actions {
   setEnv: (env: EnvInfo) => void
   setSettings: (settings: AppSettings) => void
+  setUpdateStatus: (status: UpdateStatus) => void
 
   setProject: (project: ProjectFile, path: string | null) => void
   markClean: (project?: ProjectFile) => void
@@ -237,6 +239,7 @@ const emptyState: State = {
   future: [],
   env: null,
   settings: null,
+  updateStatus: { state: 'idle' },
   activeSourceId: null,
   selectedClipId: null,
   inPoint: null,
@@ -268,6 +271,7 @@ export const useStore = create<Store>((set, get) => ({
 
   setEnv: (env) => set({ env }),
   setSettings: (settings) => set({ settings }),
+  setUpdateStatus: (updateStatus) => set({ updateStatus }),
 
   setProject: (project, path) =>
     set({

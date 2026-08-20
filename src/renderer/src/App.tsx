@@ -262,6 +262,32 @@ export default function App(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Update checks happen in the background (on launch, or from Settings), so
+  // this listens for the whole session rather than only while Settings is
+  // open — otherwise a launch-time check that finds something would have
+  // nowhere to tell the user about it.
+  useEffect(() => {
+    return window.api.onUpdateStatus((status) => {
+      const state = useStore.getState()
+      state.setUpdateStatus(status)
+      if (status.state === 'available') {
+        state.toast({
+          kind: 'info',
+          title: 'Update available',
+          message: `Ripper Clipper v${status.version} is ready to download from Settings → Diagnostics.`
+        })
+      } else if (status.state === 'downloaded') {
+        state.toast({
+          kind: 'success',
+          title: 'Update downloaded',
+          message: `Restart to finish installing v${status.version} — Settings → Diagnostics.`
+        })
+      } else if (status.state === 'error') {
+        state.toast({ kind: 'error', title: 'Update check failed', message: status.message })
+      }
+    })
+  }, [])
+
   // Job updates -> clip status, and completion notices.
   useEffect(() => {
     const off = window.api.onJobs((jobs) => {

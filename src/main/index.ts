@@ -22,6 +22,7 @@ import { SourceService } from './services/sources.js'
 import { StreamerService } from './services/streamers.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
+import { UpdateService } from './services/updater.js'
 import { setManagedToolsDir } from './services/locate.js'
 import { selectStreams } from './media/formats.js'
 import type { SelectedStreams } from './media/formats.js'
@@ -102,6 +103,7 @@ const resolver = new ResolverService(log)
 const registry = new AdapterRegistry()
 const sources = new SourceService(log, registry, resolver)
 const streamers = new StreamerService(log, resolver, stateDir)
+const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
 const fetcher = new RangeFetcher(log, ffmpeg, cache, tempRoot)
@@ -290,6 +292,12 @@ async function autoInstallMissing(): Promise<void> {
 function wireQueue(): void {
   queue.on('jobs', (jobs) => {
     mainWindow?.webContents.send(IPC.evtJobs, jobs)
+  })
+}
+
+function wireUpdater(): void {
+  updater.on('status', (status) => {
+    mainWindow?.webContents.send(IPC.evtUpdate, status)
   })
 }
 
@@ -769,6 +777,10 @@ function registerIpc(): void {
   handle(IPC.logsPath, () => log.path)
   handle(IPC.logsTail, (lines: number) => log.tail(lines))
 
+  handle(IPC.updateCheck, () => updater.check())
+  handle(IPC.updateDownload, () => updater.download())
+  handle(IPC.updateInstall, () => updater.install())
+
   handle(IPC.windowMinimize, () => mainWindow?.minimize())
   handle(IPC.windowToggleMaximize, () =>
     mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize()
@@ -811,6 +823,7 @@ if (!singleInstance) {
 
     const loaded = await settings.load()
     wireQueue()
+    wireUpdater()
     applySettings(loaded)
     await cache.ensure()
     await cache.prune()
@@ -823,6 +836,9 @@ if (!singleInstance) {
 
     // After the window exists, so the user can see it happening.
     void autoInstallMissing().catch((err) => log.error('deps', 'Automatic setup failed', err))
+    // Silent unless something is actually found — see UpdateService for why
+    // this is a no-op outside the stable channel.
+    void updater.check().catch((err) => log.error('updater', 'Startup update check failed', err))
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) void createWindow()

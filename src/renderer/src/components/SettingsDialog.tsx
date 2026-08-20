@@ -14,6 +14,7 @@ import {
   Icon,
   Input,
   Notice,
+  ProgressBar,
   Select,
   StatusBadge
 } from '../ui/index.js'
@@ -58,6 +59,7 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
   const setSettings = useStore((s) => s.setSettings)
   const setEnv = useStore((s) => s.setEnv)
   const toast = useStore((s) => s.toast)
+  const updateStatus = useStore((s) => s.updateStatus)
   const [cache, setCache] = useState<CacheStats | null>(null)
   const [logs, setLogs] = useState('')
   const [category, setCategory] = useState<Category>('appearance')
@@ -308,6 +310,51 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
                 Everything below is here for when something has gone wrong. Nothing on this page
                 needs changing for normal use.
               </Notice>
+
+              <h3 style={{ marginTop: 'var(--space-4)' }}>Updates</h3>
+              <div className="rows">
+                <div className="hint">Ripper Clipper v{env?.appVersion ?? '—'}</div>
+                <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <Button
+                    icon="refresh"
+                    loading={updateStatus.state === 'checking'}
+                    disabled={updateStatus.state === 'checking' || updateStatus.state === 'downloading'}
+                    onClick={async () => {
+                      const status = await window.api.checkForUpdates()
+                      if (status.state === 'not-available') {
+                        toast({
+                          kind: 'info',
+                          title: "You're up to date",
+                          message: `Running the latest version (v${env?.appVersion ?? '?'}).`
+                        })
+                      } else if (status.state === 'unsupported') {
+                        toast({
+                          kind: 'info',
+                          title: 'Not available on this build',
+                          message: 'Only the stable release channel checks for updates.'
+                        })
+                      } else if (status.state === 'error') {
+                        toast({ kind: 'error', title: 'Could not check for updates', message: status.message })
+                      }
+                    }}
+                  >
+                    Check for updates
+                  </Button>
+                  {updateStatus.state === 'available' && (
+                    <Button variant="primary" onClick={() => void window.api.downloadUpdate()}>
+                      Download v{updateStatus.version}
+                    </Button>
+                  )}
+                  {updateStatus.state === 'downloaded' && (
+                    <Button variant="primary" onClick={() => void window.api.installUpdate()}>
+                      Restart to install v{updateStatus.version}
+                    </Button>
+                  )}
+                </div>
+                {updateStatus.state === 'downloading' && (
+                  <ProgressBar value={updateStatus.percent / 100} label={`Downloading update — ${updateStatus.percent}%`} />
+                )}
+              </div>
 
               <h3 style={{ marginTop: 'var(--space-4)' }}>Components</h3>
               <div className="rows">

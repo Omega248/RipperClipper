@@ -35,6 +35,14 @@ export default {
 
   icon: 'build/icon.png',
 
+  // electron-updater's GitHub provider reads latest.yml + the NSIS
+  // .blockmap from the release, not just the installer .exe — this makes
+  // electron-builder write both alongside the .exe on every build (not
+  // upload anything by itself; that still only happens with --publish).
+  // Cutting a release therefore has to attach those two extra files, not
+  // just the installer, or a stable-channel update check finds nothing.
+  publish: { provider: 'github', owner: 'Omega248', repo: 'RipperClipper' },
+
   files: ['out/**', 'package.json'],
 
   extraResources: [

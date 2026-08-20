@@ -91,6 +91,21 @@ export interface InstallProgress {
   message: string
 }
 
+/**
+ * State of the GitHub-releases update feed. `unsupported` covers both the
+ * experimental/dev channels (never published, nothing to check) and any
+ * environment where a check simply cannot be meaningful.
+ */
+export type UpdateStatus =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'available'; version: string }
+  | { state: 'not-available' }
+  | { state: 'downloading'; percent: number }
+  | { state: 'downloaded'; version: string }
+  | { state: 'error'; message: string }
+  | { state: 'unsupported' }
+
 /** A channel the editor keeps around between sessions. */
 export interface SavedStreamer {
   id: string
@@ -232,13 +247,19 @@ export const IPC = {
   windowClose: 'window:close',
   windowIsMaximized: 'window:is-maximized',
 
+  // updates — only ever meaningful on the stable channel, see updater.ts
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  updateInstall: 'update:install',
+
   // events (main -> renderer)
   evtJobs: 'evt:jobs',
   evtLog: 'evt:log',
   evtToast: 'evt:toast',
   evtDeps: 'evt:deps',
   evtOpenProject: 'evt:open-project',
-  evtWindowMaximized: 'evt:window-maximized'
+  evtWindowMaximized: 'evt:window-maximized',
+  evtUpdate: 'evt:update'
 } as const
 
 export interface EnvInfo {
@@ -429,9 +450,17 @@ export interface RendererApi {
   closeWindow(): Promise<void>
   isWindowMaximized(): Promise<boolean>
 
+  /** Kicks off a check against the GitHub-releases feed; result also arrives via onUpdateStatus. */
+  checkForUpdates(): Promise<UpdateStatus>
+  /** Only valid once a check reports `available`. */
+  downloadUpdate(): Promise<void>
+  /** Only valid once a download reports `downloaded`. Quits and installs immediately. */
+  installUpdate(): Promise<void>
+
   onJobs(cb: (jobs: ExportJob[]) => void): () => void
   onToast(cb: (toast: ToastEvent) => void): () => void
   onOpenProject(cb: (path: string) => void): () => void
   /** Fires on maximize/unmaximize/snap, so the restore-vs-maximize icon stays honest. */
   onWindowMaximized(cb: (maximized: boolean) => void): () => void
+  onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
 }

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc.js'
-import type { InstallProgress, RendererApi, ToastEvent, ToolId } from '../shared/ipc.js'
+import type { InstallProgress, RendererApi, ToastEvent, ToolId, UpdateStatus } from '../shared/ipc.js'
 import type { ExportJob, SerializedAppError } from '../shared/types.js'
 
 /**
@@ -105,6 +105,10 @@ const api: RendererApi = {
   logsPath: () => invoke(IPC.logsPath),
   tailLogs: (lines) => invoke(IPC.logsTail, lines),
 
+  checkForUpdates: () => invoke(IPC.updateCheck),
+  downloadUpdate: () => invoke(IPC.updateDownload),
+  installUpdate: () => invoke(IPC.updateInstall),
+
   minimizeWindow: () => invoke(IPC.windowMinimize),
   toggleMaximizeWindow: () => invoke(IPC.windowToggleMaximize),
   closeWindow: () => invoke(IPC.windowClose),
@@ -129,6 +133,11 @@ const api: RendererApi = {
     const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
     ipcRenderer.on(IPC.evtWindowMaximized, listener)
     return () => ipcRenderer.removeListener(IPC.evtWindowMaximized, listener)
+  },
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
+    const listener = (_e: unknown, status: UpdateStatus): void => cb(status)
+    ipcRenderer.on(IPC.evtUpdate, listener)
+    return () => ipcRenderer.removeListener(IPC.evtUpdate, listener)
   }
 }
 
