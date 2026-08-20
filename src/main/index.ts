@@ -61,15 +61,14 @@ const __dirname_ = dirname(fileURLToPath(import.meta.url))
 app.setName('cookie-clipper')
 
 /*
- * A build with the Editor in it (a dev build, or `npm run dev` itself) is
- * for trying unstable things — it must never be able to touch the same
- * projects, cache or settings the production app uses. Redirected to a
- * sibling folder rather than a different name so this can never collide
- * with the pin above; production's own path is completely untouched by
- * this block, since it only runs when `__EDITOR_ENABLED__` is true.
+ * Every non-stable channel is for trying unstable things — it must never be
+ * able to touch the same projects, cache or settings the real production
+ * app uses. Each gets its own sibling folder rather than a different name,
+ * so this can never collide with the pin above; the stable channel's own
+ * path is completely untouched, since this block only runs otherwise.
  */
-if (__EDITOR_ENABLED__) {
-  app.setPath('userData', join(app.getPath('userData'), '..', 'cookie-clipper-dev'))
+if (__CHANNEL__ !== 'stable') {
+  app.setPath('userData', join(app.getPath('userData'), '..', `cookie-clipper-${__CHANNEL__}`))
 }
 
 let mainWindow: BrowserWindow | null = null

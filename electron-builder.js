@@ -1,23 +1,35 @@
 /**
- * Packaging config for both distributables built from this repo.
+ * Packaging config for all three distributables built from this repo.
  *
- * `RIPPER_EDITOR=1` (set by `npm run package:win:dev`) produces "Ripper
- * Clipper Dev" — a separate app identity (id, name, install directory,
- * Start Menu entry) so it installs side by side with the production app
- * instead of overwriting it. A plain `npm run package:win` builds the
- * production app; its bundle never had the Editor's code in it in the first
- * place (see electron.vite.config.ts), this file only decides how it's
- * labelled and installed.
+ * `RIPPER_CHANNEL` (same variable electron.vite.config.ts reads) picks
+ * which one — `stable` (default, unset), `experimental`, or `dev`. Each gets
+ * its own app identity (id, name, install directory, Start Menu entry) so
+ * all three can be installed side by side without overwriting one another.
+ * A plain `npm run package:win` never sets it, so the production bundle
+ * never had the Editor's code in it in the first place (see
+ * electron.vite.config.ts) — this file only decides how each is labelled
+ * and installed.
  */
-const isDev = process.env.RIPPER_EDITOR === '1'
+const channel =
+  process.env.RIPPER_CHANNEL === 'experimental'
+    ? 'experimental'
+    : process.env.RIPPER_CHANNEL === 'dev' || process.env.RIPPER_EDITOR === '1'
+      ? 'dev'
+      : 'stable'
+
+const IDENTITY = {
+  stable: { appId: 'com.ripperclipper.app', productName: 'Ripper Clipper' },
+  experimental: { appId: 'com.ripperclipper.experimental', productName: 'Ripper Clipper Experimental' },
+  dev: { appId: 'com.ripperclipper.dev', productName: 'Ripper Clipper Dev' }
+}[channel]
 
 export default {
-  appId: isDev ? 'com.ripperclipper.dev' : 'com.ripperclipper.app',
-  productName: isDev ? 'Ripper Clipper Dev' : 'Ripper Clipper',
+  appId: IDENTITY.appId,
+  productName: IDENTITY.productName,
   copyright: 'Ripper Clipper',
 
   directories: {
-    output: isDev ? 'release-dev' : 'release',
+    output: channel === 'stable' ? 'release' : `release-${channel}`,
     buildResources: 'build'
   },
 
@@ -68,7 +80,7 @@ export default {
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
-    shortcutName: isDev ? 'Ripper Clipper Dev' : 'Ripper Clipper'
+    shortcutName: IDENTITY.productName
   },
 
   linux: {

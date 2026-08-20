@@ -3,15 +3,35 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 
 /**
- * The Editor is a development-only feature. `npm run dev`'s live server
- * always has it; a packaged build only does when explicitly asked for one
- * with `RIPPER_EDITOR=1` (see `package:win:dev` in package.json) — a plain
- * `npm run package:win` never sets it, so the production installer's bundle
- * never contains the Editor's code at all, not merely a build that hides it.
+ * Three build channels, one `RIPPER_CHANNEL` env var:
+ *
+ *   stable        the public release — no Editor, no dev-only code
+ *   experimental  same code as `dev`, packaged like `stable` (no Editor) —
+ *                 a beta channel for trying upcoming stable-bound changes
+ *                 before they're actually promoted to a release
+ *   dev           everything, including the Editor
+ *
+ * `npm run dev`'s live server always behaves as `dev`, unset otherwise
+ * defaults to `stable`. Only `dev` gets the Editor: `__EDITOR_ENABLED__` is
+ * replaced with a literal `true`/`false` at build time, which lets Rollup
+ * prove the Editor's own `import()` is unreachable in the other two channels
+ * and drop the whole module graph from the built output — not merely hide
+ * it. `__CHANNEL__` is separate and broader: main/index.ts uses it to keep
+ * each channel's userData (projects, cache, settings) in its own folder, so
+ * testing an experimental build can never touch real production data.
  */
 export default defineConfig(({ command }) => {
-  const editorEnabled = command === 'serve' || process.env.RIPPER_EDITOR === '1'
-  const define = { __EDITOR_ENABLED__: JSON.stringify(editorEnabled) }
+  const channel: 'stable' | 'experimental' | 'dev' =
+    command === 'serve' || process.env.RIPPER_CHANNEL === 'dev' || process.env.RIPPER_EDITOR === '1'
+      ? 'dev'
+      : process.env.RIPPER_CHANNEL === 'experimental'
+        ? 'experimental'
+        : 'stable'
+  const editorEnabled = channel === 'dev'
+  const define = {
+    __EDITOR_ENABLED__: JSON.stringify(editorEnabled),
+    __CHANNEL__: JSON.stringify(channel)
+  }
 
   return {
     main: {
