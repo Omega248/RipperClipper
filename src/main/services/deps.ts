@@ -508,9 +508,15 @@ async function extractArchive(file: string, into: string, signal?: AbortSignal):
   // bsdtar (Windows 10+) reads zip; GNU tar does not, so a zip unpacked on a
   // Linux host — which is how a Windows build gets assembled — uses unzip.
   const zipOnUnix = file.toLowerCase().endsWith('.zip') && process.platform !== 'win32'
+  // A bare 'tar' resolves through PATH, and on a machine with Git for
+  // Windows installed — extremely common — its own GNU tar (no zip support)
+  // sits ahead of the Windows-native bsdtar in PATH order, so the same
+  // "could not unpack" failure that GNU tar gives on Linux for a zip shows
+  // up here too unless the System32 copy is asked for explicitly.
+  const winTar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
   const [command, args] = zipOnUnix
     ? ['unzip', ['-qo', file, '-d', into]]
-    : ['tar', ['-xf', file, '-C', into]]
+    : [process.platform === 'win32' ? winTar : 'tar', ['-xf', file, '-C', into]]
   const result = await run(command, args, { signal, idleTimeoutMs: 10 * 60_000 })
   if (result.code !== 0) {
     throw new AppError({
