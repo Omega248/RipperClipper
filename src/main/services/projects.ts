@@ -7,16 +7,22 @@ import { refreshClipMappings } from '../../shared/povMapping.js'
 import type { ClipSegment, ExportSettings, Marker, ProjectFile, VodSource } from '../../shared/types.js'
 import type { SyncAnchor } from '../../shared/sync.js'
 import type { Logger } from './logger.js'
-import type { RecoveryInfo } from '../../shared/ipc.js'
+import type { ProjectBackupInfo, RecoveryInfo } from '../../shared/ipc.js'
 
 export const PROJECT_EXTENSION = 'cookieclip'
+
+/** How many prior versions of a project are kept once it's saved repeatedly. */
+const MAX_BACKUPS = 10
 
 /**
  * Project persistence.
  *
  * Every write is atomic (temp file + rename), so a crash or power loss can
  * never leave a half-written project behind. Autosaves go to a separate
- * recovery file that is offered on the next launch.
+ * recovery file that is offered on the next launch. Every explicit save also
+ * snapshots whatever was on disk beforehand into a rolling backup history, so
+ * an editing mistake that gets saved over is still recoverable — the atomic
+ * write and the recovery file both only ever protect the *latest* state.
  */
 export class ProjectStore {
   private readonly recoveryFile: string
@@ -52,10 +58,66 @@ export class ProjectStore {
       clips: normalizeOrder(project.clips),
       updatedAt: new Date().toISOString()
     }
+    await this.backupExisting(path)
     await atomicWriteJson(path, next)
     await this.rememberRecent(path)
     this.log.info('project', 'Project saved', { path, clips: next.clips.length })
     return next
+  }
+
+  /** Rolling save-history for a project, newest first. Empty until it's been saved twice. */
+  async listBackups(path: string): Promise<ProjectBackupInfo[]> {
+    const dir = this.backupDir(path)
+    let names: string[]
+    try {
+      names = (await readdir(dir)).filter((n) => n.endsWith(`.${PROJECT_EXTENSION}`))
+    } catch {
+      return []
+    }
+    const infos = await Promise.all(
+      names.map(async (name) => {
+        const full = join(dir, name)
+        const info = await stat(full)
+        return { path: full, savedAt: info.mtime.toISOString() }
+      })
+    )
+    return infos.sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+  }
+
+  /** Load a backup snapshot without disturbing the recent-projects list or the file it came from. */
+  async restoreBackup(backupPath: string): Promise<ProjectFile> {
+    const raw = await readFile(backupPath, 'utf8')
+    return parseProject(raw, backupPath)
+  }
+
+  /** Snapshot whatever is currently on disk before it gets overwritten. */
+  private async backupExisting(path: string): Promise<void> {
+    let existing: Buffer
+    try {
+      existing = await readFile(path)
+    } catch {
+      return // nothing on disk yet — first save of this file
+    }
+    const dir = this.backupDir(path)
+    await mkdir(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    // The suffix guards against two saves landing in the same millisecond,
+    // which would otherwise silently overwrite one backup with another.
+    await writeFile(join(dir, `${stamp}-${createId('bak')}.${PROJECT_EXTENSION}`), existing)
+    await this.pruneBackups(dir)
+  }
+
+  private backupDir(path: string): string {
+    return join(dirname(path), `.${basename(path)}.backups`)
+  }
+
+  private async pruneBackups(dir: string): Promise<void> {
+    const names = (await readdir(dir)).filter((n) => n.endsWith(`.${PROJECT_EXTENSION}`)).sort()
+    const excess = names.length - MAX_BACKUPS
+    if (excess <= 0) return
+    await Promise.all(
+      names.slice(0, excess).map((name) => rm(join(dir, name), { force: true }).catch(() => undefined))
+    )
   }
 
   async open(path: string): Promise<ProjectFile> {

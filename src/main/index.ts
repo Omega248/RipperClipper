@@ -511,6 +511,8 @@ function registerIpc(): void {
   handle(IPC.projectRecoveryCheck, () => projects.recoveryInfo())
   handle(IPC.projectRecoveryDiscard, () => projects.discardRecovery())
   handle(IPC.projectRecent, () => projects.recent())
+  handle(IPC.projectBackupList, (path: string) => projects.listBackups(path))
+  handle(IPC.projectBackupRestore, (path: string) => projects.restoreBackup(path))
   handle(IPC.projectStartupPath, () => startupProjectPath())
 
   handle(IPC.audioPeaks, async (req: PeaksQuery) => {

@@ -2834,3 +2834,23 @@ canvas.wave.draggable {
   font: var(--type-caption);
   resize: vertical;
 }
+
+.version-history-list {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.version-history-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}

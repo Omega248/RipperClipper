@@ -23,6 +23,7 @@ import { message, title } from './components/QualityPanel.js'
 import SettingsDialog from './components/SettingsDialog.js'
 import QuickGuide from './components/QuickGuide.js'
 import StreamersDialog from './components/StreamersDialog.js'
+import VersionHistoryDialog from './components/VersionHistoryDialog.js'
 import FindInPovs from './components/FindInPovs.js'
 import WaveformSync from './components/WaveformSync.js'
 import PovBar from './components/PovBar.js'
@@ -87,6 +88,7 @@ export default function App(): JSX.Element {
   const [sequenceExportPrompt, setSequenceExportPrompt] = useState<string | null>(null)
   const [confirmNewProject, setConfirmNewProject] = useState(false)
   const [showWatermark, setShowWatermark] = useState(false)
+  const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [windowMaximized, setWindowMaximized] = useState(false)
   /**
    * Who else was live during the selected clip, fetched the moment a clip
@@ -797,6 +799,13 @@ export default function App(): JSX.Element {
               icon: 'refresh',
               separatorBefore: true,
               onSelect: () => void recoverProject()
+            },
+            {
+              id: 'history',
+              label: 'Version history…',
+              icon: 'refresh',
+              disabled: !store.projectPath,
+              onSelect: () => setShowVersionHistory(true)
             }
           ]}
         />
@@ -1285,6 +1294,13 @@ export default function App(): JSX.Element {
         />
       )}
       {showWatermark && <WatermarkEditor onClose={() => setShowWatermark(false)} />}
+      {showVersionHistory && store.projectPath && (
+        <VersionHistoryDialog
+          projectPath={store.projectPath}
+          onClose={() => setShowVersionHistory(false)}
+          onRestored={(project) => store.setProject(project, null)}
+        />
+      )}
       {combinePrompt !== null && (
         <PromptDialog
           title="Combine clips into one file"

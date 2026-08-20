@@ -172,6 +172,8 @@ export const IPC = {
   projectRecoveryCheck: 'project:recovery-check',
   projectRecoveryDiscard: 'project:recovery-discard',
   projectRecent: 'project:recent',
+  projectBackupList: 'project:backup-list',
+  projectBackupRestore: 'project:backup-restore',
   projectStartupPath: 'project:startup-path',
 
   // streamers
@@ -328,6 +330,12 @@ export interface RecoveryInfo {
   projectName: string | null
 }
 
+/** One entry in a project's rolling backup history — newest first. */
+export interface ProjectBackupInfo {
+  path: string
+  savedAt: string
+}
+
 export interface CacheStats {
   directory: string
   sizeBytes: number
@@ -357,6 +365,10 @@ export interface RendererApi {
   checkRecovery(): Promise<RecoveryInfo>
   discardRecovery(): Promise<void>
   recentProjects(): Promise<string[]>
+  /** Rolling save-history for a project file, newest first. */
+  listBackups(path: string): Promise<ProjectBackupInfo[]>
+  /** Load a backup snapshot as the current project, without touching the file it was saved from. */
+  restoreBackup(path: string): Promise<ProjectFile>
 
   /** Peaks for a window of one POV's audio, for the manual-sync waveform. */
   audioPeaks(req: PeaksQuery): Promise<PeaksReply>

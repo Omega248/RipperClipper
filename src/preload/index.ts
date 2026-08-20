@@ -57,6 +57,8 @@ const api: RendererApi = {
   discardRecovery: () => invoke(IPC.projectRecoveryDiscard),
   recentProjects: () => invoke(IPC.projectRecent),
   startupProjectPath: () => invoke(IPC.projectStartupPath),
+  listBackups: (path) => invoke(IPC.projectBackupList, path),
+  restoreBackup: (path) => invoke(IPC.projectBackupRestore, path),
 
   audioPeaks: (req) => invoke(IPC.audioPeaks, req),
   filmstrip: (req) => invoke(IPC.filmstrip, req),

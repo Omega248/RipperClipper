@@ -133,6 +133,55 @@ describe('autosave and recovery', () => {
   })
 })
 
+describe('rolling backup history', () => {
+  it('keeps no history until a project has been saved twice', async () => {
+    const path = join(dir, 'once.cookieclip')
+    await store.save(projectWithClips(), path)
+    expect(await store.listBackups(path)).toEqual([])
+  })
+
+  it('snapshots the previous version on every subsequent save', async () => {
+    const path = join(dir, 'history.cookieclip')
+    await store.save({ ...projectWithClips(), name: 'v1' }, path)
+    await store.save({ ...projectWithClips(), name: 'v2' }, path)
+    await store.save({ ...projectWithClips(), name: 'v3' }, path)
+
+    const backups = await store.listBackups(path)
+    expect(backups).toHaveLength(2)
+
+    const names = await Promise.all(backups.map((b) => store.restoreBackup(b.path).then((p) => p.name)))
+    expect(new Set(names)).toEqual(new Set(['v1', 'v2']))
+  })
+
+  it('restoring a backup does not touch the live file or the recent-projects list', async () => {
+    const path = join(dir, 'untouched.cookieclip')
+    await store.save({ ...projectWithClips(), name: 'v1' }, path)
+    await store.save({ ...projectWithClips(), name: 'v2' }, path)
+
+    const before = await readFile(path, 'utf8')
+    const backups = await store.listBackups(path)
+    await store.restoreBackup(backups[0].path)
+
+    expect(await readFile(path, 'utf8')).toBe(before)
+    expect(await store.recent()).not.toContain(backups[0].path)
+  })
+
+  it('caps history at 10 versions, dropping the oldest first', async () => {
+    const path = join(dir, 'capped.cookieclip')
+    for (let i = 0; i < 13; i++) {
+      await store.save({ ...projectWithClips(), name: `v${i}` }, path)
+    }
+    const backups = await store.listBackups(path)
+    expect(backups).toHaveLength(10)
+
+    const names = await Promise.all(backups.map((b) => store.restoreBackup(b.path).then((p) => p.name)))
+    // v0, v1 and v2 aged out; v3..v11 (the 10 saves before the final, unbacked-up v12) survive.
+    expect(names).not.toContain('v0')
+    expect(names).not.toContain('v1')
+    expect(names).toContain('v11')
+  })
+})
+
 describe('corruption handling', () => {
   it('raises an actionable error for unparseable files', async () => {
     const path = join(dir, 'broken.cookieclip')
