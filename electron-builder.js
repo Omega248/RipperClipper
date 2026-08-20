@@ -50,7 +50,16 @@ export default {
 
   win: {
     target: [{ target: 'nsis', arch: ['x64'] }],
-    artifactName: '${productName}-${version}-setup.${ext}'
+    artifactName: '${productName}-${version}-setup.${ext}',
+    // No certificate is configured (the build is unsigned), so this step
+    // would only try to stamp version metadata onto the .exe — but doing
+    // that at all makes electron-builder fetch its winCodeSign tool bundle,
+    // which contains macOS-side symlinked files that fail to extract on any
+    // Windows account without Developer Mode or an elevated shell (the
+    // extraction needs SeCreateSymbolicLinkPrivilege). Skipping this avoids
+    // that dependency entirely; nothing here needs it since there's no
+    // certificate to apply in the first place.
+    signAndEditExecutable: false
   },
 
   nsis: {
