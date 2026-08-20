@@ -1,0 +1,307 @@
+/* ---------------------------------------------------------------------------
+   Ripper Clipper — design tokens.
+
+   The single source of colour, spacing, radius, type and elevation. Nothing
+   else in the renderer declares a raw colour.
+
+   Two layers:
+     1. Semantic tokens (--surface, --text-primary, --accent, …). New code
+        uses only these.
+     2. Legacy aliases at the bottom, mapping the old ad-hoc names onto the
+        semantic ones so un-migrated CSS keeps rendering correctly while the
+        pages are moved over one at a time.
+
+   Light and dark are two separately authored mappings, not an inversion: the
+   dark set is built around a near-black editing surface so video is the
+   brightest thing on screen, the light set around a soft paper white that
+   does not glare next to a bright player.
+--------------------------------------------------------------------------- */
+
+:root {
+  /* --- spacing: a 4px rhythm ------------------------------------------- */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* --- radii ------------------------------------------------------------ */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 7px;
+  --radius-lg: 11px;
+  --radius-full: 999px;
+
+  /* --- control sizing --------------------------------------------------- */
+  --control-height-sm: 26px;
+  --control-height-md: 32px;
+  --control-height-lg: 38px;
+  --control-padding-sm: 0 var(--space-2);
+  --control-padding-md: 0 var(--space-3);
+  --control-padding-lg: 0 var(--space-4);
+
+  /* --- type ------------------------------------------------------------- */
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'Inter',
+    sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', 'Consolas', 'SF Mono', monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.45;
+  --leading-loose: 1.6;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --tracking-wide: 0.04em;
+  --tracking-caps: 0.08em;
+
+  /* --- motion ----------------------------------------------------------- */
+  --motion-fast: 90ms;
+  --motion-medium: 160ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* --- layering --------------------------------------------------------- */
+  --z-sticky: 10;
+  --z-dropdown: 100;
+  --z-overlay: 200;
+  --z-toast: 300;
+
+  /* --- spacing, named ---------------------------------------------------- */
+  --space-xs: var(--space-1);
+  --space-sm: var(--space-2);
+  --space-md: var(--space-3);
+  --space-lg: var(--space-4);
+  --space-xl: var(--space-5);
+  --space-2xl: var(--space-6);
+  --space-3xl: var(--space-7);
+
+  /* --- radii, named ------------------------------------------------------ */
+  --radius-small: var(--radius-sm);
+  --radius-medium: var(--radius-md);
+  --radius-large: var(--radius-lg);
+  --radius-pill: var(--radius-full);
+
+  /* --- control sizes, named ---------------------------------------------- */
+  --control-compact: var(--control-height-sm);
+  --control-default: var(--control-height-md);
+  --control-large: var(--control-height-lg);
+
+  /* --- composite type styles --------------------------------------------
+     Use as `font: var(--type-body)`. One declaration sets family, size,
+     weight and line height together, so a heading cannot drift out of the
+     scale by having only its size changed.                                  */
+  --type-display: var(--weight-semibold) var(--text-2xl) / var(--leading-tight) var(--font-sans);
+  --type-heading: var(--weight-semibold) var(--text-xl) / var(--leading-tight) var(--font-sans);
+  --type-title: var(--weight-semibold) var(--text-lg) / var(--leading-tight) var(--font-sans);
+  --type-section: var(--weight-semibold) var(--text-md) / var(--leading-tight) var(--font-sans);
+  --type-body: var(--weight-normal) var(--text-md) / var(--leading-normal) var(--font-sans);
+  --type-body-small: var(--weight-normal) var(--text-sm) / var(--leading-normal) var(--font-sans);
+  --type-label: var(--weight-medium) var(--text-sm) / var(--leading-tight) var(--font-sans);
+  --type-caption: var(--weight-normal) var(--text-xs) / var(--leading-normal) var(--font-sans);
+  --type-mono: var(--weight-normal) var(--text-sm) / var(--leading-normal) var(--font-mono);
+  --type-mono-small: var(--weight-normal) var(--text-xs) / var(--leading-normal) var(--font-mono);
+}
+
+/* =========================================================================
+   DARK — the default working surface for video.
+   ========================================================================= */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* surfaces, from deepest to most raised */
+  --surface-sunken: #0c0e12;
+  --surface: #14161b;
+  --surface-raised: #1b1e25;
+  --surface-overlay: #22262f;
+  --surface-hover: #272b35;
+  --surface-active: #313745;
+  --surface-selected: #1d2a40;
+
+  /* the video stage sits below everything so frames read as the light source */
+  --stage: #08090b;
+
+  /* borders */
+  --border-subtle: #22262e;
+  --border: #333945;
+  --border-strong: #4b5361;
+
+  /* text */
+  --text-primary: #e9ebef;
+  --text-secondary: #a6aeba;
+  --text-tertiary: #6e7784;
+  --text-on-accent: #ffffff;
+
+  /* accent — selection, focus, the primary action */
+  --accent: #4c8dff;
+  --accent-hover: #6ba1ff;
+  --accent-active: #3a78e6;
+  --accent-subtle: #16243c;
+  --accent-border: #2d4a7a;
+  --accent-text: #8fb8ff;
+
+  /* status */
+  --success: #46b95a;
+  --success-subtle: #12261a;
+  --success-border: #245c31;
+  --success-text: #77d189;
+
+  --warning: #d8a127;
+  --warning-subtle: #2b2110;
+  --warning-border: #6b5115;
+  --warning-text: #e6bb5c;
+
+  --danger: #ef5f6b;
+  --danger-subtle: #331519;
+  --danger-border: #7a2f36;
+  --danger-text: #ff8a94;
+
+  --info: var(--accent);
+  --info-subtle: var(--accent-subtle);
+  --info-border: var(--accent-border);
+  --info-text: var(--accent-text);
+
+  --neutral-subtle: #21252d;
+  --neutral-border: #363c47;
+  --neutral-text: #98a1ae;
+
+  /* focus ring */
+  --focus-ring: #7fb0ff;
+  --focus-ring-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--focus-ring);
+
+  /* data colours — timeline clips, waveforms, findings. Not chrome. */
+  --data-clip: #c99a52;
+  --data-clip-edge: #e0b673;
+  --data-clip-selected: #e6a94e;
+  --data-clip-text: #16110a;
+  --data-marker: #9aa7b8;
+  --data-music: #9b7bd4;
+  --data-music-soft: #3a2e52;
+  --data-speech: #d8756f;
+  --data-speech-soft: #4a2624;
+  --data-waveform: #55606f;
+  --data-playhead: #ff5f56;
+
+  /* marker categories — warm bakery palette, distinguishable without relying on hue alone */
+  --marker-funny: #d9a34a;
+  --marker-reaction: #c2185b;
+  --marker-important: #b3364a;
+  --marker-idea: #7d9a68;
+  --marker-default: #8d6e63;
+
+  /* elevation */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.45), 0 8px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.5), 0 20px 48px rgba(0, 0, 0, 0.45);
+
+
+  /* names used by the design brief, mapped onto the set above */
+  --background: var(--surface);
+  --text-muted: var(--text-tertiary);
+  --text-disabled: #545c69;
+  --focus: var(--focus-ring);
+  --scrim: rgba(6, 8, 11, 0.66);
+}
+
+/* =========================================================================
+   LIGHT — authored separately, not a flip of the dark set.
+   ========================================================================= */
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --surface-sunken: #e7eaef;
+  --surface: #f5f6f8;
+  --surface-raised: #ffffff;
+  --surface-overlay: #ffffff;
+  --surface-hover: #eef0f4;
+  --surface-active: #e3e7ed;
+  --surface-selected: #e6f0fe;
+
+  --stage: #d8dce2;
+
+  --border-subtle: #e8eaef;
+  --border: #d5dae1;
+  --border-strong: #b4bcc7;
+
+  --text-primary: #171a1f;
+  --text-secondary: #575f6b;
+  --text-tertiary: #858d99;
+  --text-on-accent: #ffffff;
+
+  --accent: #1a67e0;
+  --accent-hover: #155ac6;
+  --accent-active: #114ba8;
+  --accent-subtle: #e8f0fe;
+  --accent-border: #b6d0f7;
+  --accent-text: #14508f;
+
+  --success: #1a7f37;
+  --success-subtle: #e6f4ea;
+  --success-border: #a9d7b8;
+  --success-text: #14682c;
+
+  --warning: #9a6700;
+  --warning-subtle: #fdf3d8;
+  --warning-border: #e6cf8f;
+  --warning-text: #7d5400;
+
+  --danger: #cd2b3b;
+  --danger-subtle: #fdeaec;
+  --danger-border: #f2b6bd;
+  --danger-text: #a81f2d;
+
+  --info: var(--accent);
+  --info-subtle: var(--accent-subtle);
+  --info-border: var(--accent-border);
+  --info-text: var(--accent-text);
+
+  --neutral-subtle: #eef0f3;
+  --neutral-border: #d3d8df;
+  --neutral-text: #5c6470;
+
+  --focus-ring: #1a67e0;
+  --focus-ring-shadow: 0 0 0 2px var(--surface-raised), 0 0 0 4px var(--focus-ring);
+
+  --data-clip: #c98a2e;
+  --data-clip-edge: #a06c18;
+  --data-clip-selected: #b57a1f;
+  --data-clip-text: #ffffff;
+  --data-marker: #6c7684;
+  --data-music: #6d4bb0;
+  --data-music-soft: #ece5f8;
+  --data-speech: #c0453e;
+  --data-speech-soft: #fbe6e5;
+  --data-waveform: #a8b1bd;
+  --data-playhead: #d93025;
+
+  /* marker categories — darkened for contrast against a light surface */
+  --marker-funny: #96691f;
+  --marker-reaction: #9c1249;
+  --marker-important: #8a2638;
+  --marker-idea: #56714a;
+  --marker-default: #6b4f45;
+
+  --shadow-sm: 0 1px 2px rgba(20, 26, 38, 0.08);
+  --shadow-md: 0 1px 3px rgba(20, 26, 38, 0.1), 0 6px 18px rgba(20, 26, 38, 0.1);
+  --shadow-lg: 0 4px 12px rgba(20, 26, 38, 0.12), 0 18px 44px rgba(20, 26, 38, 0.16);
+
+
+  --background: var(--surface);
+  --text-muted: var(--text-tertiary);
+  --text-disabled: #a3aab5;
+  --focus: var(--focus-ring);
+  --scrim: rgba(23, 26, 31, 0.4);
+}

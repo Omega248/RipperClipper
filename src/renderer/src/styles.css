@@ -1,0 +1,2836 @@
+/* ---------------------------------------------------------------------------
+   Ripper Clipper — application styles.
+
+   Layout and page structure only. Every control the interface is built from
+   lives in `ui/ui.css` and is used, not restyled, from here; every colour,
+   space, radius and type size comes from `design/tokens.css`. There are no
+   colour literals in this file, and there should never be one again: a raw hex
+   here is how the application drifted into ninety of them and two themes that
+   disagreed.
+
+   The visual language is a desktop production tool. Tonal separation between
+   surfaces carries the hierarchy, borders are used only where two regions
+   genuinely meet, accent colour marks exactly one thing per region, and the
+   video is always the brightest object on the screen.
+--------------------------------------------------------------------------- */
+
+@import './design/tokens.css';
+@import './ui/ui.css';
+
+/* ============================ base ===================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface);
+  color: var(--text-primary);
+  font: var(--type-body);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  /* A native app doesn't let a stray drag highlight a label — text selection
+     is opt-in, not the default, everywhere except where it's actually useful
+     (an id, a path, a timecode someone might want to copy) or where the
+     browser needs it to work at all (form fields). */
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable='true'] {
+  user-select: text;
+}
+
+.mono,
+.selectable {
+  user-select: text;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: var(--weight-semibold);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-shadow);
+  border-radius: var(--radius-small);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+::selection {
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+
+/* Scrollbars, so panes match the rest of the application rather than the OS. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+  background-color: var(--border-strong);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--text-secondary);
+}
+
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.hint {
+  margin: var(--space-2) 0 0;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.hint.inline {
+  margin: 0;
+}
+
+.hint.warn {
+  color: var(--warning-text);
+}
+
+.error-text {
+  color: var(--danger-text);
+  font: var(--type-caption);
+}
+
+.kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-small);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font: var(--type-mono-small);
+  text-align: center;
+}
+
+hr.rule {
+  height: 1px;
+  margin: var(--space-3) 0;
+  border: 0;
+  background: var(--border-subtle);
+}
+
+/* ============================ shell ==================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface);
+}
+
+.app > * {
+  flex: none;
+}
+
+.app > .main,
+.app > .page {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- top bar ---- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 46px;
+  min-width: 0;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  /* Nothing here may spill past the right edge of the window. */
+  overflow: hidden;
+  /* There is no OS titlebar (the window is frameless) — the topbar's own
+     empty space is what the user drags to move the window. */
+  -webkit-app-region: drag;
+}
+
+.topbar > *:not(.spacer):not(.topbar-divider) {
+  /* Every actual control opts back out, or nothing in the topbar could ever
+     be clicked. The spacers are left draggable — they are the topbar's
+     biggest stretches of empty space and the most natural place to grab. */
+  -webkit-app-region: no-drag;
+}
+
+.nav-badge-anchor {
+  position: relative;
+  display: flex;
+}
+
+.nav-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: var(--text-on-accent);
+  font: var(--weight-semibold) 10px / 1 var(--font-sans);
+  pointer-events: none;
+}
+
+.window-controls {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  gap: 0;
+  margin: 0 calc(var(--space-3) * -1) 0 0;
+}
+
+.window-controls .ui-btn {
+  height: 100%;
+  border-radius: 0;
+  width: 44px;
+}
+
+.window-controls .ui-btn:hover {
+  background: var(--surface-hover);
+}
+
+.window-controls .ui-btn.close:hover {
+  background: var(--danger);
+  color: var(--text-on-accent);
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  padding-right: var(--space-2);
+  font: var(--type-title);
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+
+.brand span {
+  color: var(--accent);
+}
+
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--space-1);
+  background: var(--border);
+}
+
+.project-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 280px;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+.project-name .dirty {
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 0;
+}
+
+/* ---- primary navigation ---- */
+
+.pages {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-medium);
+  background: var(--surface-active);
+}
+
+.page-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--type-label);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.page-tab:hover:not(.on) {
+  color: var(--text-primary);
+}
+
+/* Selection is carried by surface, weight and an underline as well as colour. */
+.page-tab.on {
+  position: relative;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  box-shadow: var(--shadow-sm);
+}
+
+.page-tab.on::after {
+  content: '';
+  position: absolute;
+  right: var(--space-3);
+  bottom: 2px;
+  left: var(--space-3);
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+}
+
+/* ---- source bar ---- */
+
+.sourcebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.sourcebar .url {
+  flex: 1;
+  min-width: 220px;
+  max-width: 640px;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 460px;
+  margin-left: auto;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-medium);
+  background: var(--surface-raised);
+}
+
+.meta img {
+  flex: none;
+  width: 58px;
+  height: 33px;
+  border-radius: var(--radius-small);
+  object-fit: cover;
+  background: var(--surface-active);
+}
+
+.meta-text {
+  min-width: 0;
+}
+
+.meta-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: hidden;
+  color: var(--text-primary);
+  font: var(--type-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.meta-sub {
+  display: flex;
+  gap: var(--space-2);
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface-active);
+  color: var(--text-secondary);
+  font: var(--type-caption);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* ---- POV bar ---- */
+
+.povbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.povbar-scroll {
+  display: flex;
+  flex: 1;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.povbar-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+.povbar-label {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--text-tertiary);
+  font: var(--type-label);
+}
+
+.pov-slot {
+  position: relative;
+  flex: none;
+}
+
+/* One card component, not a row of bordered boxes: the resting state has no
+   border at all, and selection is a surface plus a rail. */
+.pov {
+  display: grid;
+  gap: 2px;
+  width: 178px;
+  padding: var(--space-2) var(--space-3);
+  padding-right: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-medium);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.pov:hover {
+  background: var(--surface-hover);
+}
+
+.pov[aria-selected='true'] {
+  border-color: var(--accent-border);
+  background: var(--surface-selected);
+  color: var(--text-primary);
+}
+
+.pov[aria-selected='true']::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+
+.pov:focus-visible {
+  box-shadow: var(--focus-ring-shadow);
+}
+
+.pov-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font: var(--type-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pov-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+.pov-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-tertiary);
+  /* Visible at rest, not hidden until hover: removing a POV is something the
+     editor goes looking for, and an affordance nobody can find is the same as
+     one that does not exist. It stays quiet until the card is under the
+     pointer. */
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.pov-slot:hover .pov-remove,
+.pov-remove:hover,
+.pov-remove:focus-visible {
+  opacity: 1;
+}
+
+.pov-remove:hover {
+  background: var(--danger-subtle);
+  color: var(--danger-text);
+}
+
+/* ============================ video page =============================== */
+
+.main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--side-width, 340px);
+  /* Row 1 is the picture and its controls, row 2 the timeline. Both are
+     capped rather than floored: see `.player-wrap` and `.timeline-stack`.
+     The user can drag the timeline taller via --timeline-height; until they
+     do, it keeps sizing to its own content. */
+  grid-template-rows: minmax(0, 1fr) var(--timeline-height, auto);
+  gap: 1px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.stage {
+  grid-row: 1;
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* A stage that overflows would paint its transport over the timeline. */
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.stage-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+}
+
+.player-wrap {
+  position: relative;
+  display: grid;
+  flex: 1;
+  /* One cell that is exactly the space available — both tracks are
+     `minmax(0, 1fr)` so the picture can never make its own container bigger.
+     An `auto` track here sizes to the *video's* intrinsic height, which is how
+     a 1080p source used to overflow a short window and get cut off instead of
+     scaling down. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+  /* The picture yields first. Everything else on this page — the POV bar, the
+     transport, the timeline — is a control the editor needs at any window
+     size, so the player takes whatever height is left rather than pushing the
+     transport out of the stage and over the timeline below it. */
+  /* No floor: a minimum here cannot be honoured on a short window without
+     pushing the transport out of the stage, and a clipped transport is worse
+     than a small picture. The picture scales — it is never cropped — so small
+     is legible where clipped is not. */
+  min-height: 0;
+  min-width: 0;
+  background: var(--stage);
+  /* Never a scrollbar: the video letterboxes to fit rather than being clipped. */
+  overflow: hidden;
+}
+
+.player-wrap video {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: var(--stage);
+  /*
+   * A grid item that is a replaced element with a known intrinsic ratio
+   * (a <video> once it has loaded metadata) can be sized by the browser's
+   * default replaced-element algorithm instead of the width/height:100%
+   * above, whenever the grid parent's place-items is not stretch — and
+   * .player-frame's is center, for its *other* possible children
+   * (a centered loading pill, an error state) that have no size of their
+   * own to stretch. Measured live: this element rendered at exactly
+   * width * (intrinsicHeight / intrinsicWidth) — its own aspect ratio,
+   * ignoring the 100% height above — specifically after being remounted
+   * with metadata already loaded (toggling Show All and back), while an
+   * initial mount below fresh metadata loaded fine. Forcing the item's own
+   * stretch removes the ambiguity outright rather than depending on when
+   * the metadata happens to arrive relative to layout.
+   */
+  align-self: stretch;
+  justify-self: stretch;
+}
+
+/*
+ * No visibility rule needed here, deliberately. `.player-wrap` is a single
+ * grid cell (`grid-template: minmax(0, 1fr) / minmax(0, 1fr)`) and its two
+ * possible children — the player (always exactly one root element for
+ * whichever state it's in: video, loading, error, empty) and the watermark
+ * overlay — both land in that one cell and stack in DOM order without any
+ * help. A `:not(:last-child)` rule used to live here to switch between the
+ * player's states, but the player never actually renders more than one
+ * state at a time, so the rule had nothing to do *except* catch the player
+ * itself the moment a watermark became its sibling — every "any not-last,
+ * not-watermark child" match *was* the player. That hid the whole picture
+ * behind an opaque watermark image rather than compositing it, and no
+ * amount of excluding `.watermark-overlay` from the selector could fix it,
+ * because the player was never the thing being protected — removing the
+ * rule entirely is the fix.
+ */
+
+.player-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  max-width: 56ch;
+  max-height: 100%;
+  /* The explanation is prose and can be longer than a short window: it scrolls
+     rather than being silently cut in half. */
+  overflow: auto;
+  padding: var(--space-6);
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+  text-align: center;
+}
+
+.player-empty h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font: var(--type-heading);
+}
+
+.player-empty p {
+  margin: 0;
+}
+
+/* ---- transport ---- */
+
+.transport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.transport-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+.transport .divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--space-2);
+  background: var(--border);
+}
+
+.time {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--text-primary);
+  font: var(--type-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.time .dim {
+  color: var(--text-tertiary);
+}
+
+.watching {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px;
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+.watching-label {
+  padding-left: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+/* ---- side panel ---- */
+
+.side {
+  grid-row: 1;
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+/*
+ * Placed explicitly (both axes) so they sit precisely at a grid-line
+ * boundary and never compete with .stage/.side/.timeline-stack for
+ * auto-placement — those three keep relying on implicit placement, and an
+ * explicitly-positioned item is always resolved independently of it.
+ */
+.main .side-resizer {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  /* No explicit height: a percentage height can't resolve against a
+     minmax(0, 1fr) row (the classic grid circularity gotcha), but the
+     default align-self: stretch sidesteps it and fills the row correctly —
+     exactly how .side, right next to it with no declared height, does. */
+  margin-left: -3px;
+}
+
+.main .timeline-resizer {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  align-self: start;
+  /* Same reasoning as .side-resizer, on the inline axis: no explicit width,
+     default justify-self: stretch fills the spanned columns correctly. */
+  margin-top: -3px;
+}
+
+.tabs,
+.timeline-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tab {
+  position: relative;
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--type-label);
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--motion-ease);
+}
+
+.tab:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tab[aria-selected='true'] {
+  border-bottom-color: var(--accent);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.panel {
+  flex: 1 1 auto;
+  min-height: 140px;
+  overflow-y: auto;
+}
+
+.panel-section {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.panel-section:last-child {
+  border-bottom: 0;
+}
+
+.panel-section h3 {
+  margin: 0 0 var(--space-3);
+  color: var(--text-primary);
+  font: var(--type-section);
+}
+
+.rows {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.row > label {
+  color: var(--text-secondary);
+  font: var(--type-label);
+}
+
+/* ---- clip list ---- */
+
+.clip-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.clip-item + .clip-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.clip-item:hover {
+  background: var(--surface-hover);
+}
+
+.clip-item[aria-selected='true'] {
+  border-left-color: var(--accent);
+  background: var(--surface-selected);
+}
+
+.clip-item.drag-over {
+  border-top: 2px solid var(--accent);
+}
+
+.clip-index {
+  padding-top: 2px;
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+  cursor: grab;
+}
+
+.clip-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: hidden;
+  color: var(--text-primary);
+  font: var(--type-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-times {
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+}
+
+.clip-actions {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.clip-item:hover .clip-actions,
+.clip-item:focus-within .clip-actions,
+.clip-item[aria-selected='true'] .clip-actions {
+  opacity: 1;
+}
+
+/* ---- timelines ---- */
+
+.timeline-stack {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--surface-raised);
+}
+
+.timeline,
+.clip-timeline {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-raised);
+}
+
+.timeline-head,
+.clip-timeline-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.timeline-head strong {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+.timeline-canvas-wrap {
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.timeline-canvas-wrap canvas {
+  display: block;
+  height: 104px;
+  cursor: crosshair;
+}
+
+.timeline-stack {
+  max-height: 42vh;
+  overflow-y: auto;
+}
+
+/* Showing every angle at once is a "look at the picture" mode; the timeline
+   gives up most of its height for the duration so the tiles are big enough to
+   judge. It is still there and still scrubbable. */
+.main.all-povs .timeline-stack {
+  max-height: 20vh;
+}
+
+.clip-ruler {
+  position: relative;
+  height: 18px;
+  margin: 0 var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.clip-tick {
+  position: absolute;
+  top: 0;
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+  transform: translateX(-50%);
+}
+
+.clip-lanes {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.clip-lane {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.lane-name {
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--type-caption);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.lane-name:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.lane-name:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.clip-lane.active .lane-name {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.lane-track {
+  position: relative;
+  height: 18px;
+  border-radius: var(--radius-small);
+  background: var(--surface-active);
+  overflow: hidden;
+}
+
+.lane-bar {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: var(--radius-small);
+  background: var(--data-clip);
+}
+
+.clip-lane.active .lane-bar {
+  background: var(--data-clip-selected);
+  box-shadow: inset 0 0 0 1px var(--data-clip-edge);
+}
+
+.lane-bar.sync_low_confidence {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--data-clip),
+    var(--data-clip) 5px,
+    var(--surface-active) 5px,
+    var(--surface-active) 10px
+  );
+}
+
+.lane-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.clip-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--data-playhead);
+  pointer-events: none;
+}
+
+/* ---- multi-POV grid ---- */
+
+/*
+ * One uniform grid — every angle, including the focused one, is the same
+ * size. Rows and columns both use `minmax(0, 1fr)` so the grid can never
+ * grow past the space it was given: the video never ends up bigger than the
+ * viewport no matter how many angles or how the window is resized.
+ */
+.pov-grid-equal {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-height: 0;
+  min-width: 0;
+  grid-auto-rows: minmax(0, 1fr);
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.pov-tile {
+  position: relative;
+  display: grid;
+  /* See the comment on .player-frame — same fix, same reason: an explicit
+     track a replaced element's aspect ratio cannot inflate. overflow:hidden
+     below only clips the symptom (a cropped, wrongly-proportioned video);
+     this is what keeps the video's own box correct in the first place. */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--stage);
+  cursor: pointer;
+}
+
+.pov-tile.is-leader {
+  /* The audio-owning angle is not a button — clicking a *different* tile is
+     what changes focus — but it still gets the same ring on hover as a
+     quiet reminder of which one it is. */
+  cursor: default;
+  box-shadow: inset 0 0 0 2px var(--accent-border);
+}
+
+.pov-tile:not(.is-leader):hover {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.pov-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* See the comment on .player-frame video — same hardware-overlay
+     compositing issue, same fix. */
+  transform: translateZ(0);
+  /* See the comment on .player-wrap video — same replaced-element sizing
+     issue, same fix. .pov-tile also uses place-items: center. */
+  align-self: stretch;
+  justify-self: stretch;
+}
+
+/* The leader's tile holds the real player (.player-wrap), not a bare
+   <video> — place-items: center does not stretch a flex child to fill its
+   cell, so this says explicitly to fill it, the same way .pov-tile video
+   does for a follower's plain <video>. */
+.pov-tile.is-leader > .player-wrap {
+  width: 100%;
+  height: 100%;
+}
+
+.pov-tile.dark {
+  background: var(--surface-sunken);
+}
+
+.pov-tile-note {
+  padding: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  text-align: center;
+}
+
+.pov-tile-name {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  max-width: calc(100% - 8px);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-small);
+  background: var(--scrim);
+  color: var(--text-on-accent);
+  font: var(--type-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.pov-tile-audio {
+  color: var(--accent-text);
+}
+
+/* ============================ pages ==================================== */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.page-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-4) var(--space-5);
+  overflow-y: auto;
+}
+
+.page-body.one {
+  display: grid;
+  gap: var(--space-5);
+  align-content: start;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.page-body.one section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-large);
+  background: var(--surface-raised);
+}
+
+.page-body.one h3 {
+  margin: 0;
+  font: var(--type-section);
+}
+
+.chip-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font: var(--type-caption);
+}
+
+/* ---- tables ---- */
+
+table.grid,
+table.matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--type-body-small);
+}
+
+table.grid th,
+table.matrix thead th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  letter-spacing: var(--tracking-caps);
+  text-align: left;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+table.grid td,
+table.matrix td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+
+table.grid tbody tr:last-child td,
+table.matrix tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+table.grid td.mono {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Only actual quantities are right-aligned. A path is text and reads from
+   the left like any other text. */
+table.grid td.num,
+table.grid th.num {
+  text-align: right;
+}
+
+table.matrix tr.dim td {
+  color: var(--text-tertiary);
+}
+
+/* ---- properties ---- */
+
+.model-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.model-facts dt {
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.model-facts dd {
+  margin: 2px 0 0;
+  color: var(--text-primary);
+  font: var(--type-body-small);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  margin-left: var(--space-1);
+  padding: 0 6px;
+  border-radius: var(--radius-small);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+  font: var(--type-caption);
+}
+
+.pov-matrix {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.matrix-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font: var(--type-label);
+}
+
+/* A coverage-status label — "Available", "Partial", … — not a bare dot. */
+.cover {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 17px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-small);
+  background: var(--neutral-subtle);
+  color: var(--neutral-text);
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+.cover.full {
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+
+.cover.partial {
+  background: var(--warning-subtle);
+  color: var(--warning-text);
+}
+
+.cover.none,
+.cover.unknown {
+  background: var(--neutral-subtle);
+  color: var(--text-tertiary);
+}
+
+.pct {
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+}
+
+.linkish {
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.linkish:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.linkish:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+/* ---- the model / tool cards in Settings ---- */
+
+.model {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+.model + .model {
+  margin-top: var(--space-3);
+}
+
+.model-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.model-name {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+/* ============================ queue dock =============================== */
+
+.queue {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  max-height: 34vh;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.queue-head h3 {
+  margin: 0;
+  font: var(--type-section);
+}
+
+.queue-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.job {
+  display: grid;
+  grid-template-columns: auto 200px minmax(160px, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  font: var(--type-body-small);
+}
+
+.job-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-msg {
+  margin-top: 3px;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.job-stat {
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+  white-space: nowrap;
+}
+
+/* Legacy progress bar markup, now drawing on the same tokens as ui-progress. */
+.bar {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-active);
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--motion-medium) var(--motion-ease);
+}
+
+.bar.ok > i {
+  background: var(--success);
+}
+
+.bar.err > i {
+  background: var(--danger);
+}
+
+/* ============================ toasts =================================== */
+
+.toasts {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-toast);
+  display: grid;
+  gap: var(--space-2);
+  width: 340px;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius-medium);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  animation: ui-toast-in var(--motion-medium) var(--motion-ease);
+}
+
+@keyframes ui-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast .icon {
+  margin-top: 2px;
+}
+
+.toast.success {
+  border-left-color: var(--success);
+}
+
+.toast.success .icon {
+  color: var(--success);
+}
+
+.toast.warning {
+  border-left-color: var(--warning);
+}
+
+.toast.warning .icon {
+  color: var(--warning);
+}
+
+.toast.error {
+  border-left-color: var(--danger);
+}
+
+.toast.error .icon {
+  color: var(--danger);
+}
+
+.toast.info {
+  border-left-color: var(--accent);
+}
+
+.toast.info .icon {
+  color: var(--accent);
+}
+
+.toast strong {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+.toast p {
+  grid-column: 2;
+  margin: 0;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+  overflow-wrap: anywhere;
+}
+
+/* ============================ streamers dialog ========================= */
+
+.streamer-list {
+  display: grid;
+  gap: var(--space-1);
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.add-streamer {
+  display: flex;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.streamer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  border-radius: var(--radius-medium);
+}
+
+.streamer-pick {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-medium);
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.streamer-pick:hover {
+  background: var(--surface-hover);
+}
+
+.streamer.active .streamer-pick {
+  background: var(--surface-selected);
+  color: var(--text-primary);
+}
+
+.streamer-name {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+.streamer-meta {
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.streamer-vods {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.vod {
+  display: grid;
+  grid-template-columns: 108px minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+.vod img {
+  width: 108px;
+  height: 61px;
+  border-radius: var(--radius-small);
+  object-fit: cover;
+}
+
+.vod-thumb-blank {
+  display: grid;
+  place-items: center;
+  width: 108px;
+  height: 61px;
+  border-radius: var(--radius-small);
+  background: var(--surface-active);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.vod-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font: var(--type-label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vod-meta {
+  display: flex;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+/* ============================ waveform sync ============================ */
+
+.wave-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.wave-lane {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.wave-name {
+  color: var(--text-secondary);
+  font: var(--type-label);
+}
+
+canvas.wave {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+canvas.wave.draggable {
+  cursor: ew-resize;
+}
+
+.wave-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.offset {
+  color: var(--text-primary);
+  font: var(--type-mono);
+}
+
+.match {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font: var(--type-caption);
+}
+
+.match.good {
+  color: var(--success-text);
+}
+
+.match.weak {
+  color: var(--warning-text);
+}
+
+.overlap-section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.overlap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.overlap-head h3 {
+  margin: 0;
+  font: var(--type-title);
+}
+
+.overlap-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.at-time {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.at-time label {
+  color: var(--text-secondary);
+  font: var(--type-label);
+}
+
+/* ============================ find in POVs ============================= */
+
+.moment-list {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.moment {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.moment:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.moment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.moment.current {
+  border-color: var(--accent-border);
+  background: var(--surface-selected);
+}
+
+.moment-name {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+/* ============================ guide / coach ============================ */
+
+.coach {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+  font: var(--type-body-small);
+}
+
+.coach ol {
+  display: flex;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.coach li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.coach .step,
+.guide-step .step {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font: var(--type-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.guide-steps {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.guide-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.guide-step h4 {
+  margin: 0 0 2px;
+  font: var(--type-label);
+}
+
+.guide-step p {
+  margin: 0;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+/* ============================ empty ==================================== */
+
+.empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-4);
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+  text-align: center;
+}
+
+.empty strong {
+  color: var(--text-primary);
+}
+
+/* ============================ player states ============================ */
+
+.player-frame {
+  position: relative;
+  display: grid;
+  /*
+   * One cell that is exactly this box's own size — see the identical
+   * comment on .player-wrap, which already had this and is why *it* never
+   * showed this bug. Without an explicit track, a grid's implicit track
+   * sizes to its content by default, and a <video> with a known intrinsic
+   * ratio can inflate that track past the frame's own fixed width/height
+   * below — measured live, growing to width * (intrinsicHeight /
+   * intrinsicWidth) regardless of the 100%/100% box it was supposed to be
+   * confined to, specifically once the video already had metadata by the
+   * time it was laid out (e.g. remounted by toggling Show All, rather than
+   * mounted fresh).
+   */
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  background: var(--stage);
+}
+
+.player-frame video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /*
+   * Forces the video onto a normal composited layer instead of a hardware
+   * overlay plane (DirectComposition, on Windows). Without this, a video
+   * decoded via hardware overlay can render fine on its own but go fully
+   * black — audio still playing — the moment anything else is stacked on
+   * top of it, because the overlay plane and ordinary DOM content are
+   * composited by two different paths that do not always agree on how to
+   * blend. The watermark is exactly that "anything else".
+   */
+  transform: translateZ(0);
+  /* See the comment on .player-wrap video — same replaced-element sizing
+     issue, same fix. .player-frame also uses place-items: center. */
+  align-self: stretch;
+  justify-self: stretch;
+}
+
+.player-loading {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-medium);
+  background: var(--scrim);
+  color: var(--text-on-accent);
+  font: var(--type-body-small);
+}
+
+/* ============================ responsive =============================== */
+
+/* 1280×720 — the tightest supported desktop. The side panel narrows rather
+   than squeezing an unusable column. */
+@media (max-width: 1500px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr) var(--side-width, 300px);
+  }
+}
+
+@media (max-width: 1180px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr) var(--side-width, 260px);
+  }
+
+  .meta {
+    display: none;
+  }
+}
+
+/* Narrower than any supported desktop. The side panel keeps giving up width —
+   it is the only thing on the page that can — and the picture keeps the rest.
+   Stacking the panel *under* the picture was tried and is worse: on a short
+   window it takes the whole vertical budget and the video collapses to
+   nothing, which is the one outcome this has to avoid. */
+@media (max-width: 1100px) {
+  /* The POV chips in the transport repeat the POV bar directly above them, and
+     wrapping them onto their own row costs ~37px of picture. The bar keeps
+     them. */
+  .transport .watching {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr) var(--side-width, 200px);
+  }
+
+  /* The wordmark is decoration and the project name has a tooltip; the page
+     nav and the settings on the right are controls. Decoration goes first so
+     nothing that can be clicked ends up off the edge of the window. */
+  .brand,
+  .topbar-divider {
+    display: none;
+  }
+
+  .project-name {
+    max-width: 120px;
+  }
+}
+
+@media (max-width: 720px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr) var(--side-width, 168px);
+  }
+
+  .project-name,
+  .topbar .ui-icon-button[aria-label^='Undo'],
+  .topbar .ui-icon-button[aria-label^='Redo'] {
+    display: none;
+  }
+}
+
+/* Above 1920 the working columns stop growing, and the extra width goes to
+   video. */
+@media (min-width: 1920px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr) var(--side-width, 380px);
+  }
+}
+
+/* ---- streamers dialog layout ------------------------------------------- */
+
+.streamers-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: var(--space-5);
+  min-height: 420px;
+}
+
+.streamers-layout .streamer-list {
+  gap: var(--space-2);
+}
+
+.add-streamer {
+  align-items: center;
+}
+
+.add-streamer .ui-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.vod-text {
+  min-width: 0;
+}
+
+@media (max-width: 1180px) {
+  .streamers-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- settings ---------------------------------------------------------- */
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  gap: var(--space-5);
+  min-height: 460px;
+}
+
+.settings-nav {
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-default);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-medium);
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--type-label);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.settings-nav-item:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.settings-nav-item.on {
+  background: var(--surface-selected);
+  color: var(--text-primary);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.settings-nav-item .icon {
+  color: var(--text-tertiary);
+}
+
+.settings-nav-item.on .icon {
+  color: var(--accent);
+}
+
+.settings-pane {
+  min-width: 0;
+}
+
+.settings-pane .ui-field-control {
+  max-width: 460px;
+}
+
+.settings-pane .panel-section {
+  padding: 0;
+  border-bottom: 0;
+}
+
+.settings-pane .panel-section + .panel-section {
+  margin-top: var(--space-5);
+}
+
+.log-view {
+  max-height: 220px;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: var(--type-mono-small);
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1180px) {
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    overflow-x: auto;
+  }
+}
+
+/* Export actions sit at the foot of the side panel, separated by a rule
+   rather than by a gap, so the scrolling list above stops clearly. */
+.side-actions {
+  flex: none;
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 0;
+}
+
+.side-actions .rows {
+  gap: var(--space-2);
+}
+
+.side-actions .rows > div {
+  flex-wrap: wrap;
+}
+
+.side-actions .ui-btn {
+  min-width: 0;
+}
+
+.side-actions .ui-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.page-notices {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5) 0;
+}
+
+/* ---- short screens ------------------------------------------------------
+   At 720p the fixed chrome — banner, source bar, POV cards, page header —
+   can leave a working pane with nothing in it. Below 820px of height the
+   application tightens its vertical rhythm rather than letting the content
+   area collapse. Nothing is hidden that carries information.              */
+
+@media (max-height: 820px) {
+  .topbar {
+    height: 40px;
+  }
+
+  .sourcebar,
+  .povbar {
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
+
+  .ui-page-header {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+
+  .ui-page-meta {
+    margin-top: var(--space-1);
+  }
+
+  .page-body {
+    padding-top: var(--space-3);
+    padding-bottom: var(--space-3);
+  }
+
+  .pov {
+    padding-top: var(--space-1);
+    padding-bottom: var(--space-1);
+  }
+
+  .coach {
+    display: none;
+  }
+
+  .queue {
+    max-height: 28vh;
+  }
+
+  /* 42vh of timeline on a 720px window leaves the picture a sliver. */
+  .timeline-stack {
+    max-height: 32vh;
+  }
+
+  .timeline-canvas-wrap canvas {
+    height: 72px;
+  }
+}
+
+/* Shorter than any supported desktop. The timeline keeps shrinking rather than
+   squeezing the picture out — it is still there, still scrubbable, just short.
+   The POV cards drop to one line for the same reason: at this height every row
+   of chrome is a row the picture does not get. */
+@media (max-height: 700px) {
+  .pov .pov-meta {
+    display: none;
+  }
+}
+
+@media (max-height: 600px) {
+  .timeline-stack {
+    max-height: 26vh;
+  }
+
+  .timeline-canvas-wrap canvas {
+    height: 48px;
+  }
+
+  .queue {
+    max-height: 22vh;
+  }
+}
+
+/* ---- watermark ---------------------------------------------------------- */
+
+.watermark-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: var(--space-5);
+}
+
+/* Inside the dialog the labels are short and the controls are wide, so the
+   stacked form reads better than the two-column one used elsewhere. */
+.watermark-controls .ui-field.is-row {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.watermark-controls .ui-slider {
+  flex-wrap: wrap;
+}
+
+.watermark-controls .ui-slider input[type='range'] {
+  flex: 1;
+  min-width: 120px;
+  width: auto !important;
+}
+
+/* A 16:9 stand-in for the frame. Everything the editor produces is a fraction
+   of this, never a pixel count, so the same numbers hold at any resolution. */
+.watermark-stage {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background:
+    repeating-conic-gradient(var(--surface-active) 0% 25%, var(--surface) 0% 50%) 0 0 / 24px 24px;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.watermark-frame-note {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  pointer-events: none;
+}
+
+.watermark-box {
+  position: absolute;
+  cursor: move;
+  outline: 1px dashed var(--accent);
+  transform-origin: center;
+}
+
+.watermark-box:focus-visible {
+  outline: 2px solid var(--focus-ring);
+}
+
+.watermark-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.watermark-handle {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--surface-raised);
+  border-radius: var(--radius-small);
+  background: var(--accent);
+  cursor: nwse-resize;
+}
+
+.watermark-controls {
+  min-width: 0;
+}
+
+/* The live preview over the player. Never interactive — the editor is where
+   it is positioned; this only shows where it will land. */
+.watermark-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.watermark-overlay img {
+  position: absolute;
+  object-fit: fill;
+  /* Explicitly its own composited layer too, so there is no ambiguity about
+     how it blends with the video layer beneath it — see the comment on
+     .player-frame video. */
+  transform: translateZ(0);
+}
+
+@media (max-width: 1180px) {
+  .watermark-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- who else was live -------------------------------------------------- */
+
+.stream-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.stream-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+}
+
+.stream-name {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+.stream-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+/* ---- editor: the combined sequence ---- */
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface-raised);
+}
+
+.segmented-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-secondary);
+  font: var(--type-caption);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.segmented-item:hover:not(.on) {
+  color: var(--text-primary);
+}
+
+.segmented-item.on {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: var(--weight-semibold);
+}
+
+/* ---- editor: the multi-track timeline ---- */
+
+.timeline-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--surface-raised);
+}
+
+.timeline-editor-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.timeline-empty-hint {
+  position: absolute;
+  top: var(--space-2);
+  left: 176px;
+  z-index: 4;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-medium);
+  background: var(--surface-raised);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  pointer-events: none;
+}
+
+.timeline-ruler {
+  height: 22px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.timeline-track-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-track-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.timeline-track-header {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  flex: 0 0 160px;
+  align-items: center;
+  gap: 2px;
+  width: 160px;
+  padding: 0 var(--space-2);
+  border-right: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font: var(--type-caption);
+}
+
+.timeline-track-lane {
+  position: relative;
+  flex: 1;
+  min-width: 400px;
+  background: var(--surface);
+}
+
+.titem {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-small);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+  transition: border-color var(--motion-fast) var(--motion-ease);
+}
+
+.titem.on {
+  border-color: var(--accent);
+}
+
+.titem-trim {
+  flex: 0 0 6px;
+  cursor: ew-resize;
+  background: transparent;
+}
+
+.titem-trim:hover {
+  background: var(--accent-subtle);
+}
+
+.titem-body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  min-width: 0;
+  padding: 2px var(--space-2);
+  color: var(--text-primary);
+  font: var(--type-caption);
+  background: linear-gradient(180deg, rgba(8, 8, 12, 0.1), rgba(8, 8, 12, 0.6));
+  pointer-events: none;
+}
+
+.titem-title {
+  font-weight: 600;
+}
+
+.titem-time {
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.titem-visual {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.titem-filmstrip {
+  display: flex;
+  height: 100%;
+}
+
+.titem-filmstrip img {
+  flex: 1 1 0;
+  height: 100%;
+  min-width: 0;
+  object-fit: cover;
+  opacity: 0.85;
+}
+
+.titem-waveform {
+  width: 100%;
+  height: 100%;
+  fill: var(--accent-subtle);
+  opacity: 0.8;
+}
+
+/* ---- editor: dedicated page ---- */
+
+.editor-page {
+  padding: var(--space-3);
+  gap: var(--space-3);
+}
+
+.editor-top {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: var(--space-3);
+}
+
+.editor-viewport {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.editor-viewport .player-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-library {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 340px;
+  min-height: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-large);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.editor-sidebar-tabs {
+  flex: none;
+  padding: var(--space-2) var(--space-2) 0;
+}
+
+.editor-sidebar-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-2);
+  overflow: hidden;
+}
+
+.editor-sidebar-body > * {
+  height: 100%;
+}
+
+.editor-timeline-area {
+  flex: 0 0 340px;
+  min-height: 220px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-large);
+  overflow: hidden;
+}
+
+.editor-player-transform {
+  width: 100%;
+  height: 100%;
+  transition: transform var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
+}
+
+/* ---- editor: media library ---- */
+
+.media-library {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.media-library-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.media-library-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.media-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-small);
+  color: var(--text-tertiary);
+  cursor: grab;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+.media-card:hover {
+  background: var(--surface-hover);
+}
+
+.media-card.used {
+  opacity: 0.6;
+}
+
+.media-card-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.media-card-name {
+  color: var(--text-primary);
+  font: var(--type-label);
+}
+
+.media-card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+/* ---- editor: inspector ---- */
+
+.inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.inspector-section:last-child {
+  border-bottom: none;
+}
+
+.inspector-section h4 {
+  margin: 0;
+  font: var(--type-label);
+  color: var(--text-secondary);
+}
+
+.inspector-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inspector-markers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inspector-marker {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inspector-marker-jump {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.inspector-marker-jump:hover {
+  background: var(--surface-hover);
+}
+
+.inspector-marker-name {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: var(--type-caption);
+}
+
+.inspector-marker-name:focus {
+  outline: 1px solid var(--accent);
+  border-radius: var(--radius-small);
+}
+
+.inspector-note {
+  width: 100%;
+  min-height: 64px;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: var(--type-caption);
+  resize: vertical;
+}

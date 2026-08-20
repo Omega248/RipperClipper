@@ -1,0 +1,19 @@
+node_modules/
+out/
+dist/
+release/
+.vite/
+*.log
+.tmp/
+tests/.artifacts/
+.DS_Store
+
+# Tools fetched by `npm run tools` — downloaded, never committed.
+resources/bin/*
+!resources/bin/README.md
+
+# TypeScript incremental build cache.
+*.tsbuildinfo
+
+# Transfer/archive scratch — not source.
+.xfer/

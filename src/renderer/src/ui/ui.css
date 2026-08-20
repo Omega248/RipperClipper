@@ -1,0 +1,1099 @@
+/* ---------------------------------------------------------------------------
+   The design system's components.
+
+   Every control the application uses is defined once, here, in terms of the
+   tokens. No page stylesheet may restyle a `.ui-*` class: if a control needs
+   to look different somewhere, that is either a new variant defined here or a
+   sign the wrong control was chosen.
+--------------------------------------------------------------------------- */
+
+/* ============================ icons ==================================== */
+
+.icon {
+  flex: none;
+  display: block;
+}
+
+.icon-spin {
+  animation: ui-spin 0.7s linear infinite;
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================ buttons ================================== */
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: var(--control-default);
+  padding: var(--control-padding-md);
+  border: 1px solid transparent;
+  border-radius: var(--radius-medium);
+  background: transparent;
+  color: var(--text-primary);
+  font: var(--type-label);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.ui-btn-compact {
+  height: var(--control-compact);
+  padding: var(--control-padding-sm);
+  font: var(--type-caption);
+  gap: var(--space-1);
+}
+
+.ui-btn-large {
+  height: var(--control-large);
+  padding: var(--control-padding-lg);
+  font: var(--type-body);
+}
+
+.ui-btn.is-block {
+  width: 100%;
+}
+
+.ui-btn.is-icon-only {
+  width: var(--control-default);
+  padding: 0;
+}
+
+.ui-btn.is-icon-only.ui-btn-compact {
+  width: var(--control-compact);
+}
+
+.ui-btn.is-icon-only.ui-btn-large {
+  width: var(--control-large);
+}
+
+.ui-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-shadow);
+}
+
+/* secondary — the default weight for supporting actions */
+.ui-btn-secondary {
+  background: var(--surface-raised);
+  border-color: var(--border);
+}
+
+.ui-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.ui-btn-secondary:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+/* primary — one per region */
+.ui-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.ui-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.ui-btn-primary:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+}
+
+/* ghost — recedes until wanted */
+.ui-btn-ghost {
+  color: var(--text-secondary);
+}
+
+.ui-btn-ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.ui-btn-ghost:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+/* danger — never styled as primary, so it cannot be pressed by momentum */
+.ui-btn-danger {
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.ui-btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--text-on-accent);
+}
+
+/* toggled on */
+.ui-btn.is-selected {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+}
+
+.ui-btn-primary.is-selected {
+  background: var(--accent-active);
+  color: var(--text-on-accent);
+}
+
+.ui-btn.is-loading {
+  cursor: progress;
+}
+
+/* ============================ tooltips ================================= */
+
+.ui-tooltip-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.ui-tooltip {
+  position: absolute;
+  left: 50%;
+  z-index: var(--z-overlay);
+  max-width: 260px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font: var(--type-caption);
+  white-space: normal;
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: ui-fade var(--motion-fast) var(--motion-ease);
+}
+
+.ui-tooltip-top {
+  bottom: calc(100% + var(--space-1));
+}
+
+.ui-tooltip-bottom {
+  top: calc(100% + var(--space-1));
+}
+
+@keyframes ui-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ============================ select + menu ============================ */
+
+.ui-select {
+  position: relative;
+  display: inline-flex;
+}
+
+.ui-select.is-block {
+  display: flex;
+  width: 100%;
+}
+
+.ui-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  min-width: 0;
+  height: var(--control-default);
+  padding: var(--control-padding-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font: var(--type-body-small);
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--motion-ease);
+}
+
+.ui-select-compact .ui-select-trigger {
+  height: var(--control-compact);
+  padding: var(--control-padding-sm);
+  font: var(--type-caption);
+}
+
+.ui-select-trigger:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.ui-select-trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-shadow);
+}
+
+.ui-select-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-select-trigger .icon {
+  color: var(--text-tertiary);
+}
+
+.ui-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-menu {
+  min-width: 100%;
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  list-style: none;
+  outline: none;
+}
+
+.ui-select-menu {
+  max-height: 320px;
+  min-width: 200px;
+  overflow-y: auto;
+  animation: ui-pop var(--motion-fast) var(--motion-ease);
+}
+
+/*
+ * Positioned `fixed` from the trigger's own rect (computed in Select.tsx),
+ * not `absolute` inside `.ui-select`. Several places this control is used
+ * sit inside a panel that clips overflow for an unrelated reason (the video
+ * stage, the top bar) — an `absolute` popup would be cut off by that
+ * ancestor's box no matter its z-index, since z-index only wins within the
+ * area the ancestor lets its children paint in. `position: fixed` escapes
+ * that clip the same way `ui-menu-pop.is-floating` already does.
+ */
+.ui-select-menu.is-floating {
+  position: fixed;
+  z-index: var(--z-dropdown);
+}
+
+@keyframes ui-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+.ui-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-primary);
+  font: var(--type-body-small);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-menu-item.is-active {
+  background: var(--surface-hover);
+}
+
+.ui-menu-item.is-selected {
+  color: var(--accent-text);
+}
+
+.ui-menu-item.is-danger {
+  color: var(--danger-text);
+}
+
+.ui-menu-item.is-disabled,
+.ui-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ui-menu-check {
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+  width: 16px;
+  color: var(--accent);
+}
+
+.ui-menu-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ui-menu-hint {
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.ui-menu-shortcut {
+  color: var(--text-tertiary);
+  font: var(--type-mono-small);
+}
+
+.ui-menu-group {
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ui-menu-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.ui-menu-pop {
+  min-width: 200px;
+  animation: ui-pop var(--motion-fast) var(--motion-ease);
+}
+
+/*
+ * Always fixed-positioned from the trigger's own rect (Menu.tsx) rather than
+ * absolute inside `.ui-menu-root`, so a menu opened from inside a panel that
+ * clips overflow for an unrelated reason (the top bar, the video stage) is
+ * never cut off along with it. See the long comment in Menu.tsx.
+ */
+.ui-menu-pop.is-floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+}
+
+/* The right-click menu sits above ordinary dropdowns, same as before. */
+.ui-menu-pop.is-context {
+  z-index: var(--z-overlay);
+}
+
+/* ============================ dialogs ================================== */
+
+.ui-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: grid;
+  place-items: center;
+  padding: var(--space-5);
+  background: var(--scrim);
+  animation: ui-fade var(--motion-medium) var(--motion-ease);
+}
+
+.ui-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(88vh, 900px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-large);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+  animation: ui-rise var(--motion-medium) var(--motion-ease);
+}
+
+.ui-dialog.is-small {
+  max-width: 440px;
+}
+
+.ui-dialog.is-medium {
+  max-width: 720px;
+}
+
+.ui-dialog.is-large {
+  max-width: 1080px;
+}
+
+@keyframes ui-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+}
+
+.ui-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ui-dialog-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-dialog-heading h2 {
+  margin: 0;
+  font: var(--type-title);
+}
+
+.ui-dialog-heading p {
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+.ui-dialog-body {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-5);
+  overflow-y: auto;
+}
+
+.ui-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ============================ inputs =================================== */
+
+.ui-input {
+  width: 100%;
+  height: var(--control-default);
+  padding: var(--control-padding-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  color: var(--text-primary);
+  font: var(--type-body-small);
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.ui-input-compact {
+  height: var(--control-compact);
+  padding: var(--control-padding-sm);
+  font: var(--type-caption);
+}
+
+.ui-input.is-mono {
+  font: var(--type-mono);
+}
+
+.ui-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.ui-input:hover:not(:disabled):not([readonly]) {
+  border-color: var(--border-strong);
+}
+
+.ui-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+.ui-input[readonly] {
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+}
+
+.ui-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-input.is-invalid {
+  border-color: var(--danger);
+}
+
+.ui-input.is-invalid:focus {
+  box-shadow: 0 0 0 3px var(--danger-subtle);
+}
+
+.ui-field {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.ui-field.is-row {
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ui-field-label {
+  color: var(--text-secondary);
+  font: var(--type-label);
+}
+
+.ui-field-control {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.ui-field-hint {
+  margin: 0;
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.ui-field-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--danger-text);
+  font: var(--type-caption);
+}
+
+.ui-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font: var(--type-body-small);
+  cursor: pointer;
+}
+
+.ui-checkbox.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-checkbox input[type='checkbox'],
+input[type='checkbox'],
+input[type='radio'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type='range'] {
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ui-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font: var(--type-caption);
+}
+
+.ui-slider-value {
+  min-width: 42px;
+  color: var(--text-primary);
+  font: var(--type-mono-small);
+  text-align: right;
+}
+
+/* timecode field */
+.ui-time {
+  display: inline-grid;
+  gap: 2px;
+}
+
+.ui-time-input {
+  letter-spacing: 0.02em;
+}
+
+.ui-time-format {
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  letter-spacing: var(--tracking-wide);
+}
+
+.ui-time.is-invalid .ui-time-input {
+  border-color: var(--danger);
+}
+
+/* search */
+.ui-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 180px;
+}
+
+.ui-search > .icon {
+  position: absolute;
+  left: var(--space-2);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.ui-search .ui-input {
+  padding-left: 30px;
+  padding-right: 28px;
+}
+
+.ui-search .ui-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.ui-search-clear {
+  position: absolute;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.ui-search-clear:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+/* ============================ status =================================== */
+
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 20px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--neutral-border);
+  border-radius: var(--radius-pill);
+  background: var(--neutral-subtle);
+  color: var(--neutral-text);
+  font: var(--type-caption);
+  white-space: nowrap;
+}
+
+.ui-badge.is-info {
+  border-color: var(--info-border);
+  background: var(--info-subtle);
+  color: var(--info-text);
+}
+
+.ui-badge.is-accent {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.ui-badge.is-success {
+  border-color: var(--success-border);
+  background: var(--success-subtle);
+  color: var(--success-text);
+}
+
+.ui-badge.is-warning {
+  border-color: var(--warning-border);
+  background: var(--warning-subtle);
+  color: var(--warning-text);
+}
+
+.ui-badge.is-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-subtle);
+  color: var(--danger-text);
+}
+
+.ui-badge-glyph {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.ui-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--neutral-text);
+}
+
+.ui-dot.is-info,
+.ui-dot.is-accent {
+  background: var(--accent);
+}
+
+.ui-dot.is-success {
+  background: var(--success);
+}
+
+.ui-dot.is-warning {
+  background: var(--warning);
+}
+
+.ui-dot.is-danger {
+  background: var(--danger);
+}
+
+.ui-dot.is-busy {
+  animation: ui-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes ui-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ui-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ============================ feedback ================================= */
+
+.ui-progress {
+  position: relative;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-active);
+  overflow: hidden;
+}
+
+.ui-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--motion-medium) var(--motion-ease);
+}
+
+.ui-progress.is-success > span {
+  background: var(--success);
+}
+
+.ui-progress.is-danger > span {
+  background: var(--danger);
+}
+
+.ui-progress.is-indeterminate > span {
+  width: 35%;
+  animation: ui-slide 1.2s var(--motion-ease) infinite;
+}
+
+@keyframes ui-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+.ui-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+.ui-skeleton {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.ui-skeleton > span {
+  height: 12px;
+  border-radius: var(--radius-small);
+  background: linear-gradient(
+    90deg,
+    var(--surface-hover) 25%,
+    var(--surface-active) 50%,
+    var(--surface-hover) 75%
+  );
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s linear infinite;
+}
+
+.ui-skeleton > span:last-child {
+  width: 60%;
+}
+
+@keyframes ui-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.ui-empty,
+.ui-error-state {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-5);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.ui-empty > .icon,
+.ui-error-state > .icon {
+  color: var(--text-tertiary);
+}
+
+.ui-error-state > .icon {
+  color: var(--warning);
+}
+
+.ui-empty h3,
+.ui-error-state h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font: var(--type-title);
+}
+
+.ui-empty p,
+.ui-error-state p {
+  max-width: 46ch;
+  margin: 0;
+  font: var(--type-body-small);
+}
+
+.ui-error-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.ui-details {
+  width: 100%;
+  max-width: 60ch;
+  margin-top: var(--space-2);
+  text-align: left;
+}
+
+.ui-details summary {
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+  cursor: pointer;
+}
+
+.ui-details summary:hover {
+  color: var(--text-primary);
+}
+
+.ui-details pre {
+  max-height: 220px;
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: var(--type-mono-small);
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.ui-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-medium);
+  background: var(--info-subtle);
+  color: var(--text-primary);
+  font: var(--type-body-small);
+}
+
+.ui-notice > .icon {
+  margin-top: 1px;
+  color: var(--info-text);
+}
+
+.ui-notice.is-warning {
+  border-color: var(--warning-border);
+  background: var(--warning-subtle);
+}
+
+.ui-notice.is-warning > .icon {
+  color: var(--warning-text);
+}
+
+.ui-notice.is-danger {
+  border-color: var(--danger-border);
+  background: var(--danger-subtle);
+}
+
+.ui-notice.is-danger > .icon {
+  color: var(--danger-text);
+}
+
+.ui-notice.is-success {
+  border-color: var(--success-border);
+  background: var(--success-subtle);
+}
+
+.ui-notice.is-success > .icon {
+  color: var(--success-text);
+}
+
+.ui-notice-body {
+  display: grid;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-notice-body strong {
+  font: var(--type-label);
+}
+
+.ui-notice-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* ============================ page structure =========================== */
+
+.ui-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ui-page-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-page-heading h1 {
+  margin: 0;
+  font: var(--type-heading);
+  letter-spacing: -0.01em;
+}
+
+.ui-page-heading p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+.ui-page-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--text-tertiary);
+  font: var(--type-caption);
+}
+
+.ui-page-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.ui-section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.ui-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.ui-section-head h2 {
+  margin: 0;
+  font: var(--type-section);
+}
+
+.ui-section-head p {
+  margin: 2px 0 0;
+  color: var(--text-secondary);
+  font: var(--type-body-small);
+}
+
+.ui-section-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+
+/* ---- resizer: a drag handle between two panels ------------------------ */
+
+.ui-resizer {
+  flex: none;
+  position: relative;
+  z-index: var(--z-sticky);
+}
+
+.ui-resizer.horizontal {
+  width: 5px;
+  /* A block element's height does not default-fill its container the way
+     width does — without this it collapses to 0 and the handle is
+     undraggable, since its only content is an absolutely-positioned
+     (and therefore height-contributing-nothing) ::after. */
+  height: 100%;
+  margin: 0 -2px;
+  cursor: col-resize;
+}
+
+.ui-resizer.vertical {
+  width: 100%;
+  height: 5px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+
+.ui-resizer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  transition: background var(--motion-fast) var(--motion-ease);
+}
+
+.ui-resizer:hover::after,
+.ui-resizer:active::after {
+  background: var(--accent);
+}
