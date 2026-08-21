@@ -4,6 +4,7 @@ import {
   formatDuration,
   formatTimecode,
   mergeRanges,
+  nearestWithin,
   parseTimecode,
   toFfmpegTime,
   validateRange
@@ -109,5 +110,24 @@ describe('mergeRanges', () => {
       { startSeconds: 100, endSeconds: 110 }
     ])
     expect(merged).toHaveLength(2)
+  })
+})
+
+describe('nearestWithin', () => {
+  it('picks the closest candidate', () => {
+    expect(nearestWithin(10, [2, 9, 15, 30], 10)).toBe(9)
+  })
+
+  it('ignores candidates outside the tolerance', () => {
+    expect(nearestWithin(10, [50, 100], 10)).toBeNull()
+  })
+
+  it('returns null with no candidates', () => {
+    expect(nearestWithin(10, [], 10)).toBeNull()
+  })
+
+  it('is exact-boundary inclusive', () => {
+    expect(nearestWithin(10, [20], 10)).toBe(20)
+    expect(nearestWithin(10, [20.01], 10)).toBeNull()
   })
 })

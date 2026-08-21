@@ -47,6 +47,21 @@ export interface PeaksReply {
   rms: number[]
 }
 
+export interface SceneChangesQuery {
+  source: VodSource
+  startSeconds: number
+  endSeconds: number
+  /** 0..1 — how different a frame must look from the last to count as a cut. Default 0.35. */
+  threshold?: number
+}
+
+export interface SceneChangesReply {
+  startSeconds: number
+  endSeconds: number
+  /** Source-local seconds, sorted, where the picture changed enough to look like a cut. */
+  times: number[]
+}
+
 export interface FilmstripQuery {
   source: VodSource
   startSeconds: number
@@ -242,6 +257,7 @@ export const IPC = {
 
   // waveform
   audioPeaks: 'audio:peaks',
+  sceneChanges: 'media:scene-changes',
   filmstrip: 'media:filmstrip',
 
   // dependency installer
@@ -440,6 +456,8 @@ export interface RendererApi {
 
   /** Peaks for a window of one POV's audio, for the manual-sync waveform. */
   audioPeaks(req: PeaksQuery): Promise<PeaksReply>
+  /** Where the picture actually cuts within a window — suggests clip in/out points. */
+  sceneChanges(req: SceneChangesQuery): Promise<SceneChangesReply>
   /** Evenly spaced frames across a window of one POV's video, for the Editor's filmstrip. */
   filmstrip(req: FilmstripQuery): Promise<FilmstripReply>
 

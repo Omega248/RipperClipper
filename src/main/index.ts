@@ -12,6 +12,7 @@ import { ResolverService } from './media/resolver.js'
 import { RangeFetcher } from './media/rangeFetcher.js'
 import { Exporter } from './media/exporter.js'
 import { AudioPeaksService } from './media/audioPeaks.js'
+import { SceneDetectionService } from './media/sceneDetection.js'
 import { ThumbnailService } from './media/thumbnails.js'
 import { ConcurrencyLimiter } from './services/limiter.js'
 import { PreviewMediaService } from './media/previewMedia.js'
@@ -39,6 +40,8 @@ import type {
   EnvInfo,
   PeaksQuery,
   PeaksReply,
+  SceneChangesQuery,
+  SceneChangesReply,
   FilmstripQuery,
   FilmstripReply,
   PreviewMediaRequest,
@@ -117,11 +120,13 @@ const fetcher = new RangeFetcher(log, ffmpeg, cache, tempRoot)
 const exporter = new Exporter(log, ffmpeg, fetcher)
 const queue = new ExportQueue(log, exporter, join(tempRoot, 'jobs'))
 const peaks = new AudioPeaksService(log, ffmpeg, fetcher)
+const scenes = new SceneDetectionService(log, ffmpeg, fetcher)
 const thumbs = new ThumbnailService(log, ffmpeg, fetcher)
 // Filmstrips and waveforms survive a restart, keyed by source + range, so
 // the Editor never re-runs ffmpeg for a clip it has already drawn once.
 const thumbCache = new CacheManager(log, join(userData, 'cache', 'thumbnails'), 300 * 1024 * 1024)
 const waveCache = new CacheManager(log, join(userData, 'cache', 'waveforms'), 100 * 1024 * 1024)
+const sceneCache = new CacheManager(log, join(userData, 'cache', 'scenes'), 20 * 1024 * 1024)
 // A burst of timeline items mounting at once must not spawn a burst of
 // ffmpeg processes — two at a time keeps the Editor responsive without
 // fighting the rest of the machine for CPU.
@@ -592,6 +597,31 @@ function registerIpc(): void {
       peaks.peaks({ stream, startSeconds, endSeconds, buckets, workDir: join(tempRoot, 'waveform') })
     )
     await waveCache.putJson(key, result)
+    return result
+  })
+
+  handle(IPC.sceneChanges, async (req: SceneChangesQuery) => {
+    const startSeconds = Math.max(0, req.startSeconds)
+    const endSeconds = Math.min(req.source.durationSeconds, req.endSeconds)
+    const threshold = Math.max(0.05, Math.min(1, req.threshold ?? 0.35))
+    const key = sceneCache.keyFor(
+      `${req.source.id}:${startSeconds.toFixed(2)}:${endSeconds.toFixed(2)}:${threshold}`
+    )
+    const cached = await sceneCache.getJson<SceneChangesReply>(key)
+    if (cached) return cached
+
+    const formats = req.source.formats?.length
+      ? req.source.formats
+      : await sources.inspectFormats(req.source)
+    const selected = selectStreams(formats, 'best')
+    const stream = selected.video
+    if (!stream) {
+      throw Errors.qualityUnavailable('any video stream', `${req.source.title} exposes no video`)
+    }
+    const result = await mediaWorkLimiter.run(() =>
+      scenes.detect({ stream, startSeconds, endSeconds, threshold, workDir: join(tempRoot, 'scenes') })
+    )
+    await sceneCache.putJson(key, result)
     return result
   })
 

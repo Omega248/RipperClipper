@@ -52,6 +52,11 @@ export interface KeyframeInfo {
   times: number[]
 }
 
+export interface SceneChangeInfo {
+  /** Sorted timestamps (seconds) where the picture changed enough to look like a cut. */
+  times: number[]
+}
+
 export class FfmpegService {
   private info: FfmpegInfo = {
     available: false,
@@ -206,6 +211,55 @@ export class FfmpegService {
       .map((f) => Number(f.pts_time))
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b)
+    return { times }
+  }
+
+  /**
+   * Timestamps where the picture actually changes — a cut to a different
+   * camera, a scene transition — rather than just gameplay motion. FFmpeg's
+   * own `scene` metric (0..1, how different this frame is from the last)
+   * does the comparison; anything over `threshold` is reported. Used to
+   * suggest clip in/out points, not to decide anything on its own.
+   *
+   * There is no structured-output form of this (unlike `keyframes`, which
+   * ffprobe can report as JSON) — `select`+`showinfo` only ever announces a
+   * match through its own log line, so this is the one place in the service
+   * that reads `stderr` text instead of parsing JSON, and needs its own
+   * `-loglevel` (the shared `exec()` helper hides info-level logs, which is
+   * exactly where `showinfo` writes).
+   */
+  async sceneChanges(
+    file: string,
+    fromSeconds = 0,
+    windowSeconds = 30,
+    threshold = 0.35
+  ): Promise<SceneChangeInfo> {
+    const { ffmpeg } = this.require()
+    const args = [
+      '-hide_banner',
+      '-nostdin',
+      '-loglevel',
+      'info',
+      '-ss',
+      fromSeconds.toFixed(3),
+      '-i',
+      file,
+      '-t',
+      windowSeconds.toFixed(3),
+      '-vf',
+      `select='gt(scene,${threshold})',showinfo`,
+      '-an',
+      '-f',
+      'null',
+      '-'
+    ]
+    const result = await runChecked(ffmpeg, args, { idleTimeoutMs: 120_000 })
+    const times: number[] = []
+    for (const match of result.stderr.matchAll(/pts_time:\s*([\d.]+)/g)) {
+      const t = fromSeconds + Number(match[1])
+      if (Number.isFinite(t)) times.push(t)
+    }
+    times.sort((a, b) => a - b)
     return { times }
   }
 

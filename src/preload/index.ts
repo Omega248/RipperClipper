@@ -61,6 +61,7 @@ const api: RendererApi = {
   restoreBackup: (path) => invoke(IPC.projectBackupRestore, path),
 
   audioPeaks: (req) => invoke(IPC.audioPeaks, req),
+  sceneChanges: (req) => invoke(IPC.sceneChanges, req),
   filmstrip: (req) => invoke(IPC.filmstrip, req),
   importWatermarkImage: () => invoke(IPC.watermarkImport),
   listWatermarkImages: () => invoke(IPC.watermarkList),

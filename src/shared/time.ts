@@ -135,6 +135,24 @@ export function clampRange(
   return { startSeconds: roundMs(start), endSeconds: roundMs(end) }
 }
 
+/** The closest candidate to `target` within `toleranceSeconds`, or null if none qualify. */
+export function nearestWithin(
+  target: number,
+  candidates: number[],
+  toleranceSeconds: number
+): number | null {
+  let best: number | null = null
+  let bestDistance = Infinity
+  for (const candidate of candidates) {
+    const distance = Math.abs(candidate - target)
+    if (distance <= toleranceSeconds && distance < bestDistance) {
+      best = candidate
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
 /** Merge overlapping/adjacent ranges — used to avoid downloading the same media twice. */
 export function mergeRanges(
   ranges: Array<{ startSeconds: number; endSeconds: number }>,

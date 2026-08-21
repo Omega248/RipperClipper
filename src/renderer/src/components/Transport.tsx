@@ -1,9 +1,13 @@
-import { formatTimecode } from '@shared/time'
+import { formatTimecode, nearestWithin } from '@shared/time'
 import { useActiveClips, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
 import { povLabel } from './PovBar.js'
-import { useEffect, useRef } from 'react'
+import { message, title } from './QualityPanel.js'
+import { useEffect, useRef, useState } from 'react'
 import { Button, IconButton, Select, Slider } from '../ui/index.js'
+
+/** How far around the playhead to look for a detected cut. */
+const SCENE_SNAP_WINDOW_SECONDS = 15
 
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map((r) => ({
   value: String(r),
@@ -45,6 +49,40 @@ export default function Transport(): JSX.Element {
   const sources = useStore((s) => s.project?.sources)
   const activeSourceId = useStore((s) => s.activeSourceId)
   const setActiveSource = useStore((s) => s.setActiveSource)
+  const toast = useStore((s) => s.toast)
+  const [sceneSnapping, setSceneSnapping] = useState<'in' | 'out' | null>(null)
+
+  /**
+   * Marks in/out at the nearest detected scene change to the playhead,
+   * instead of the playhead itself — a real ffmpeg scan of a small window
+   * around it, not instant like the plain Mark in/out buttons.
+   */
+  const markSnapped = async (edge: 'in' | 'out'): Promise<void> => {
+    const state = useStore.getState()
+    const source = state.project?.sources.find((s) => s.id === state.activeSourceId)
+    if (!source) return
+    setSceneSnapping(edge)
+    try {
+      const startSeconds = Math.max(0, state.currentTime - SCENE_SNAP_WINDOW_SECONDS)
+      const endSeconds = Math.min(source.durationSeconds, state.currentTime + SCENE_SNAP_WINDOW_SECONDS)
+      const result = await window.api.sceneChanges({ source, startSeconds, endSeconds })
+      const snapped = nearestWithin(state.currentTime, result.times, SCENE_SNAP_WINDOW_SECONDS)
+      const target = snapped ?? state.currentTime
+      if (edge === 'in') state.setInPoint(target)
+      else state.setOutPoint(target)
+      if (snapped === null) {
+        toast({
+          kind: 'info',
+          title: 'No clear cut nearby',
+          message: `Marked at the playhead instead — no scene change found within ${SCENE_SNAP_WINDOW_SECONDS}s.`
+        })
+      }
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not detect scene changes'), message: message(err) })
+    } finally {
+      setSceneSnapping(null)
+    }
+  }
 
   const selected = clips.find((c) => c.id === selectedClipId) ?? null
   const loopRange = selected
@@ -158,6 +196,12 @@ export default function Transport(): JSX.Element {
           <span className="time dim">{formatTimecode(inPoint, { millis: false })}</span>
         )}
       </Button>
+      <IconButton
+        icon="target"
+        label="Mark in at the nearest detected scene change, not the exact playhead"
+        disabled={!hasSource || sceneSnapping !== null}
+        onClick={() => void markSnapped('in')}
+      />
       <Button
         icon="mark-out"
         selected={outPoint !== null}
@@ -170,6 +214,12 @@ export default function Transport(): JSX.Element {
           <span className="time dim">{formatTimecode(outPoint, { millis: false })}</span>
         )}
       </Button>
+      <IconButton
+        icon="target"
+        label="Mark out at the nearest detected scene change, not the exact playhead"
+        disabled={!hasSource || sceneSnapping !== null}
+        onClick={() => void markSnapped('out')}
+      />
       <Button
         variant="primary"
         icon="plus"
