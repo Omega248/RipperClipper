@@ -4,6 +4,8 @@ import { isSynced } from '@shared/sync'
 import type { VodSource } from '@shared/types'
 import { useStore } from '../store.js'
 import { crossCheckByAudio, strongestSyncedSibling } from '../sync/audioCrossCheck.js'
+import { coldStartSyncByAudio } from '../sync/coldStartSync.js'
+import type { ColdStartProgress } from '../sync/coldStartSync.js'
 import { message, title } from './QualityPanel.js'
 import { Badge, Button, ConfirmDialog, IconButton, Tooltip } from '../ui/index.js'
 
@@ -33,6 +35,8 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
     null
   )
   const [revalidating, setRevalidating] = useState<string | null>(null)
+  const [coldStarting, setColdStarting] = useState<string | null>(null)
+  const [coldStartProgress, setColdStartProgress] = useState<ColdStartProgress | null>(null)
 
   const revalidate = async (source: VodSource, index: number): Promise<void> => {
     const name = povLabel(source, index)
@@ -76,6 +80,51 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
     }
   }
 
+  /**
+   * For a POV with no timing at all — no manual anchor, no usable platform
+   * metadata. Instead of the quick 30-second nudge `revalidate` does, this
+   * searches the whole recording, which is genuinely slower: several
+   * seconds for a short VOD, up to a couple of minutes for a long one.
+   */
+  const findSyncByAudio = async (source: VodSource, index: number): Promise<void> => {
+    const name = povLabel(source, index)
+    const all = sources ?? []
+    const reference = strongestSyncedSibling(all, source.id)
+    if (!reference) {
+      toast({
+        kind: 'info',
+        title: 'Nothing to search against',
+        message: 'No other POV has trusted timing yet to search this one against.'
+      })
+      return
+    }
+    setColdStarting(source.id)
+    try {
+      const outcome = await coldStartSyncByAudio(reference, source, (p) =>
+        setColdStartProgress(p)
+      )
+      if (!outcome) {
+        toast({
+          kind: 'warning',
+          title: 'No confident match found',
+          message: `Searched the whole recording against ${povLabel(reference, all.indexOf(reference))}, but nothing lined up clearly enough to trust. Align POVs by hand instead.`
+        })
+      } else {
+        addSyncAnchors(outcome.anchors)
+        toast({
+          kind: 'success',
+          title: 'Sync found',
+          message: `${name}'s timing was found by searching its whole recording against ${povLabel(reference, all.indexOf(reference))} — ${outcome.matchedProbes} of ${outcome.probesAttempted} probes matched.`
+        })
+      }
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not search for sync'), message: message(err) })
+    } finally {
+      setColdStarting(null)
+      setColdStartProgress(null)
+    }
+  }
+
   if (!sources || sources.length === 0) return null
 
   return (
@@ -105,16 +154,33 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
                     </span>
                   )}
                 </span>
-                <SyncBadge source={source} />
+                {coldStarting === source.id ? (
+                  <ColdStartBadge progress={coldStartProgress} />
+                ) : (
+                  <SyncBadge source={source} />
+                )}
               </button>
-              <IconButton
-                icon="refresh"
-                size="compact"
-                className="pov-revalidate"
-                label={`Re-validate ${name}'s timing by audio`}
-                disabled={!isSynced(source.syncMapping) || revalidating !== null}
-                onClick={() => void revalidate(source, index)}
-              />
+              {isSynced(source.syncMapping) ? (
+                <IconButton
+                  icon="refresh"
+                  size="compact"
+                  className="pov-revalidate"
+                  label={`Re-validate ${name}'s timing by audio`}
+                  disabled={revalidating !== null || coldStarting !== null}
+                  onClick={() => void revalidate(source, index)}
+                />
+              ) : (
+                <IconButton
+                  icon="target"
+                  size="compact"
+                  className="pov-revalidate"
+                  label={`Find ${name}'s timing by searching its whole recording — no existing estimate needed`}
+                  disabled={
+                    revalidating !== null || coldStarting !== null || !strongestSyncedSibling(sources, source.id)
+                  }
+                  onClick={() => void findSyncByAudio(source, index)}
+                />
+              )}
               <IconButton
                 icon="close"
                 size="compact"
@@ -200,6 +266,26 @@ function SyncBadge({ source }: { source: VodSource }): JSX.Element {
         </Badge>
       </span>
     </Tooltip>
+  )
+}
+
+/** Live progress for a whole-recording audio search — this can take a while. */
+function ColdStartBadge({ progress }: { progress: ColdStartProgress | null }): JSX.Element {
+  if (!progress) {
+    return (
+      <Badge tone="info" glyph="…">
+        Searching…
+      </Badge>
+    )
+  }
+  const label =
+    progress.phase === 'probes'
+      ? `Sampling ${progress.done}/${progress.total}`
+      : `Searching ${progress.done}/${progress.total}`
+  return (
+    <Badge tone="info" glyph="…">
+      {label}
+    </Badge>
   )
 }
 

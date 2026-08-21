@@ -104,6 +104,71 @@ export function alignByAudio(
   }
 }
 
+export interface SlideMatchResult {
+  /** Bucket index in `haystack` where `needle`'s start best lines up. */
+  offsetBuckets: number
+  /** Peak correlation, 0..1. */
+  score: number
+  /** How far clear of the runner-up the winner is, 0..1. */
+  margin: number
+  confident: boolean
+}
+
+/**
+ * Where in a long buffer a short one best matches.
+ *
+ * `alignByAudio` nudges two buffers that already cover roughly the same
+ * moment — a small known search window. This is the "cold start" version:
+ * the needle slides across the *whole* haystack from scratch, the way a
+ * short audio probe from one POV is searched for across another POV's
+ * entire, otherwise-untimed recording. The correlation at each position is
+ * normalised against that position's own local energy, not the haystack's
+ * average, so a needle found during a loud stretch scores the same as one
+ * found during a quiet one.
+ */
+export function slideMatch(haystack: number[], needle: number[]): SlideMatchResult {
+  const none: SlideMatchResult = { offsetBuckets: 0, score: 0, margin: 0, confident: false }
+  if (needle.length < 8 || haystack.length < needle.length) return none
+
+  const h = normalise(haystack)
+  const n = normalise(needle)
+  if (n.norm < 1e-6) return none
+
+  const positions = haystack.length - needle.length + 1
+  const scores: Array<{ pos: number; score: number }> = []
+  for (let pos = 0; pos < positions; pos++) {
+    let dot = 0
+    let sumSquares = 0
+    for (let i = 0; i < needle.length; i++) {
+      const v = h.data[pos + i]
+      dot += v * n.data[i]
+      sumSquares += v * v
+    }
+    const localNorm = Math.sqrt(sumSquares)
+    // A silent or flat stretch of the haystack correlates with everything —
+    // and means nothing, same reasoning as alignByAudio's own guard.
+    if (localNorm < 1e-6) continue
+    scores.push({ pos, score: dot / (localNorm * n.norm) })
+  }
+  if (scores.length === 0) return none
+
+  scores.sort((x, y) => y.score - x.score)
+  const best = scores[0]
+  if (best.score <= 0) return none
+
+  // The runner-up must be a genuinely different position, not one the winner
+  // overlaps with — adjacent positions always score alike.
+  const rival = scores.find((s) => Math.abs(s.pos - best.pos) >= needle.length / 2)
+  const margin = rival ? Math.max(0, best.score - rival.score) : best.score
+
+  return {
+    offsetBuckets: best.pos,
+    score: Math.round(best.score * 1000) / 1000,
+    margin: Math.round(margin * 1000) / 1000,
+    confident: best.score >= MIN_SCORE && margin >= MIN_MARGIN
+  }
+}
+
 /**
  * Turn a confident audio match into sync evidence for both POVs, the same
  * shape a manual "this moment in A is this moment in B" pairing produces —

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { alignByAudio, buildAudioAnchors, MIN_SCORE } from '../../src/shared/align.js'
+import { alignByAudio, buildAudioAnchors, MIN_SCORE, slideMatch } from '../../src/shared/align.js'
 import type { AlignmentResult } from '../../src/shared/align.js'
 
 /**
@@ -69,6 +69,93 @@ describe('aligning POVs by their audio', () => {
   it('says nothing rather than something on too little audio', () => {
     expect(alignByAudio([0.1, 0.9], [0.9, 0.1], 0.05).confident).toBe(false)
     expect(alignByAudio([], [], 0.05).offsetSeconds).toBe(0)
+  })
+})
+
+describe('slideMatch — finding a short probe inside a long, otherwise-untimed recording', () => {
+  /**
+   * A smoothed random walk — irregular from sample to sample like a real
+   * loudness envelope, so every window of a long enough track is locally
+   * unique. A handful of identical burst spikes (as `envelope` alone makes)
+   * is the wrong fixture for "find this exact moment" tests: several
+   * identical bursts are genuinely ambiguous, and a correct matcher should
+   * (and does, per the tests below) refuse to guess among them. A pure sine
+   * wave is the wrong fixture too — it's periodic, so nearby windows are
+   * near-duplicates of each other and the "true" position isn't uniquely
+   * findable either.
+   */
+  function mulberry32(seed: number): () => number {
+    let a = seed
+    return () => {
+      a |= 0
+      a = (a + 0x6d2b79f5) | 0
+      let t = Math.imul(a ^ (a >>> 15), 1 | a)
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+  }
+  function distinctiveTrack(length: number, seed = 42): number[] {
+    const rand = mulberry32(seed)
+    const out = new Array<number>(length)
+    let v = 0.3
+    for (let i = 0; i < length; i++) {
+      v = v * 0.7 + rand() * 0.3
+      out[i] = v
+    }
+    return out
+  }
+
+  it('finds the needle near the start of a much longer haystack', () => {
+    const haystack = distinctiveTrack(2000)
+    const trueOffset = 300
+    const needle = haystack.slice(trueOffset, trueOffset + 60)
+    const result = slideMatch(haystack, needle)
+    expect(result.confident).toBe(true)
+    expect(result.offsetBuckets).toBe(trueOffset)
+  })
+
+  it('finds the needle near the end of the haystack', () => {
+    const haystack = distinctiveTrack(3000, 71)
+    const trueOffset = 3000 - 65
+    const needle = haystack.slice(trueOffset, trueOffset + 50)
+    const result = slideMatch(haystack, needle)
+    expect(result.confident).toBe(true)
+    expect(result.offsetBuckets).toBe(trueOffset)
+  })
+
+  it('refuses to guess when the needle is silent', () => {
+    const haystack = envelope(1000, [100, 500, 800])
+    const silentNeedle = new Array<number>(40).fill(0)
+    const result = slideMatch(haystack, silentNeedle)
+    expect(result.confident).toBe(false)
+    expect(result.score).toBe(0)
+  })
+
+  it('refuses to guess when nothing in the haystack resembles the needle', () => {
+    const haystack = new Array<number>(1000).fill(0.02) // flat — nothing distinctive anywhere
+    const needle = envelope(40, [10, 25])
+    const result = slideMatch(haystack, needle)
+    expect(result.confident).toBe(false)
+  })
+
+  it('is not fooled by several identical bursts, where every one fits equally', () => {
+    const haystack = envelope(2000, [50, 90, 300, 900, 1500])
+    const needle = haystack.slice(300, 360)
+    const result = slideMatch(haystack, needle)
+    expect(result.confident).toBe(false)
+  })
+
+  it('is not fooled by a repeating beat, where many positions fit equally', () => {
+    const beat = Array.from({ length: 2000 }, (_, i) => (i % 20 < 3 ? 0.9 : 0.02))
+    const needle = beat.slice(500, 540)
+    const result = slideMatch(beat, needle)
+    expect(result.confident).toBe(false)
+  })
+
+  it('says nothing rather than something when the needle is longer than the haystack', () => {
+    const result = slideMatch(envelope(20, [5]), envelope(40, [5, 30]))
+    expect(result.confident).toBe(false)
+    expect(result.offsetBuckets).toBe(0)
   })
 })
 
