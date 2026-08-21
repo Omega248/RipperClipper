@@ -669,6 +669,12 @@ function registerIpc(): void {
     streamers.setWatermark(id, watermark)
   )
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
+  handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
+
+  handle(IPC.streamerGroupsList, () => streamers.listGroups())
+  handle(IPC.streamerGroupsCreate, (name: string) => streamers.createGroup(name))
+  handle(IPC.streamerGroupsRename, (id: string, name: string) => streamers.renameGroup(id, name))
+  handle(IPC.streamerGroupsDelete, (id: string) => streamers.deleteGroup(id))
 
   handle(IPC.depsStatus, () => tools.status())
   handle(IPC.depsCancel, () => {

@@ -123,6 +123,19 @@ export interface SavedStreamer {
    * once per broadcast.
    */
   watermark?: WatermarkConfig
+  /** Which StreamerGroups this streamer's current character belongs to — PD, a gang, EMS, … */
+  groupIds?: string[]
+}
+
+/**
+ * A named set of streamers — "PD", "Ballas", "EMS" — for finding everyone on
+ * one side of an event without remembering who that currently is. A streamer
+ * can belong to more than one, since a character's affiliation is not always
+ * exclusive and definitely not permanent.
+ */
+export interface StreamerGroup {
+  id: string
+  name: string
 }
 
 /** What the renderer asks for when it wants to know who else was live. */
@@ -198,6 +211,13 @@ export const IPC = {
   streamersVods: 'streamers:vods',
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
+  streamersSetGroups: 'streamers:set-groups',
+
+  // streamer groups
+  streamerGroupsList: 'streamer-groups:list',
+  streamerGroupsCreate: 'streamer-groups:create',
+  streamerGroupsRename: 'streamer-groups:rename',
+  streamerGroupsDelete: 'streamer-groups:delete',
 
   // waveform
   audioPeaks: 'audio:peaks',
@@ -420,6 +440,14 @@ export interface RendererApi {
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>
+  /** Replaces a streamer's whole group membership list. */
+  setStreamerGroups(id: string, groupIds: string[]): Promise<SavedStreamer[]>
+
+  listStreamerGroups(): Promise<StreamerGroup[]>
+  createStreamerGroup(name: string): Promise<StreamerGroup[]>
+  renameStreamerGroup(id: string, name: string): Promise<StreamerGroup[]>
+  /** Also clears the group from every streamer's membership list. */
+  deleteStreamerGroup(id: string): Promise<StreamerGroup[]>
   /** Project passed on the command line, e.g. by double-clicking a .cookieclip. */
   startupProjectPath(): Promise<string | null>
 

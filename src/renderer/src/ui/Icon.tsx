@@ -67,6 +67,7 @@ export type IconName =
   | 'new'
   | 'flag'
   | 'link'
+  | 'edit'
   | 'spinner'
   | 'window-minimize'
   | 'window-maximize'
@@ -129,6 +130,7 @@ const PATHS: Record<IconName, string> = {
   new: 'M6 3h8l5 5v13H6zM14 3v5h5M12 11v6M9 14h6',
   flag: 'M5 21V4h13l-3 4 3 4H5',
   link: 'M10 13a4 4 0 0 0 5.7 0l3-3a4 4 0 1 0-5.7-5.7L11.5 6M14 11a4 4 0 0 0-5.7 0l-3 3A4 4 0 1 0 11 19.7l1.5-1.5',
+  edit: 'M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3zM14 6l4 4',
   spinner: 'M12 3a9 9 0 0 1 9 9',
   'window-minimize': 'M5 12h14',
   'window-maximize': 'M5 5h14v14H5z',

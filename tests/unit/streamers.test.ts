@@ -1,12 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { channelHandleFrom } from '../../src/main/services/sources.js'
 import {
+  StreamerService,
   channelVideosUrl,
   kickVodsFromChannel,
   parseChannelUrl,
   sameStreamer,
   vodsFromFlatPlaylist
 } from '../../src/main/services/streamers.js'
+import { Logger } from '../../src/main/services/logger.js'
+import { ResolverService } from '../../src/main/media/resolver.js'
 import type { SavedStreamer } from '../../src/shared/ipc.js'
 
 describe('channel links', () => {
@@ -133,5 +139,76 @@ describe('loading a POV remembers its streamer', () => {
 
   it('refuses a handle with spaces, which would make a dead channel link', () => {
     expect(channelHandleFrom({ uploader: 'Some Streamer' }, 'https://youtu.be/abc')).toBeUndefined()
+  })
+})
+
+describe('streamer groups', () => {
+  let dir: string
+  let log: Logger
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cookieclip-streamers-'))
+    log = new Logger(join(dir, 'logs'))
+    service = new StreamerService(log, new ResolverService(log), dir)
+  })
+
+  afterEach(async () => {
+    log.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('starts with no groups', async () => {
+    expect(await service.listGroups()).toEqual([])
+  })
+
+  it('creates a group and does not duplicate one with the same name', async () => {
+    await service.createGroup('PD')
+    const again = await service.createGroup('pd')
+    expect(again.map((g) => g.name)).toEqual(['PD'])
+  })
+
+  it('ignores a blank name rather than creating an empty group', async () => {
+    expect(await service.createGroup('   ')).toEqual([])
+  })
+
+  it('renames a group', async () => {
+    const [group] = await service.createGroup('Ballas')
+    const renamed = await service.renameGroup(group.id, 'Ballas Family')
+    expect(renamed[0].name).toBe('Ballas Family')
+  })
+
+  it('assigns a streamer to groups and reports them back', async () => {
+    const [pd] = await service.createGroup('PD')
+    const [, ems] = await service.createGroup('EMS')
+    const streamers = await service.add('twitch.tv/somestreamer')
+    const streamer = streamers[0]
+
+    const updated = await service.setGroups(streamer.id, [pd.id, ems.id])
+    expect(updated[0].groupIds).toEqual([pd.id, ems.id])
+  })
+
+  it('deleting a group clears it from every streamer it was assigned to', async () => {
+    const [pd] = await service.createGroup('PD')
+    const streamers = await service.add('twitch.tv/somestreamer')
+    await service.setGroups(streamers[0].id, [pd.id])
+
+    await service.deleteGroup(pd.id)
+
+    expect(await service.listGroups()).toEqual([])
+    const after = await service.list()
+    expect(after[0].groupIds).toEqual([])
+  })
+
+  it('deleting a group a streamer does not belong to leaves their groups untouched', async () => {
+    const [pd] = await service.createGroup('PD')
+    const [, ems] = await service.createGroup('EMS')
+    const streamers = await service.add('twitch.tv/somestreamer')
+    await service.setGroups(streamers[0].id, [pd.id])
+
+    await service.deleteGroup(ems.id)
+
+    const after = await service.list()
+    expect(after[0].groupIds).toEqual([pd.id])
   })
 })

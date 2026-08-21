@@ -83,6 +83,12 @@ const api: RendererApi = {
   streamerVods: (id) => invoke(IPC.streamersVods, id),
   setStreamerWatermark: (id, watermark) => invoke(IPC.streamersWatermark, id, watermark),
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
+  setStreamerGroups: (id, groupIds) => invoke(IPC.streamersSetGroups, id, groupIds),
+
+  listStreamerGroups: () => invoke(IPC.streamerGroupsList),
+  createStreamerGroup: (name) => invoke(IPC.streamerGroupsCreate, name),
+  renameStreamerGroup: (id, name) => invoke(IPC.streamerGroupsRename, id, name),
+  deleteStreamerGroup: (id) => invoke(IPC.streamerGroupsDelete, id),
 
   enqueueExports: (req) => invoke(IPC.exportEnqueue, req),
   enqueueCombined: (req) => invoke(IPC.exportCombine, req),

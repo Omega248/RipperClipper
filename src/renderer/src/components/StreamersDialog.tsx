@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { formatTimecode } from '@shared/time'
 import type { PlatformId } from '@shared/types'
-import type { EventOverlapReply, SavedStreamer, StreamerVod } from '@shared/ipc'
+import type { EventOverlapReply, SavedStreamer, StreamerGroup, StreamerVod } from '@shared/ipc'
 import { coverageLabel } from '@shared/eventStreams'
 import { vodsAtTime, parseLocalDateTime } from '@shared/vodSearch'
 import type { VodAtTime } from '@shared/vodSearch'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
+import StreamerGroupsDialog from './StreamerGroupsDialog.js'
 import {
   Badge,
   Button,
@@ -63,6 +64,11 @@ export default function StreamersDialog({
   // the load to finish, so importing several POVs back to back never blocks
   // on the slowest one. Reverted only if the load actually fails.
   const [added, setAdded] = useState<Set<string>>(new Set())
+  const [groups, setGroups] = useState<StreamerGroup[]>([])
+  const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  // A streamer opens the dialog to assign their groups; 'manage' opens it to
+  // rename/delete groups themselves, with no membership checkboxes.
+  const [groupsDialog, setGroupsDialog] = useState<SavedStreamer | 'manage' | null>(null)
 
   const loadVods = useCallback(
     async (id: string): Promise<void> => {
@@ -85,7 +91,10 @@ export default function StreamersDialog({
   useEffect(() => {
     void (async () => {
       try {
-        const saved = await window.api.listStreamers()
+        const [saved] = await Promise.all([
+          window.api.listStreamers(),
+          window.api.listStreamerGroups().then(setGroups)
+        ])
         setStreamers(saved)
         const recent = [...saved].sort((a, b) =>
           (b.lastUsedAt ?? b.addedAt).localeCompare(a.lastUsedAt ?? a.addedAt)
@@ -156,6 +165,52 @@ export default function StreamersDialog({
     }
   }
 
+  const createGroup = async (name: string): Promise<void> => {
+    try {
+      setGroups(await window.api.createStreamerGroup(name))
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not create that group'), message: message(err) })
+    }
+  }
+
+  const renameGroup = async (id: string, name: string): Promise<void> => {
+    try {
+      setGroups(await window.api.renameStreamerGroup(id, name))
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not rename that group'), message: message(err) })
+    }
+  }
+
+  const deleteGroup = async (id: string): Promise<void> => {
+    try {
+      setGroups(await window.api.deleteStreamerGroup(id))
+      setStreamers((prev) =>
+        prev.map((s) => (s.groupIds?.includes(id) ? { ...s, groupIds: s.groupIds.filter((g) => g !== id) } : s))
+      )
+      if (groupFilter === id) setGroupFilter(null)
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not delete that group'), message: message(err) })
+    }
+  }
+
+  const toggleMembership = async (streamer: SavedStreamer, groupId: string, member: boolean): Promise<void> => {
+    const current = streamer.groupIds ?? []
+    const next = member ? [...current, groupId] : current.filter((g) => g !== groupId)
+    try {
+      const updated = await window.api.setStreamerGroups(streamer.id, next)
+      setStreamers(updated)
+      // Keep the dialog's own copy of the streamer in sync so its checkboxes
+      // reflect the change immediately rather than on the next open.
+      setGroupsDialog((prev) =>
+        prev && prev !== 'manage' && prev.id === streamer.id
+          ? (updated.find((s) => s.id === streamer.id) ?? prev)
+          : prev
+      )
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not update groups'), message: message(err) })
+    }
+  }
+
   const loaded = new Set((sources ?? []).map((s) => s.url))
 
   /** Fires the load in the background; the row flips to "Added" right away. */
@@ -175,10 +230,9 @@ export default function StreamersDialog({
   }
 
   const needle = filter.trim().toLowerCase()
-  const shownStreamers =
-    needle === ''
-      ? streamers
-      : streamers.filter((st) => st.displayName.toLowerCase().includes(needle))
+  const shownStreamers = streamers
+    .filter((st) => needle === '' || st.displayName.toLowerCase().includes(needle))
+    .filter((st) => groupFilter === null || st.groupIds?.includes(groupFilter))
   const shownVods =
     needle === '' ? vods : vods.filter((v) => v.title.toLowerCase().includes(needle))
 
@@ -218,6 +272,7 @@ export default function StreamersDialog({
   }
 
   return (
+    <>
     <Dialog
       title="Streamers"
       description="The people whose broadcasts you clip, and their recent VODs."
@@ -263,6 +318,31 @@ export default function StreamersDialog({
             label="Search streamers and VODs"
           />
 
+          {(groups.length > 0 || streamers.length > 0) && (
+            <div className="group-filter-row">
+              <button
+                type="button"
+                className={`ui-badge is-clickable${groupFilter === null ? ' is-accent' : ''}`}
+                onClick={() => setGroupFilter(null)}
+              >
+                All
+              </button>
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={`ui-badge is-clickable${groupFilter === g.id ? ' is-accent' : ''}`}
+                  onClick={() => setGroupFilter((prev) => (prev === g.id ? null : g.id))}
+                >
+                  {g.name}
+                </button>
+              ))}
+              <Button size="compact" variant="ghost" icon="settings" onClick={() => setGroupsDialog('manage')}>
+                Manage groups
+              </Button>
+            </div>
+          )}
+
           {streamers.length === 0 && (
             <EmptyState
               icon="users"
@@ -292,8 +372,22 @@ export default function StreamersDialog({
                   {streamer.lastUsedAt && (
                     <span>used {new Date(streamer.lastUsedAt).toLocaleDateString()}</span>
                   )}
+                  {(streamer.groupIds ?? []).map((id) => {
+                    const group = groups.find((g) => g.id === id)
+                    return group ? (
+                      <Badge key={id} tone="neutral">
+                        {group.name}
+                      </Badge>
+                    ) : null
+                  })}
                 </span>
               </button>
+              <IconButton
+                icon="users"
+                size="compact"
+                label={`Edit groups for ${streamer.displayName}`}
+                onClick={() => setGroupsDialog(streamer)}
+              />
               <IconButton
                 icon="trash"
                 size="compact"
@@ -470,5 +564,22 @@ export default function StreamersDialog({
         </section>
       </div>
     </Dialog>
+
+    {groupsDialog && (
+      <StreamerGroupsDialog
+        groups={groups}
+        streamer={groupsDialog === 'manage' ? null : groupsDialog}
+        onClose={() => setGroupsDialog(null)}
+        onCreate={(name) => void createGroup(name)}
+        onRename={(id, name) => void renameGroup(id, name)}
+        onDelete={(id) => void deleteGroup(id)}
+        onToggleMembership={
+          groupsDialog === 'manage'
+            ? undefined
+            : (groupId, member) => void toggleMembership(groupsDialog, groupId, member)
+        }
+      />
+    )}
+    </>
   )
 }

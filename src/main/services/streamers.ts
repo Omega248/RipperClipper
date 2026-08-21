@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { net } from 'electron'
 import { Errors } from '../../shared/errors.js'
 import type { PlatformId } from '../../shared/types.js'
-import type { EventOverlapReply, SavedStreamer, StreamerVod } from '../../shared/ipc.js'
+import type { EventOverlapReply, SavedStreamer, StreamerGroup, StreamerVod } from '../../shared/ipc.js'
 import { streamsCoveringEvent } from '../../shared/eventStreams.js'
 import type { WatermarkConfig } from '../../shared/watermark.js'
 import { createId } from '../../shared/clips.js'
@@ -133,6 +133,8 @@ export function vodsFromFlatPlaylist(payload: unknown): StreamerVod[] {
 export class StreamerService {
   private readonly file: string
   private cache: SavedStreamer[] | null = null
+  private readonly groupsFile: string
+  private groupsCache: StreamerGroup[] | null = null
 
   constructor(
     private readonly log: Logger,
@@ -140,6 +142,7 @@ export class StreamerService {
     stateDir: string
   ) {
     this.file = join(stateDir, 'streamers.json')
+    this.groupsFile = join(stateDir, 'streamer-groups.json')
   }
 
   async list(): Promise<SavedStreamer[]> {
@@ -151,6 +154,60 @@ export class StreamerService {
       this.cache = []
     }
     return this.cache
+  }
+
+  async listGroups(): Promise<StreamerGroup[]> {
+    if (this.groupsCache) return this.groupsCache
+    try {
+      const parsed = JSON.parse(await readFile(this.groupsFile, 'utf8')) as unknown
+      this.groupsCache = Array.isArray(parsed) ? (parsed as StreamerGroup[]).filter(isGroup) : []
+    } catch {
+      this.groupsCache = []
+    }
+    return this.groupsCache
+  }
+
+  async createGroup(name: string): Promise<StreamerGroup[]> {
+    const trimmed = name.trim()
+    if (trimmed === '') return this.listGroups()
+    const current = await this.listGroups()
+    const existing = current.find((g) => g.name.toLowerCase() === trimmed.toLowerCase())
+    if (existing) return current
+    const group: StreamerGroup = { id: createId('grp'), name: trimmed }
+    return this.writeGroups([...current, group])
+  }
+
+  async renameGroup(id: string, name: string): Promise<StreamerGroup[]> {
+    const trimmed = name.trim()
+    const current = await this.listGroups()
+    if (trimmed === '') return current
+    return this.writeGroups(current.map((g) => (g.id === id ? { ...g, name: trimmed } : g)))
+  }
+
+  /** Also strips the group from every streamer's membership list. */
+  async deleteGroup(id: string): Promise<StreamerGroup[]> {
+    const [groups, streamers] = await Promise.all([this.listGroups(), this.list()])
+    const stillMember = streamers.filter((s) => s.groupIds?.includes(id))
+    if (stillMember.length > 0) {
+      await this.write(
+        streamers.map((s) =>
+          s.groupIds?.includes(id) ? { ...s, groupIds: s.groupIds.filter((g) => g !== id) } : s
+        )
+      )
+    }
+    return this.writeGroups(groups.filter((g) => g.id !== id))
+  }
+
+  /** Replaces a streamer's whole group membership list — the renderer sends the final set. */
+  async setGroups(streamerId: string, groupIds: string[]): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    return this.write(current.map((s) => (s.id === streamerId ? { ...s, groupIds } : s)))
+  }
+
+  private async writeGroups(next: StreamerGroup[]): Promise<StreamerGroup[]> {
+    this.groupsCache = next
+    await atomicWriteJson(this.groupsFile, next)
+    return next
   }
 
   /** Add by channel URL or "platform:handle"; adding an existing one is a no-op. */
@@ -382,4 +439,10 @@ function isStreamer(value: unknown): value is SavedStreamer {
   if (typeof value !== 'object' || value === null) return false
   const s = value as Record<string, unknown>
   return typeof s.id === 'string' && typeof s.handle === 'string' && typeof s.platform === 'string'
+}
+
+function isGroup(value: unknown): value is StreamerGroup {
+  if (typeof value !== 'object' || value === null) return false
+  const g = value as Record<string, unknown>
+  return typeof g.id === 'string' && typeof g.name === 'string'
 }

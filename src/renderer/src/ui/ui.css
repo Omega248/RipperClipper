@@ -731,6 +731,23 @@ input[type='range'] {
   line-height: 1;
 }
 
+.ui-badge.is-clickable {
+  border: 1px solid var(--neutral-border);
+  background: var(--neutral-subtle);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.ui-badge.is-clickable:hover {
+  background: var(--surface-hover);
+}
+
+.ui-badge.is-clickable:focus-visible {
+  box-shadow: var(--focus-ring-shadow);
+}
+
 .ui-dot {
   display: inline-block;
   flex: none;
