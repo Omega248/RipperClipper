@@ -11,6 +11,8 @@ import { Badge, Button, ConfirmDialog, IconButton, Tooltip } from '../ui/index.j
 
 interface Props {
   onAddPov: () => void
+  /** Opens the event-time POV sweep — see shared/discovery.ts. */
+  onDiscoverEvent: () => void
   onFindInPovs: () => void
   onManualSync: () => void
 }
@@ -23,7 +25,12 @@ interface Props {
  * selected one is marked by a surface and a rail rather than by a border that
  * makes every card look like a separate widget.
  */
-export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props): JSX.Element | null {
+export default function PovBar({
+  onAddPov,
+  onDiscoverEvent,
+  onFindInPovs,
+  onManualSync
+}: Props): JSX.Element | null {
   const sources = useStore((s) => s.project?.sources)
   const activeSourceId = useStore((s) => s.activeSourceId)
   const switchPov = useStore((s) => s.setActiveSource)
@@ -199,6 +206,13 @@ export default function PovBar({ onAddPov, onFindInPovs, onManualSync }: Props):
       <div className="povbar-actions">
         <Button icon="plus" onClick={onAddPov} title="Load another angle of this event">
           Add POV
+        </Button>
+        <Button
+          icon="search"
+          onClick={onDiscoverEvent}
+          title="Give the real-world time an event happened and find everyone who was live for it"
+        >
+          Find POVs by time
         </Button>
         <Button
           icon="target"

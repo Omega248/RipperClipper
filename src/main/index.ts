@@ -21,6 +21,7 @@ import type { QueueClipInput } from './services/queue.js'
 import { AdapterRegistry } from './platforms/registry.js'
 import { SourceService } from './services/sources.js'
 import { StreamerService } from './services/streamers.js'
+import { DiscoveryService } from './services/discovery.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
 import { UpdateService } from './services/updater.js'
@@ -32,6 +33,7 @@ import { AppError, Errors, serializeError } from '../shared/errors.js'
 import { IPC } from '../shared/ipc.js'
 import type { WatermarkConfig } from '../shared/watermark.js'
 import type {
+  EventDiscoveryRequest,
   EventOverlapRequest,
   InstallProgress,
   ToolId,
@@ -111,6 +113,7 @@ const resolver = new ResolverService(log)
 const registry = new AdapterRegistry()
 const sources = new SourceService(log, registry, resolver)
 const streamers = new StreamerService(log, resolver, stateDir)
+const discovery = new DiscoveryService(log, streamers, resolver)
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
@@ -713,6 +716,7 @@ function registerIpc(): void {
     streamers.setWatermark(id, watermark)
   )
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
+  handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
   handle(IPC.streamersSetFavorite, (id: string, favorite: boolean) => streamers.setFavorite(id, favorite))
   handle(IPC.streamersRestore, (streamer: SavedStreamer) => streamers.restore(streamer))

@@ -84,6 +84,7 @@ const api: RendererApi = {
   streamerVods: (id) => invoke(IPC.streamersVods, id),
   setStreamerWatermark: (id, watermark) => invoke(IPC.streamersWatermark, id, watermark),
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
+  discoverEvent: (req) => invoke(IPC.discoverEvent, req),
   setStreamerGroups: (id, groupIds) => invoke(IPC.streamersSetGroups, id, groupIds),
   setStreamerFavorite: (id, favorite) => invoke(IPC.streamersSetFavorite, id, favorite),
   restoreStreamer: (streamer) => invoke(IPC.streamersRestore, streamer),

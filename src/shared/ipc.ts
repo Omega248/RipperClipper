@@ -1,5 +1,6 @@
 import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './watermark.js'
 import type { AudioEdit } from './audioEdits.js'
+import type { DiscoveredStream } from './discovery.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
@@ -195,6 +196,34 @@ export interface EventOverlapReply {
   unreachable: string[]
 }
 
+/**
+ * A cross-platform sweep for the POVs of one real-world event (§1).
+ *
+ * The window is real-world epoch seconds, the same clock every POV is synced
+ * onto — never a VOD timestamp, since two streams reading "01:12:30" were not
+ * in the same place at the same time.
+ */
+export interface EventDiscoveryRequest {
+  startSeconds: number
+  endSeconds: number
+  /** Optional event name, e.g. "bank robbery" — drives relevance scoring. */
+  name?: string
+  /** Restrict to one platform. Absent sweeps all of them. */
+  platform?: PlatformId
+  /** VOD URLs already loaded, so they are marked rather than offered again. */
+  loadedUrls: string[]
+  /** Include a keyword sweep of the platforms that genuinely support one. */
+  includeSearch: boolean
+}
+
+export interface EventDiscoveryReply {
+  streams: DiscoveredStream[]
+  /** Channels that could not be reached, so a partial answer is never silent. */
+  unreachable: string[]
+  /** Plain-language notes on what was and was not swept, shown to the editor. */
+  notes: string[]
+}
+
 /** One past broadcast in the streamer picker. */
 export interface StreamerVod {
   url: string
@@ -242,6 +271,7 @@ export const IPC = {
   streamersVods: 'streamers:vods',
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
+  discoverEvent: 'discovery:event',
   streamersSetGroups: 'streamers:set-groups',
   streamersSetFavorite: 'streamers:set-favorite',
   streamersRestore: 'streamers:restore',
@@ -488,6 +518,13 @@ export interface RendererApi {
   setStreamerWatermark(id: string, watermark: WatermarkConfig | null): Promise<SavedStreamer[]>
   /** Saved streamers whose broadcasts overlap an event's real-world range. */
   streamersCoveringEvent(req: EventOverlapRequest): Promise<EventOverlapReply>
+  /**
+   * Every POV of a real-world event, swept across the platforms that support
+   * it. Unlike `streamersCoveringEvent` (library only), this also keyword-
+   * searches where a platform allows one, and reports in `notes` exactly what
+   * it could not sweep — see main/services/discovery.ts.
+   */
+  discoverEvent(req: EventDiscoveryRequest): Promise<EventDiscoveryReply>
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>

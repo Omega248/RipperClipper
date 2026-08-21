@@ -32,6 +32,7 @@ import PovBar, { povLabel } from './components/PovBar.js'
 import WatermarkEditor from './components/WatermarkEditor.js'
 import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
+import EventDiscovery from './components/EventDiscovery.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -85,6 +86,7 @@ export default function App(): JSX.Element {
   const [showGuide, setShowGuide] = useState(false)
   const [showStreamers, setShowStreamers] = useState(false)
   const [showFind, setShowFind] = useState(false)
+  const [showDiscovery, setShowDiscovery] = useState(false)
   const [timelineView, setTimelineView] = useState<'event' | 'clip'>('event')
   // 'pov' corrects the whole VOD; 'clip' corrects the selected clip only.
   const [showWaveform, setShowWaveform] = useState<'pov' | 'clip' | null>(null)
@@ -1251,6 +1253,7 @@ export default function App(): JSX.Element {
 
       <PovBar
         onAddPov={() => urlRef.current?.focus()}
+        onDiscoverEvent={() => setShowDiscovery(true)}
         onFindInPovs={() => setShowFind(true)}
         onManualSync={() => setShowWaveform('pov')}
       />
@@ -1526,6 +1529,9 @@ export default function App(): JSX.Element {
       {showGuide && <QuickGuide onClose={() => setShowGuide(false)} />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
       {showFind && <FindInPovs onClose={() => setShowFind(false)} />}
+      {showDiscovery && (
+        <EventDiscovery onClose={() => setShowDiscovery(false)} onLoadVod={loadVod} />
+      )}
       {showWaveform && (
         <WaveformSync
           onClose={() => setShowWaveform(null)}

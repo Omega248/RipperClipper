@@ -3116,3 +3116,107 @@ canvas.wave.draggable {
   color: var(--text-secondary);
   font: var(--type-body-small);
 }
+
+/* ---- event discovery: find every POV of a real-world moment ---- */
+
+.discovery-query {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.discovery-query-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.discovery-running {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 4px;
+  color: var(--text-dim);
+}
+
+.discovery-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+}
+
+.discovery-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  /* The sweep can return dozens; the dialog scrolls rather than growing. */
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.discovery-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+}
+
+/* Already a POV in this project — visibly present but not re-offerable. */
+.discovery-row.is-loaded {
+  opacity: 0.65;
+}
+
+.discovery-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.discovery-row-title {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.discovery-row-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.discovery-row-why {
+  font-size: 11px;
+  color: var(--text-faint, var(--text-dim));
+  font-style: italic;
+}
+
+.discovery-row-coverage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.discovery-coverage-bar {
+  width: 72px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.discovery-coverage-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}

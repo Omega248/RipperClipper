@@ -42,6 +42,10 @@ export interface RawInfo {
   is_live?: boolean
   extractor_key?: string
   webpage_url?: string
+  /** Platform tags, when the extractor reports them — used to score event relevance. */
+  tags?: string[]
+  /** Platform category/game, e.g. "Grand Theft Auto V". Same purpose as `tags`. */
+  categories?: string[]
   formats?: RawFormat[]
   url?: string
   protocol?: string
