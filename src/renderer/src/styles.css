@@ -1259,6 +1259,22 @@ hr.rule {
   color: var(--accent-text);
 }
 
+.pov-tile-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  background: var(--scrim);
+  color: var(--text-on-accent);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.pov-tile:hover .pov-tile-remove,
+.pov-tile-remove:focus-visible {
+  opacity: 1;
+}
+
 /* ============================ pages ==================================== */
 
 .page {

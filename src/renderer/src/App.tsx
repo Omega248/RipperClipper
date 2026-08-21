@@ -7,6 +7,7 @@ import type { EnqueueRequest, EventOverlapReply, TimelineExportSegment } from '@
 import { planExport } from '@shared/povMapping'
 import { computeExportSegments } from '@shared/timeline'
 import { crossCheckByAudio, hasAudioAnchor, strongestSyncedSibling } from './sync/audioCrossCheck.js'
+import { stripHtml } from '@shared/htmlToText'
 import { useActiveClips, useActiveSource, useStore } from './store.js'
 import Timeline from './components/Timeline.js'
 import ClipTimeline from './components/ClipTimeline.js'
@@ -1575,7 +1576,9 @@ export default function App(): JSX.Element {
             }
           >
             {pendingUpdate.releaseNotes && (
-              <p style={{ whiteSpace: 'pre-wrap' }}>{pendingUpdate.releaseNotes.slice(0, 800)}</p>
+              <p style={{ whiteSpace: 'pre-wrap' }}>
+                {stripHtml(pendingUpdate.releaseNotes).slice(0, 800)}
+              </p>
             )}
           </Dialog>
         )}

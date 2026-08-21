@@ -1,10 +1,11 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { columnsFor, followerTargets } from '@shared/multiPov'
 import { povLabel } from '@shared/pov'
 import { useStore } from '../store.js'
 import FollowerVideo from '../player/FollowerVideo.js'
 import { playbackSrc } from '../player/sources.js'
 import WatermarkOverlay from './WatermarkOverlay.js'
+import { ConfirmDialog, IconButton } from '../ui/index.js'
 
 /**
  * Every angle of the same moment, at the same moment.
@@ -33,12 +34,17 @@ interface Props {
 
 export default function PovGrid({ focusId, onFocus, layout, children }: Props): JSX.Element {
   const sources = useStore((s) => s.project?.sources) ?? []
+  const clips = useStore((s) => s.project?.clips)
   const currentTime = useStore((s) => s.currentTime)
   const playing = useStore((s) => s.playing)
   const rate = useStore((s) => s.rate)
   const volume = useStore((s) => s.volume)
   const muted = useStore((s) => s.muted)
   const mediaProxyBase = useStore((s) => s.env?.mediaProxyBase)
+  const removeSource = useStore((s) => s.removeSource)
+  const [confirmRemove, setConfirmRemove] = useState<{ id: string; name: string; clips: number } | null>(
+    null
+  )
 
   const leader = sources.find((s) => s.id === focusId) ?? sources[0]
   const targets = useMemo(
@@ -53,6 +59,8 @@ export default function PovGrid({ focusId, onFocus, layout, children }: Props): 
         const isLeader = source.id === leader?.id
         const target = targets.get(source.id) ?? null
         const src = isLeader ? null : playbackSrc(source, mediaProxyBase)
+        const name = povLabel(source)
+        const ownClips = clips?.filter((c) => c.sourceId === source.id).length ?? 0
 
         return (
           <div
@@ -66,6 +74,17 @@ export default function PovGrid({ focusId, onFocus, layout, children }: Props): 
               if (!isLeader && (e.key === 'Enter' || e.key === ' ')) onFocus(source.id)
             }}
           >
+            <IconButton
+              icon="close"
+              size="compact"
+              className="pov-tile-remove"
+              label={`Remove ${name}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (ownClips > 0) setConfirmRemove({ id: source.id, name, clips: ownClips })
+                else removeSource(source.id)
+              }}
+            />
             {isLeader ? (
               children
             ) : src && target !== null ? (
@@ -101,6 +120,21 @@ export default function PovGrid({ focusId, onFocus, layout, children }: Props): 
         )
       })}
       {muted && <span className="visually-hidden">Sound is muted</span>}
+      {confirmRemove && (
+        <ConfirmDialog
+          title={`Remove ${confirmRemove.name}?`}
+          description={`Its ${confirmRemove.clips} clip${
+            confirmRemove.clips === 1 ? '' : 's'
+          } are removed with it. Undo (Ctrl+Z) brings them back.`}
+          confirmLabel="Remove POV"
+          destructive
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => {
+            removeSource(confirmRemove.id)
+            setConfirmRemove(null)
+          }}
+        />
+      )}
     </div>
   )
 }
