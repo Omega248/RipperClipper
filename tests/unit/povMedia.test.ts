@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { audioCapablePovs, buildClipMappings, refreshClipMappings, videoCapablePovs } from '../../src/shared/povMapping.js'
+import {
+  audioCapablePovs,
+  buildClipMappings,
+  expandClipsForExport,
+  refreshClipMappings,
+  videoCapablePovs
+} from '../../src/shared/povMapping.js'
+import type { PovExportMode } from '../../src/shared/povMapping.js'
 import type { ClipSegment, StreamInfo, VodSource } from '../../src/shared/types.js'
 
 /**
@@ -117,5 +124,50 @@ describe('a POV loaded after the clip was made', () => {
       // Derived from the event clock, not copied from the POV it was made in.
       expect(added.media.video.startSeconds).toBe(c.povMappings![0].media.video.startSeconds - 60)
     }
+  })
+})
+
+describe('expandClipsForExport', () => {
+  const mappings = buildClipMappings(clip(), [A, B], 'now')
+  const covered = clip({ povMappings: mappings })
+
+  it('leaves a "main POV" clip untouched', () => {
+    const out = expandClipsForExport([covered], [A, B], () => ({ kind: 'main' }))
+    expect(out).toEqual([covered])
+  })
+
+  it('expands "all POVs" into one variant per covering source, ids kept distinct', () => {
+    const out = expandClipsForExport([covered], [A, B], () => ({ kind: 'all' }))
+    expect(out).toHaveLength(2)
+    expect(out.map((c) => c.id).sort()).toEqual([`${covered.id}-a`, `${covered.id}-b`])
+    for (const variant of out) {
+      expect(variant.audioSourceId).toBeUndefined()
+      expect(['a', 'b']).toContain(variant.videoSourceId)
+    }
+  })
+
+  it('"certain" only expands into the chosen sources', () => {
+    const mode: PovExportMode = { kind: 'certain', sourceIds: new Set(['b']) }
+    const out = expandClipsForExport([covered], [A, B], () => mode)
+    expect(out).toHaveLength(1)
+    expect(out[0].videoSourceId).toBe('b')
+    expect(out[0].id).toBe(`${covered.id}-b`)
+  })
+
+  it('falls back to the original clip when "certain" picks nothing that covers it', () => {
+    const mode: PovExportMode = { kind: 'certain', sourceIds: new Set(['does-not-exist']) }
+    const out = expandClipsForExport([covered], [A, B], () => mode)
+    expect(out).toEqual([covered])
+  })
+
+  it('resolves each clip independently by id', () => {
+    const other = clip({ id: 'c2', povMappings: mappings })
+    const out = expandClipsForExport(
+      [covered, other],
+      [A, B],
+      (id): PovExportMode => (id === covered.id ? { kind: 'all' } : { kind: 'main' })
+    )
+    expect(out.filter((c) => c.id.startsWith(`${covered.id}-`))).toHaveLength(2)
+    expect(out.some((c) => c.id === other.id)).toBe(true)
   })
 })

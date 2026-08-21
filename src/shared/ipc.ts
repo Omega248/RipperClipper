@@ -99,10 +99,11 @@ export interface InstallProgress {
 export type UpdateStatus =
   | { state: 'idle' }
   | { state: 'checking' }
-  | { state: 'available'; version: string }
+  /** releaseNotes is the GitHub release body, when the feed provided one. */
+  | { state: 'available'; version: string; releaseNotes?: string }
   | { state: 'not-available' }
   | { state: 'downloading'; percent: number }
-  | { state: 'downloaded'; version: string }
+  | { state: 'downloaded'; version: string; releaseNotes?: string }
   | { state: 'error'; message: string }
   | { state: 'unsupported' }
 

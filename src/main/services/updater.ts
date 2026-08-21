@@ -4,10 +4,20 @@ import { EventEmitter } from 'node:events'
 // Vite/tsc allow that syntax), so the default export has to be unwrapped by
 // hand — see https://github.com/electron-userland/electron-builder/issues/7976.
 import electronUpdater from 'electron-updater'
+import type { UpdateInfo } from 'electron-updater'
 import type { UpdateStatus } from '../../shared/ipc.js'
 import type { Logger } from './logger.js'
 
 const { autoUpdater } = electronUpdater
+
+/** The GitHub release body for this version, when electron-updater got one. */
+function releaseNotesFor(info: UpdateInfo): string | undefined {
+  const notes = info.releaseNotes
+  if (typeof notes === 'string') return notes
+  if (!Array.isArray(notes)) return undefined
+  const forVersion = notes.find((n) => n.version === info.version)
+  return forVersion?.note ?? notes.map((n) => n.note).filter(Boolean).join('\n\n') ?? undefined
+}
 
 /**
  * The GitHub-releases update feed. Only the `stable` channel is ever
@@ -35,12 +45,16 @@ export class UpdateService extends EventEmitter {
     autoUpdater.autoInstallOnAppQuit = true
 
     autoUpdater.on('checking-for-update', () => this.set({ state: 'checking' }))
-    autoUpdater.on('update-available', (info) => this.set({ state: 'available', version: info.version }))
+    autoUpdater.on('update-available', (info) =>
+      this.set({ state: 'available', version: info.version, releaseNotes: releaseNotesFor(info) })
+    )
     autoUpdater.on('update-not-available', () => this.set({ state: 'not-available' }))
     autoUpdater.on('download-progress', (p) =>
       this.set({ state: 'downloading', percent: Math.round(p.percent) })
     )
-    autoUpdater.on('update-downloaded', (info) => this.set({ state: 'downloaded', version: info.version }))
+    autoUpdater.on('update-downloaded', (info) =>
+      this.set({ state: 'downloaded', version: info.version, releaseNotes: releaseNotesFor(info) })
+    )
     autoUpdater.on('error', (err) => {
       this.log.error('updater', 'Update check failed', err)
       this.set({ state: 'error', message: err instanceof Error ? err.message : String(err) })

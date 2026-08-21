@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { applyTemplate, buildFolderSegments, sanitizeFilename } from '@shared/filenames'
 import { formatBytes } from '@shared/errors'
 import { povLabel } from '@shared/pov'
-import { planExport } from '@shared/povMapping'
+import { expandClipsForExport, planExport, videoCapablePovs } from '@shared/povMapping'
+import type { PovExportMode } from '@shared/povMapping'
 import { formatDuration } from '@shared/time'
 import { buildClipListCsv } from '@shared/clipListCsv'
 import type { ClipListRow } from '@shared/clipListCsv'
@@ -11,7 +12,7 @@ import { useStore } from '../store.js'
 import QueuePanel from './QueuePanel.js'
 import QualityPanel, { message, title } from './QualityPanel.js'
 import { resolveWatermark, streamerFor } from '@shared/watermark'
-import { Badge, Button, EmptyState, Notice, PageHeader, StatusBadge } from '../ui/index.js'
+import { Badge, Button, Checkbox, EmptyState, Menu, Notice, PageHeader, Select, StatusBadge } from '../ui/index.js'
 
 /**
  * Export: what is about to be written, before it is written.
@@ -33,6 +34,7 @@ export default function ExportPage({
   const streamers = useStore((s) => s.streamers)
   const toast = useStore((s) => s.toast)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
+  const [povMode, setPovMode] = useState<Record<string, PovExportMode>>({})
 
   const outputDirectory = project?.outputDirectory ?? settings?.outputDirectory ?? ''
 
@@ -114,6 +116,13 @@ export default function ExportPage({
   const selected = rows.filter((r) => chosen.has(r.clip.id))
   const exportable = rows.filter((r) => r.plan)
 
+  const expandForExport = (targets: ClipSegment[]): ClipSegment[] =>
+    expandClipsForExport(targets, project.sources, (clipId) => povMode[clipId] ?? { kind: 'main' })
+
+  const setAllPovModes = (mode: PovExportMode): void => {
+    setPovMode(Object.fromEntries(rows.map((r) => [r.clip.id, mode])))
+  }
+
   const exportCsv = async (): Promise<void> => {
     const csvRows: ClipListRow[] = rows.map((r) => ({
       name: r.clip.name,
@@ -156,9 +165,17 @@ export default function ExportPage({
             <Button variant="ghost" icon="file" onClick={() => void exportCsv()}>
               Export clip list (.csv)
             </Button>
+            <Menu
+              label="POV for every clip"
+              icon="users"
+              items={[
+                { id: 'all-main', label: 'Every clip: Main POV', onSelect: () => setAllPovModes({ kind: 'main' }) },
+                { id: 'all-all', label: 'Every clip: All POVs', onSelect: () => setAllPovModes({ kind: 'all' }) }
+              ]}
+            />
             <Button
               disabled={selected.length === 0}
-              onClick={() => onExport(selected.map((r) => r.clip))}
+              onClick={() => onExport(expandForExport(selected.map((r) => r.clip)))}
             >
               Export selected ({selected.length})
             </Button>
@@ -166,7 +183,7 @@ export default function ExportPage({
               variant="primary"
               icon="download"
               disabled={exportable.length === 0}
-              onClick={() => onExport(exportable.map((r) => r.clip))}
+              onClick={() => onExport(expandForExport(exportable.map((r) => r.clip)))}
             >
               Export all ({exportable.length})
             </Button>
@@ -187,10 +204,14 @@ export default function ExportPage({
               <th>Quality</th>
               <th>Video</th>
               <th>File</th>
+              <th>Export as</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
+            {rows.map((row) => {
+              const mode = povMode[row.clip.id] ?? { kind: 'main' as const }
+              const candidates = videoCapablePovs(row.clip, project.sources)
+              return (
               <tr key={row.clip.id}>
                 <td>
                   <input
@@ -235,8 +256,52 @@ export default function ExportPage({
                 <td className="mono ellipsis" title={row.path}>
                   {row.path}
                 </td>
+                <td>
+                  <Select
+                    size="compact"
+                    value={mode.kind}
+                    label={`POV to export ${row.clip.name} as`}
+                    disabled={candidates.length <= 1}
+                    onChange={(value) => {
+                      setPovMode((prev) => ({
+                        ...prev,
+                        [row.clip.id]:
+                          value === 'certain'
+                            ? { kind: 'certain', sourceIds: new Set(candidates.map((s) => s.id)) }
+                            : { kind: value as 'main' | 'all' }
+                      }))
+                    }}
+                    options={[
+                      { value: 'main', label: 'Main POV' },
+                      { value: 'all', label: `All POVs (${candidates.length})` },
+                      { value: 'certain', label: 'Choose POVs…' }
+                    ]}
+                  />
+                  {mode.kind === 'certain' && (
+                    <div className="pov-export-picker">
+                      {candidates.map((s) => (
+                        <Checkbox
+                          key={s.id}
+                          checked={mode.sourceIds.has(s.id)}
+                          label={povLabel(s)}
+                          onChange={(checked) => {
+                            setPovMode((prev) => {
+                              const cur = prev[row.clip.id]
+                              if (!cur || cur.kind !== 'certain') return prev
+                              const nextIds = new Set(cur.sourceIds)
+                              if (checked) nextIds.add(s.id)
+                              else nextIds.delete(s.id)
+                              return { ...prev, [row.clip.id]: { kind: 'certain', sourceIds: nextIds } }
+                            })
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
 

@@ -40,6 +40,7 @@ import { usePanelSize } from './usePanelSize.js'
 import {
   Button,
   ConfirmDialog,
+  Dialog,
   IconButton,
   Input,
   Menu,
@@ -94,6 +95,13 @@ export default function App(): JSX.Element {
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
   const [confirmQuit, setConfirmQuit] = useState(false)
+  // Carries the version/notes across 'available' -> 'downloading' ->
+  // 'downloaded' so the popup keeps showing them even once the status
+  // itself stops repeating them.
+  const [pendingUpdate, setPendingUpdate] = useState<{ version: string; releaseNotes?: string } | null>(
+    null
+  )
+  const [updateDismissed, setUpdateDismissed] = useState(false)
   const [windowMaximized, setWindowMaximized] = useState(false)
   /**
    * Who else was live during the selected clip, fetched the moment a clip
@@ -338,19 +346,15 @@ export default function App(): JSX.Element {
     return window.api.onUpdateStatus((status) => {
       const state = useStore.getState()
       state.setUpdateStatus(status)
-      if (status.state === 'available') {
-        state.toast({
-          kind: 'info',
-          title: 'Update available',
-          message: `Ripper Clipper v${status.version} is ready to download from Settings → Diagnostics.`
-        })
-      } else if (status.state === 'downloaded') {
-        state.toast({
-          kind: 'success',
-          title: 'Update downloaded',
-          message: `Restart to finish installing v${status.version} — Settings → Diagnostics.`
-        })
-      } else if (status.state === 'error') {
+      // A fresh check (launch, or a manual one from Settings) always gets a
+      // chance to show the popup again, even if an earlier one this session
+      // was dismissed with "Later" — that's what makes it reappear every
+      // launch until the update is actually installed.
+      if (status.state === 'checking') setUpdateDismissed(false)
+      if (status.state === 'available' || status.state === 'downloaded') {
+        setPendingUpdate({ version: status.version, releaseNotes: status.releaseNotes })
+      }
+      if (status.state === 'error') {
         state.toast({ kind: 'error', title: 'Update check failed', message: status.message })
       }
     })
@@ -1535,6 +1539,46 @@ export default function App(): JSX.Element {
       {showCommandPalette && (
         <CommandPalette items={commandPaletteItems} onClose={() => setShowCommandPalette(false)} />
       )}
+      {pendingUpdate &&
+        !updateDismissed &&
+        (store.updateStatus.state === 'available' ||
+          store.updateStatus.state === 'downloading' ||
+          store.updateStatus.state === 'downloaded') && (
+          <Dialog
+            title={`Ripper Clipper v${pendingUpdate.version} is ready`}
+            description={
+              store.updateStatus.state === 'downloaded'
+                ? 'Downloaded — restart to finish installing.'
+                : 'A new version is available to download.'
+            }
+            size="small"
+            onClose={() => setUpdateDismissed(true)}
+            footer={
+              <>
+                <Button onClick={() => setUpdateDismissed(true)}>Later</Button>
+                {store.updateStatus.state === 'available' && (
+                  <Button variant="primary" icon="download" onClick={() => void window.api.downloadUpdate()}>
+                    Download update
+                  </Button>
+                )}
+                {store.updateStatus.state === 'downloading' && (
+                  <Button variant="primary" loading disabled>
+                    Downloading… {store.updateStatus.percent}%
+                  </Button>
+                )}
+                {store.updateStatus.state === 'downloaded' && (
+                  <Button variant="primary" icon="refresh" onClick={() => window.api.installUpdate()}>
+                    Restart &amp; install
+                  </Button>
+                )}
+              </>
+            }
+          >
+            {pendingUpdate.releaseNotes && (
+              <p style={{ whiteSpace: 'pre-wrap' }}>{pendingUpdate.releaseNotes.slice(0, 800)}</p>
+            )}
+          </Dialog>
+        )}
       {store.clipNamePromptOpen && (
         <PromptDialog
           title="New clip"

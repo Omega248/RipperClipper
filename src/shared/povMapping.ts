@@ -297,6 +297,44 @@ export function videoCapablePovs(clip: ClipSegment, sources: VodSource[]): VodSo
   )
 }
 
+/** Which POV(s) a clip exports as — chosen per row on the Export page, or all at once. */
+export type PovExportMode =
+  | { kind: 'main' }
+  | { kind: 'all' }
+  | { kind: 'certain'; sourceIds: Set<string> }
+
+/**
+ * Turns each target clip into one or more POV-specific variants per its
+ * chosen export mode. A variant's id is suffixed by source so a clip
+ * exported from several POVs at once doesn't collide on the clip list's own
+ * status tracking, which keys off the plain clip id — the same trick "export
+ * every POV" already used before this existed as a per-clip choice.
+ */
+export function expandClipsForExport(
+  targets: ClipSegment[],
+  sources: VodSource[],
+  modeFor: (clipId: string) => PovExportMode
+): ClipSegment[] {
+  const out: ClipSegment[] = []
+  for (const clip of targets) {
+    const mode = modeFor(clip.id)
+    if (mode.kind === 'main') {
+      out.push(clip)
+      continue
+    }
+    const candidates = videoCapablePovs(clip, sources)
+    const picked = mode.kind === 'all' ? candidates : candidates.filter((s) => mode.sourceIds.has(s.id))
+    if (picked.length === 0) {
+      out.push(clip)
+      continue
+    }
+    for (const source of picked) {
+      out.push({ ...clip, id: `${clip.id}-${source.id}`, videoSourceId: source.id, audioSourceId: undefined })
+    }
+  }
+  return out
+}
+
 /**
  * Rebuild every clip's POV set. Called whenever the POV list or a sync mapping
  * changes — adding a POV, removing one, or correcting timing — so the stored

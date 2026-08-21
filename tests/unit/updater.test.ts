@@ -72,6 +72,28 @@ describe('status transitions', () => {
     expect(seen).toEqual([{ state: 'checking' }, { state: 'available', version: '1.2.3' }])
   })
 
+  it('carries the release notes through when the feed provides a plain string', () => {
+    const updater = new UpdateService(log, 'stable')
+    fakeAutoUpdater.emit('update-available', { version: '1.2.3', releaseNotes: 'Fixed the thing.' })
+    expect(updater.current()).toEqual({
+      state: 'available',
+      version: '1.2.3',
+      releaseNotes: 'Fixed the thing.'
+    })
+  })
+
+  it('picks the matching version out of a multi-version release notes array', () => {
+    const updater = new UpdateService(log, 'stable')
+    fakeAutoUpdater.emit('update-available', {
+      version: '1.2.3',
+      releaseNotes: [
+        { version: '1.2.2', note: 'Older notes.' },
+        { version: '1.2.3', note: 'Newer notes.' }
+      ]
+    })
+    expect(updater.current()).toMatchObject({ releaseNotes: 'Newer notes.' })
+  })
+
   it('rounds download progress to a whole percent', () => {
     const updater = new UpdateService(log, 'stable')
     fakeAutoUpdater.emit('download-progress', { percent: 42.7 })
