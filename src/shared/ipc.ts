@@ -132,6 +132,8 @@ export interface SavedStreamer {
    * showing the same broadcast twice.
    */
   personId?: string
+  /** Kept at the top of the streamer list regardless of last-used date. */
+  favorite?: boolean
 }
 
 /**
@@ -223,6 +225,8 @@ export const IPC = {
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   streamersSetGroups: 'streamers:set-groups',
+  streamersSetFavorite: 'streamers:set-favorite',
+  streamersRestore: 'streamers:restore',
   streamersLinkPerson: 'streamers:link-person',
   streamersUnlinkPerson: 'streamers:unlink-person',
   streamersVodQuality: 'streamers:vod-quality',
@@ -259,6 +263,7 @@ export const IPC = {
   exportResume: 'export:resume',
   exportRetry: 'export:retry',
   exportRetryAllFailed: 'export:retry-all-failed',
+  exportReorder: 'export:reorder',
   exportClearFinished: 'export:clear-finished',
   exportList: 'export:list',
   exportClipListCsv: 'export:clip-list-csv',
@@ -281,6 +286,8 @@ export const IPC = {
   windowToggleMaximize: 'window:toggle-maximize',
   windowClose: 'window:close',
   windowIsMaximized: 'window:is-maximized',
+  /** Renderer says it's fine to actually close now — no unsaved work, or the user chose to discard it. */
+  windowConfirmClose: 'window:confirm-close',
 
   // updates — only ever meaningful on the stable channel, see updater.ts
   updateCheck: 'update:check',
@@ -294,7 +301,9 @@ export const IPC = {
   evtDeps: 'evt:deps',
   evtOpenProject: 'evt:open-project',
   evtWindowMaximized: 'evt:window-maximized',
-  evtUpdate: 'evt:update'
+  evtUpdate: 'evt:update',
+  /** Fired instead of actually closing, so the renderer gets to check for unsaved work first. */
+  evtBeforeClose: 'evt:before-close'
 } as const
 
 export interface EnvInfo {
@@ -456,6 +465,10 @@ export interface RendererApi {
   streamerVods(id: string): Promise<StreamerVod[]>
   /** Replaces a streamer's whole group membership list. */
   setStreamerGroups(id: string, groupIds: string[]): Promise<SavedStreamer[]>
+  /** Pins/unpins a streamer to the top of the list. */
+  setStreamerFavorite(id: string, favorite: boolean): Promise<SavedStreamer[]>
+  /** Undoes a removal — re-inserts the exact streamer object removed, not a fresh add. */
+  restoreStreamer(streamer: SavedStreamer): Promise<SavedStreamer[]>
   /** Marks two saved streamers as the same real person restreaming elsewhere. */
   linkStreamerPerson(idA: string, idB: string): Promise<SavedStreamer[]>
   /** Undoes linkStreamerPerson for one streamer. */
@@ -484,6 +497,8 @@ export interface RendererApi {
   retryJob(jobId: string): Promise<void>
   retryAllFailed(): Promise<void>
   clearFinished(): Promise<void>
+  /** Moves a queued job to a new position — also changes run priority for not-yet-started jobs. */
+  reorderJob(jobId: string, toIndex: number): Promise<void>
   listJobs(): Promise<ExportJob[]>
   /** Prompts for a save location and writes the CSV; null if the user cancelled. */
   exportClipListCsv(csv: string, suggestedName: string): Promise<string | null>
@@ -503,6 +518,8 @@ export interface RendererApi {
   toggleMaximizeWindow(): Promise<void>
   closeWindow(): Promise<void>
   isWindowMaximized(): Promise<boolean>
+  /** Tells main it's fine to actually close now, after the renderer checked for unsaved work. */
+  confirmClose(): Promise<void>
 
   /** Kicks off a check against the GitHub-releases feed; result also arrives via onUpdateStatus. */
   checkForUpdates(): Promise<UpdateStatus>
@@ -517,4 +534,6 @@ export interface RendererApi {
   /** Fires on maximize/unmaximize/snap, so the restore-vs-maximize icon stays honest. */
   onWindowMaximized(cb: (maximized: boolean) => void): () => void
   onUpdateStatus(cb: (status: UpdateStatus) => void): () => void
+  /** The window is about to close — a chance to confirm losing unsaved work before it actually does. */
+  onBeforeClose(cb: () => void): () => void
 }

@@ -78,8 +78,8 @@ export default function QueuePanel(): JSX.Element {
         */}
       {!collapsed && jobs.length > 0 && (
         <div className="queue-list">
-          {jobs.map((job) => (
-            <JobRow key={job.id} job={job} />
+          {jobs.map((job, index) => (
+            <JobRow key={job.id} job={job} index={index} total={jobs.length} />
           ))}
         </div>
       )}
@@ -87,7 +87,7 @@ export default function QueuePanel(): JSX.Element {
   )
 }
 
-function JobRow({ job }: { job: ExportJob }): JSX.Element {
+function JobRow({ job, index, total }: { job: ExportJob; index: number; total: number }): JSX.Element {
   const stage = job.progress.stage
   const status = jobStatus(stage)
   const fraction = stage === 'complete' ? 1 : job.progress.overallProgress
@@ -134,6 +134,15 @@ function JobRow({ job }: { job: ExportJob }): JSX.Element {
               label="Show in folder"
               onClick={() => void window.api.revealPath(job.outputPath!)}
             />
+            <IconButton
+              icon="copy"
+              size="compact"
+              label="Copy the file path"
+              onClick={() => {
+                void navigator.clipboard.writeText(job.outputPath!)
+                useStore.getState().toast({ kind: 'success', title: 'Path copied', message: job.outputPath! })
+              }}
+            />
           </>
         )}
         {(stage === 'failed' || stage === 'cancelled') && (
@@ -149,6 +158,20 @@ function JobRow({ job }: { job: ExportJob }): JSX.Element {
             onClick={() => void window.api.cancelJob(job.id)}
           />
         )}
+        <IconButton
+          icon="chevron-up"
+          size="compact"
+          label="Move up in the queue"
+          disabled={index === 0}
+          onClick={() => void window.api.reorderJob(job.id, index - 1)}
+        />
+        <IconButton
+          icon="chevron-down"
+          size="compact"
+          label="Move down in the queue"
+          disabled={index === total - 1}
+          onClick={() => void window.api.reorderJob(job.id, index + 1)}
+        />
       </span>
     </div>
   )

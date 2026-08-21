@@ -329,6 +329,43 @@ describe('ExportQueue', () => {
     await settle(queue, allFinished)
   })
 
+  it('moves a queued job to a new position, changing run priority too', async () => {
+    const queue = new ExportQueue(log, fakeExporter({}), join(dir, 'work'))
+    queue.pause()
+    const jobs = await queue.enqueue({
+      source: SOURCE,
+      clips: [clip('First', 0, 10), clip('Second', 20, 30), clip('Third', 40, 50)],
+      streams: STREAMS,
+      settings: DEFAULT_EXPORT_SETTINGS,
+      outputDirectory: outDir
+    })
+    const [first, second, third] = jobs
+
+    queue.reorder(third.id, 0)
+
+    expect(queue.list().map((j) => j.id)).toEqual([third.id, first.id, second.id])
+
+    queue.resume()
+    await settle(queue, allFinished)
+  })
+
+  it('does nothing for a job id that is not in the queue', async () => {
+    const queue = new ExportQueue(log, fakeExporter({}), join(dir, 'work'))
+    await queue.enqueue({
+      source: SOURCE,
+      clips: [clip('Only', 0, 10)],
+      streams: STREAMS,
+      settings: DEFAULT_EXPORT_SETTINGS,
+      outputDirectory: outDir
+    })
+    const before = queue.list().map((j) => j.id)
+
+    queue.reorder('not_a_real_job', 0)
+
+    expect(queue.list().map((j) => j.id)).toEqual(before)
+    await settle(queue, allFinished)
+  })
+
   it('reports insufficient disk space instead of filling the drive', async () => {
     const queue = new ExportQueue(log, fakeExporter({}), join(dir, 'work'))
     await expect(

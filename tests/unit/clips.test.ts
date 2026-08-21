@@ -6,6 +6,7 @@ import {
   makeMarker,
   markerToRange,
   normalizeOrder,
+  overlappingClipIds,
   removeClip,
   reorderClips,
   updateClip
@@ -148,5 +149,28 @@ describe('markers', () => {
 
     const late = makeMarker({ sourceId: SOURCE, timeSeconds: 95, label: 'End' })
     expect(markerToRange(late, 100)).toEqual({ startSeconds: 80, endSeconds: 100 })
+  })
+})
+
+describe('overlappingClipIds', () => {
+  it('flags two clips that cover nearly the same moment', () => {
+    let clips: ClipSegment[] = []
+    clips = addClip(clips, { name: 'A', sourceId: SOURCE, startSeconds: 100, endSeconds: 200 }, DURATION)
+    clips = addClip(clips, { name: 'B', sourceId: SOURCE, startSeconds: 120, endSeconds: 220 }, DURATION)
+    const flagged = overlappingClipIds(clips)
+    expect(flagged.size).toBe(2)
+    expect(flagged.has(clips[0].id)).toBe(true)
+    expect(flagged.has(clips[1].id)).toBe(true)
+  })
+
+  it('leaves clips that merely touch alone', () => {
+    let clips: ClipSegment[] = []
+    clips = addClip(clips, { name: 'A', sourceId: SOURCE, startSeconds: 100, endSeconds: 200 }, DURATION)
+    clips = addClip(clips, { name: 'B', sourceId: SOURCE, startSeconds: 190, endSeconds: 300 }, DURATION)
+    expect(overlappingClipIds(clips).size).toBe(0)
+  })
+
+  it('leaves genuinely unrelated clips alone', () => {
+    expect(overlappingClipIds(seed()).size).toBe(0)
   })
 })

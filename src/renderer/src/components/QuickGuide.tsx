@@ -93,7 +93,8 @@ const KEYS: Array<[string, string]> = [
   ['= / -', 'Zoom the timeline'],
   ['Ctrl + Z', 'Undo'],
   ['Ctrl + Shift + Z', 'Redo'],
-  ['Ctrl + S', 'Save the project']
+  ['Ctrl + S', 'Save the project'],
+  ['Ctrl + K', 'Jump to a clip or open a panel']
 ]
 
 export default function QuickGuide({ onClose }: Props): JSX.Element {

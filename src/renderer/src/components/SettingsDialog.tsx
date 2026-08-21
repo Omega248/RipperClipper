@@ -175,6 +175,15 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
                     }
                   />
                 </Field>
+                <Field label="When a batch finishes">
+                  <Checkbox
+                    checked={settings.ui.exportCompletionSound}
+                    label="Play a short sound, alongside the toast and notification"
+                    onChange={(checked) =>
+                      void save({ ui: { ...settings.ui, exportCompletionSound: checked } })
+                    }
+                  />
+                </Field>
               </div>
               <div className="hint">
                 Quality, file type, folders and filenames are set per project on the Export page,

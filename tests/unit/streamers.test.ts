@@ -431,3 +431,54 @@ describe('VOD quality probing', () => {
     expect(result['https://b']).toBeNull()
   })
 })
+
+describe('favourites and undo', () => {
+  let dir: string
+  let log: Logger
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cookieclip-streamers-'))
+    log = new Logger(join(dir, 'logs'))
+    service = new StreamerService(log, new ResolverService(log), dir)
+  })
+
+  afterEach(async () => {
+    log.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('pins and unpins a streamer', async () => {
+    await service.add('twitch.tv/leonarwho')
+    const [streamer] = await service.list()
+
+    const pinned = await service.setFavorite(streamer.id, true)
+    expect(pinned[0].favorite).toBe(true)
+
+    const unpinned = await service.setFavorite(streamer.id, false)
+    expect(unpinned[0].favorite).toBeUndefined()
+  })
+
+  it('restores a removed streamer with its id and metadata intact', async () => {
+    await service.add('twitch.tv/leonarwho')
+    const [pd] = await service.createGroup('PD')
+    const [streamer] = await service.list()
+    await service.setGroups(streamer.id, [pd.id])
+    const [withGroup] = await service.list()
+
+    await service.remove(streamer.id)
+    expect(await service.list()).toEqual([])
+
+    const restored = await service.restore(withGroup)
+    expect(restored).toEqual([withGroup])
+  })
+
+  it('restoring a streamer that is already present is a no-op', async () => {
+    await service.add('twitch.tv/leonarwho')
+    const [streamer] = await service.list()
+
+    const result = await service.restore(streamer)
+
+    expect(result).toEqual([streamer])
+  })
+})

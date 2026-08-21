@@ -84,6 +84,8 @@ const api: RendererApi = {
   setStreamerWatermark: (id, watermark) => invoke(IPC.streamersWatermark, id, watermark),
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
   setStreamerGroups: (id, groupIds) => invoke(IPC.streamersSetGroups, id, groupIds),
+  setStreamerFavorite: (id, favorite) => invoke(IPC.streamersSetFavorite, id, favorite),
+  restoreStreamer: (streamer) => invoke(IPC.streamersRestore, streamer),
   linkStreamerPerson: (idA, idB) => invoke(IPC.streamersLinkPerson, idA, idB),
   unlinkStreamerPerson: (id) => invoke(IPC.streamersUnlinkPerson, id),
   streamerVodQuality: (urls) => invoke(IPC.streamersVodQuality, urls),
@@ -102,6 +104,7 @@ const api: RendererApi = {
   retryJob: (jobId) => invoke(IPC.exportRetry, jobId),
   retryAllFailed: () => invoke(IPC.exportRetryAllFailed),
   clearFinished: () => invoke(IPC.exportClearFinished),
+  reorderJob: (jobId, toIndex) => invoke(IPC.exportReorder, jobId, toIndex),
   listJobs: () => invoke(IPC.exportList),
   exportClipListCsv: (csv, suggestedName) => invoke(IPC.exportClipListCsv, csv, suggestedName),
 
@@ -123,6 +126,7 @@ const api: RendererApi = {
   toggleMaximizeWindow: () => invoke(IPC.windowToggleMaximize),
   closeWindow: () => invoke(IPC.windowClose),
   isWindowMaximized: () => invoke(IPC.windowIsMaximized),
+  confirmClose: () => invoke(IPC.windowConfirmClose),
 
   onJobs: (cb: (jobs: ExportJob[]) => void) => {
     const listener = (_e: unknown, jobs: ExportJob[]): void => cb(jobs)
@@ -148,6 +152,11 @@ const api: RendererApi = {
     const listener = (_e: unknown, status: UpdateStatus): void => cb(status)
     ipcRenderer.on(IPC.evtUpdate, listener)
     return () => ipcRenderer.removeListener(IPC.evtUpdate, listener)
+  },
+  onBeforeClose: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on(IPC.evtBeforeClose, listener)
+    return () => ipcRenderer.removeListener(IPC.evtBeforeClose, listener)
   }
 }
 

@@ -24,7 +24,7 @@ export default function Properties(): JSX.Element {
   const currentTime = useStore((s) => s.currentTime)
   const setInPoint = useStore((s) => s.setInPoint)
   const setOutPoint = useStore((s) => s.setOutPoint)
-  const createClip = useStore((s) => s.createClip)
+  const requestCreateClip = useStore((s) => s.requestCreateClip)
 
   const clip = clips.find((c) => c.id === selectedClipId) ?? null
 
@@ -102,7 +102,7 @@ export default function Properties(): JSX.Element {
             icon="plus"
             fullWidth
             disabled={!source}
-            onClick={() => createClip()}
+            onClick={() => requestCreateClip()}
             title="Add the pending selection as a clip (Enter)"
           >
             Add selection as clip

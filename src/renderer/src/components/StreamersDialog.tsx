@@ -24,6 +24,18 @@ import {
   StatusBadge
 } from '../ui/index.js'
 
+/** A coarse "how stale is this" phrase — exact minutes don't matter, only the ballpark. */
+function timeAgo(ms: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (seconds < 60) return 'just now'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  return `${days}d ago`
+}
+
 /** A group's own colour and icon, badge-shaped — Badge itself only knows the fixed status tones. */
 function GroupChip({ group }: { group: StreamerGroup }): JSX.Element {
   return (
@@ -71,6 +83,7 @@ export default function StreamersDialog({
   const [streamers, setStreamers] = useState<SavedStreamer[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [vods, setVods] = useState<StreamerVod[]>([])
+  const [lastCheckedAt, setLastCheckedAt] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [input, setInput] = useState('')
@@ -109,6 +122,7 @@ export default function StreamersDialog({
       setVods([])
       try {
         setVods(await window.api.streamerVods(id))
+        setLastCheckedAt(Date.now())
       } catch (err) {
         setListError(`${title(err, 'Could not list VODs')}: ${message(err)}`)
       } finally {
@@ -229,9 +243,33 @@ export default function StreamersDialog({
         setSelected(null)
         setVods([])
       }
+      toast({
+        kind: 'success',
+        title: `Removed ${streamer.displayName}`,
+        message: 'Their VODs and groups are gone from the list.',
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            void window.api.restoreStreamer(streamer).then(setStreamers)
+          }
+        }
+      })
     } catch (err) {
       toast({ kind: 'error', title: title(err, 'Could not remove'), message: message(err) })
     }
+  }
+
+  const toggleFavorite = async (streamer: SavedStreamer): Promise<void> => {
+    try {
+      setStreamers(await window.api.setStreamerFavorite(streamer.id, !streamer.favorite))
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not update favourite'), message: message(err) })
+    }
+  }
+
+  const copyChannelLink = (streamer: SavedStreamer): void => {
+    void navigator.clipboard.writeText(streamer.channelUrl)
+    toast({ kind: 'success', title: 'Link copied', message: streamer.channelUrl })
   }
 
   const createGroup = async (name: string, icon: string, color: string): Promise<void> => {
@@ -322,6 +360,7 @@ export default function StreamersDialog({
   const shownStreamers = streamers
     .filter((st) => needle === '' || st.displayName.toLowerCase().includes(needle))
     .filter((st) => groupFilter === null || st.groupIds?.includes(groupFilter))
+    .sort((a, b) => Number(Boolean(b.favorite)) - Number(Boolean(a.favorite)))
   const shownVods =
     needle === '' ? vods : vods.filter((v) => v.title.toLowerCase().includes(needle))
 
@@ -650,6 +689,19 @@ export default function StreamersDialog({
                   </span>
                 </button>
                 <IconButton
+                  icon="star"
+                  size="compact"
+                  selected={streamer.favorite}
+                  label={streamer.favorite ? `Unpin ${streamer.displayName}` : `Pin ${streamer.displayName} to the top`}
+                  onClick={() => void toggleFavorite(streamer)}
+                />
+                <IconButton
+                  icon="copy"
+                  size="compact"
+                  label={`Copy ${streamer.displayName}'s channel link`}
+                  onClick={() => copyChannelLink(streamer)}
+                />
+                <IconButton
                   icon="link"
                   size="compact"
                   label={
@@ -865,6 +917,18 @@ export default function StreamersDialog({
               )}
               <hr className="rule" />
             </>
+          )}
+
+          {!loading && selected && lastCheckedAt && (
+            <div className="hint vod-checked-row">
+              <span>checked {timeAgo(lastCheckedAt)}</span>
+              <IconButton
+                icon="refresh"
+                size="compact"
+                label="Check again"
+                onClick={() => void loadVods(selected)}
+              />
+            </div>
           )}
 
           {loading && <Spinner label="Asking the platform for recent broadcasts…" />}

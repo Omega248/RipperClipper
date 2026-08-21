@@ -32,6 +32,8 @@ import WatermarkEditor from './components/WatermarkEditor.js'
 import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
 import Toasts from './components/Toasts.js'
+import CommandPalette from './components/CommandPalette.js'
+import { playerBus } from './player/controller.js'
 import { usePlayerViewport } from './player/usePlayerViewport.js'
 import { useShortcuts } from './hooks/useShortcuts.js'
 import { usePanelSize } from './usePanelSize.js'
@@ -90,6 +92,8 @@ export default function App(): JSX.Element {
   const [confirmNewProject, setConfirmNewProject] = useState(false)
   const [showWatermark, setShowWatermark] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
+  const [showCommandPalette, setShowCommandPalette] = useState(false)
+  const [confirmQuit, setConfirmQuit] = useState(false)
   const [windowMaximized, setWindowMaximized] = useState(false)
   /**
    * Who else was live during the selected clip, fetched the moment a clip
@@ -101,6 +105,17 @@ export default function App(): JSX.Element {
   const [eventOverlapLoading, setEventOverlapLoading] = useState(false)
   const urlRef = useRef<HTMLInputElement | null>(null)
   const autosaveTimer = useRef<ReturnType<typeof setInterval> | null>(null)
+  // There's no explicit "close project" action — projects are just swapped
+  // out for another. Watching the path itself catch every swap regardless of
+  // which of the several open/new/recent code paths caused it.
+  const lastClosedProjectPath = useRef<string | null>(null)
+  const prevProjectPath = useRef<string | null>(null)
+  useEffect(() => {
+    if (prevProjectPath.current && prevProjectPath.current !== store.projectPath) {
+      lastClosedProjectPath.current = prevProjectPath.current
+    }
+    prevProjectPath.current = store.projectPath
+  }, [store.projectPath])
 
   const patchUiSettings = useCallback(
     (patch: Partial<NonNullable<typeof store.settings>['ui']>) => {
@@ -140,7 +155,7 @@ export default function App(): JSX.Element {
   )
 
 
-  useShortcuts(() => setShowFind(true))
+  useShortcuts(() => setShowFind(true), () => setShowCommandPalette(true))
   // One place decides what theme the whole application is in, and it repaints
   // everything at once because every colour comes from one variable block.
   useTheme(store.settings?.ui.theme)
@@ -152,6 +167,56 @@ export default function App(): JSX.Element {
     void window.api.isWindowMaximized().then(setWindowMaximized)
     return window.api.onWindowMaximized(setWindowMaximized)
   }, [])
+
+  // The window doesn't actually close on its own — see main/index.ts's
+  // `close` handler — so whatever triggered it (titlebar button, Alt+F4,
+  // the taskbar) ends up here with a chance to check for unsaved work first.
+  useEffect(() => {
+    return window.api.onBeforeClose(() => {
+      if (useStore.getState().dirty) setConfirmQuit(true)
+      else void window.api.confirmClose()
+    })
+  }, [])
+
+  const commandPaletteItems = [
+    ...clips.map((clip) => ({
+      id: `clip-${clip.id}`,
+      label: `Clip: ${clip.name}`,
+      icon: 'scissors' as const,
+      onSelect: () => {
+        setPage('video')
+        setTab('clips')
+        store.selectClip(clip.id)
+        playerBus.seek(clip.startSeconds)
+      }
+    })),
+    { id: 'new-clip', label: 'New clip…', icon: 'plus' as const, onSelect: () => store.requestCreateClip() },
+    {
+      id: 'find-in-povs',
+      label: 'Find in all POVs',
+      icon: 'search' as const,
+      onSelect: () => setShowFind(true)
+    },
+    {
+      id: 'open-streamers',
+      label: 'Open Streamers',
+      icon: 'users' as const,
+      onSelect: () => setShowStreamers(true)
+    },
+    {
+      id: 'open-settings',
+      label: 'Open Settings',
+      icon: 'settings' as const,
+      onSelect: () => setShowSettings(true)
+    },
+    {
+      id: 'version-history',
+      label: 'Version history',
+      icon: 'clock' as const,
+      onSelect: () => setShowVersionHistory(true)
+    },
+    { id: 'quick-guide', label: 'Quick guide', icon: 'help' as const, onSelect: () => setShowGuide(true) }
+  ]
 
   const selectedClip =
     store.project?.clips.find((c) => c.id === store.selectedClipId) ?? null
@@ -237,7 +302,7 @@ export default function App(): JSX.Element {
         store.setRecentProjects(recentProjects)
 
         const project = await window.api.newProject('Untitled project')
-        project.exportSettings = settings.export
+        project.exportSettings = settings.exportPresets.find((p) => p.isDefault)?.settings ?? settings.export
         project.outputDirectory = settings.outputDirectory
         store.setProject(project, null)
 
@@ -423,6 +488,25 @@ export default function App(): JSX.Element {
               new Notification('Ripper Clipper', { body: summary, silent: failed === 0 })
             }
           })
+        }
+
+        // Synthesised, not a bundled file — one short tone, no asset to ship.
+        if (total > 0 && state.settings?.ui.exportCompletionSound) {
+          try {
+            const ctx = new AudioContext()
+            const osc = ctx.createOscillator()
+            const gain = ctx.createGain()
+            osc.frequency.value = failed === 0 ? 880 : 440
+            gain.gain.setValueAtTime(0.15, ctx.currentTime)
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+            osc.connect(gain)
+            gain.connect(ctx.destination)
+            osc.start()
+            osc.stop(ctx.currentTime + 0.4)
+            osc.onended = () => void ctx.close()
+          } catch {
+            // Audio isn't available in every environment; the toast/notification still fired.
+          }
         }
 
         batchTally.current = { total: 0, failed: 0 }
@@ -777,7 +861,8 @@ export default function App(): JSX.Element {
     try {
       const project = await window.api.newProject('Untitled project')
       if (state.settings) {
-        project.exportSettings = state.settings.export
+        project.exportSettings =
+          state.settings.exportPresets.find((p) => p.isDefault)?.settings ?? state.settings.export
         project.outputDirectory = state.settings.outputDirectory
       }
       store.setProject(project, null)
@@ -909,6 +994,15 @@ export default function App(): JSX.Element {
           items={[
             { id: 'new', label: 'New project', icon: 'new', onSelect: startNewProject },
             { id: 'open', label: 'Open project…', icon: 'open', onSelect: () => void openProject() },
+            {
+              id: 'reopen-last-closed',
+              label: lastClosedProjectPath.current
+                ? `Reopen "${projectFileName(lastClosedProjectPath.current)}"`
+                : 'Reopen last closed project',
+              icon: 'undo',
+              disabled: !lastClosedProjectPath.current,
+              onSelect: () => void openRecentProject(lastClosedProjectPath.current!)
+            },
             ...store.recentProjects.slice(0, 6).map((path, i) => ({
               id: `recent-${path}`,
               label: projectFileName(path),
@@ -1438,6 +1532,22 @@ export default function App(): JSX.Element {
           onRestored={(project) => store.setProject(project, null)}
         />
       )}
+      {showCommandPalette && (
+        <CommandPalette items={commandPaletteItems} onClose={() => setShowCommandPalette(false)} />
+      )}
+      {store.clipNamePromptOpen && (
+        <PromptDialog
+          title="New clip"
+          description="Leave it blank for an automatic name."
+          label="Clip name"
+          confirmLabel="Create"
+          onCancel={() => store.closeClipNamePrompt()}
+          onConfirm={(name) => {
+            store.closeClipNamePrompt()
+            store.createClip(name)
+          }}
+        />
+      )}
       {combinePrompt !== null && (
         <PromptDialog
           title="Combine clips into one file"
@@ -1463,6 +1573,19 @@ export default function App(): JSX.Element {
           onConfirm={(name) => {
             setSequenceExportPrompt(null)
             void exportTimelineSequence(name)
+          }}
+        />
+      )}
+      {confirmQuit && (
+        <ConfirmDialog
+          title="Quit with unsaved changes?"
+          description={`"${store.project?.name}" has unsaved changes. They will be lost.`}
+          confirmLabel="Quit without saving"
+          destructive
+          onCancel={() => setConfirmQuit(false)}
+          onConfirm={() => {
+            setConfirmQuit(false)
+            void window.api.confirmClose()
           }}
         />
       )}

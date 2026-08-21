@@ -42,6 +42,7 @@ import type {
   FilmstripQuery,
   FilmstripReply,
   PreviewMediaRequest,
+  SavedStreamer,
   StreamerGroup,
   TimelineExportRequest
 } from '../shared/ipc.js'
@@ -74,6 +75,8 @@ if (__CHANNEL__ !== 'stable') {
 }
 
 let mainWindow: BrowserWindow | null = null
+/** Set once the renderer has confirmed it's fine to lose whatever isn't saved. */
+let allowClose = false
 let localServer: LocalServer | null = null
 let tray: Tray | null = null
 
@@ -334,6 +337,15 @@ async function createWindow(): Promise<void> {
   })
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+
+  // Every close path — the titlebar button, Alt+F4, the taskbar — ends up
+  // here. The renderer gets one chance to check for unsaved work before the
+  // window actually goes; windowConfirmClose is how it says "go ahead".
+  mainWindow.on('close', (event) => {
+    if (allowClose) return
+    event.preventDefault()
+    mainWindow?.webContents.send(IPC.evtBeforeClose)
+  })
 
   // The renderer draws its own maximize/restore icon; it has to be told
   // when the real state changes, including from a source that isn't its own
@@ -671,6 +683,8 @@ function registerIpc(): void {
   )
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
+  handle(IPC.streamersSetFavorite, (id: string, favorite: boolean) => streamers.setFavorite(id, favorite))
+  handle(IPC.streamersRestore, (streamer: SavedStreamer) => streamers.restore(streamer))
   handle(IPC.streamersLinkPerson, (idA: string, idB: string) => streamers.linkPerson(idA, idB))
   handle(IPC.streamersUnlinkPerson, (id: string) => streamers.unlinkPerson(id))
   handle(IPC.streamersVodQuality, (urls: string[]) => streamers.probeQuality(urls))
@@ -803,6 +817,7 @@ function registerIpc(): void {
   handle(IPC.exportRetry, (jobId: string) => queue.retry(jobId))
   handle(IPC.exportRetryAllFailed, () => queue.retryAllFailed())
   handle(IPC.exportClearFinished, () => queue.clearFinished())
+  handle(IPC.exportReorder, (jobId: string, toIndex: number) => queue.reorder(jobId, toIndex))
   handle(IPC.exportList, () => queue.list())
   handle(IPC.exportClipListCsv, async (csv: string, suggestedName: string) => {
     const result = await dialog.showSaveDialog({
@@ -844,6 +859,10 @@ function registerIpc(): void {
     mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize()
   )
   handle(IPC.windowClose, () => mainWindow?.close())
+  handle(IPC.windowConfirmClose, () => {
+    allowClose = true
+    mainWindow?.close()
+  })
   handle(IPC.windowIsMaximized, () => mainWindow?.isMaximized() ?? false)
 }
 

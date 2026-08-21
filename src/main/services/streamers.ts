@@ -248,6 +248,26 @@ export class StreamerService {
     return this.write(current.map((s) => (s.id === streamerId ? { ...s, groupIds } : s)))
   }
 
+  /** Re-inserts a specific removed streamer as-is — the renderer's undo, not a plain re-add. */
+  async restore(streamer: SavedStreamer): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    if (current.some((s) => s.id === streamer.id)) return current
+    return this.write([...current, streamer])
+  }
+
+  /** Pins/unpins a streamer to the top of the list, regardless of last-used date. */
+  async setFavorite(streamerId: string, favorite: boolean): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    return this.write(
+      current.map((s) => {
+        if (s.id !== streamerId) return s
+        if (favorite) return { ...s, favorite: true }
+        const { favorite: _drop, ...rest } = s
+        return rest
+      })
+    )
+  }
+
   /**
    * Mark two saved streamers as the same real person restreaming to more than
    * one platform. If either is already linked to others, the new streamer

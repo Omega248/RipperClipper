@@ -40,7 +40,7 @@ export default function Transport(): JSX.Element {
   const setSequenceIndex = useStore((s) => s.setSequenceIndex)
   const setInPoint = useStore((s) => s.setInPoint)
   const setOutPoint = useStore((s) => s.setOutPoint)
-  const createClip = useStore((s) => s.createClip)
+  const requestCreateClip = useStore((s) => s.requestCreateClip)
   const hasSource = useStore((s) => s.activeSourceId !== null)
   const sources = useStore((s) => s.project?.sources)
   const activeSourceId = useStore((s) => s.activeSourceId)
@@ -174,7 +174,7 @@ export default function Transport(): JSX.Element {
         variant="primary"
         icon="plus"
         disabled={!hasSource}
-        onClick={() => createClip()}
+        onClick={() => requestCreateClip()}
         title="Add the marked range to your clip list (Enter)"
       >
         Add clip

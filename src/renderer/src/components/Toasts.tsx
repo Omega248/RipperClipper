@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useStore } from '../store.js'
-import { Icon, IconButton } from '../ui/index.js'
+import { Button, Icon, IconButton } from '../ui/index.js'
 import type { IconName } from '../ui/index.js'
 
 /**
@@ -42,6 +42,19 @@ export default function Toasts(): JSX.Element {
             onClick={() => dismiss(toast.id)}
           />
           <p>{toast.message}</p>
+          {toast.action && (
+            <Button
+              size="compact"
+              variant="ghost"
+              className="toast-action"
+              onClick={() => {
+                toast.action!.onClick()
+                dismiss(toast.id)
+              }}
+            >
+              {toast.action.label}
+            </Button>
+          )}
         </div>
       ))}
     </div>

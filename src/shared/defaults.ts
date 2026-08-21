@@ -59,7 +59,8 @@ export function defaultSettings(paths: {
     },
     ui: {
       theme: 'system',
-      timelineFollowPlayhead: true
+      timelineFollowPlayhead: true,
+      exportCompletionSound: false
     },
     shortcuts: { ...DEFAULT_SHORTCUTS },
     exportPresets: []
@@ -103,7 +104,7 @@ export function mergeSettings(base: AppSettings, patch: unknown): AppSettings {
     },
     ui: {
       ...base.ui,
-      ...pick(p.ui, ['theme', 'timelineFollowPlayhead', 'sidePanelWidth', 'timelineHeight'])
+      ...pick(p.ui, ['theme', 'timelineFollowPlayhead', 'sidePanelWidth', 'timelineHeight', 'exportCompletionSound'])
     },
     shortcuts: {
       ...base.shortcuts,
@@ -126,6 +127,7 @@ function parseExportPresets(value: unknown, fallback: ExportPreset[]): ExportPre
     out.push({
       id: e.id,
       name: e.name,
+      ...(e.isDefault === true ? { isDefault: true } : {}),
       settings: {
         ...DEFAULT_EXPORT_SETTINGS,
         ...pick<ExportSettings>(e.settings, [
@@ -140,6 +142,13 @@ function parseExportPresets(value: unknown, fallback: ExportPreset[]): ExportPre
         ])
       }
     })
+  }
+  // At most one default survives, even if a hand-edited settings file had more.
+  let seenDefault = false
+  for (const preset of out) {
+    if (!preset.isDefault) continue
+    if (seenDefault) delete preset.isDefault
+    else seenDefault = true
   }
   return out
 }

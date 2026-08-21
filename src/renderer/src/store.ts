@@ -66,6 +66,8 @@ export type WorkspacePage = 'video' | 'editor' | 'properties' | 'export'
 
 export interface Toast extends ToastEvent {
   id: string
+  /** A clickable follow-up ("Undo") — renderer-only, so it never crosses the IPC boundary the base ToastEvent does. */
+  action?: { label: string; onClick: () => void }
 }
 
 interface HistoryEntry {
@@ -97,6 +99,8 @@ interface State {
   selectedClipId: string | null
   inPoint: number | null
   outPoint: number | null
+  /** True while the "name this clip" prompt is open, requested from three different entry points. */
+  clipNamePromptOpen: boolean
 
   // player
   currentTime: number
@@ -151,6 +155,9 @@ interface Actions {
   redo: () => void
 
   createClip: (name?: string) => string | null
+  /** Opens the "name this clip" prompt, if there's actually a clip to create. App.tsx owns the dialog. */
+  requestCreateClip: () => void
+  closeClipNamePrompt: () => void
   setClipPov: (clipId: string, role: 'video' | 'audio', sourceId: string | undefined) => void
   nudgeSync: (sourceId: string, deltaSeconds: number) => void
   setClipPovOffset: (clipId: string, sourceId: string, seconds: number) => void
@@ -169,6 +176,8 @@ interface Actions {
     id: string,
     patch: Partial<Pick<ClipSegment, 'name' | 'startSeconds' | 'endSeconds' | 'status' | 'tag'>>
   ) => void
+  /** Applies the same tag to several clips in one update, for the clip list's multi-select. */
+  patchClips: (ids: string[], patch: Partial<Pick<ClipSegment, 'tag'>>) => void
   deleteClip: (id: string) => void
   copyClip: (id: string) => void
   moveClip: (from: number, to: number) => void
@@ -228,7 +237,7 @@ interface Actions {
   setPage: (page: WorkspacePage) => void
   setJobs: (jobs: ExportJob[]) => void
   setToolProgress: (progress: InstallProgress) => void
-  toast: (toast: ToastEvent) => void
+  toast: (toast: ToastEvent & { action?: Toast['action'] }) => void
   dismissToast: (id: string) => void
   setBusy: (label: string | null) => void
 }
@@ -249,6 +258,7 @@ const emptyState: State = {
   selectedClipId: null,
   inPoint: null,
   outPoint: null,
+  clipNamePromptOpen: false,
   currentTime: 0,
   playing: false,
   duration: 0,
@@ -528,6 +538,15 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
+  requestCreateClip: () => {
+    const s = get()
+    const source = s.project?.sources.find((x) => x.id === s.activeSourceId)
+    if (!s.project || !source) return
+    set({ clipNamePromptOpen: true })
+  },
+
+  closeClipNamePrompt: () => set({ clipNamePromptOpen: false }),
+
   patchClip: (id, patch) => {
     const s = get()
     if (!s.project) return
@@ -567,6 +586,19 @@ export const useStore = create<Store>((set, get) => ({
       })
     }
   },
+
+  patchClips: (ids, patch) =>
+    set((s) => {
+      if (!s.project) return {}
+      const idSet = new Set(ids)
+      return {
+        project: {
+          ...s.project,
+          clips: s.project.clips.map((c) => (idSet.has(c.id) ? { ...c, ...patch } : c))
+        },
+        dirty: true
+      }
+    }),
 
   /**
    * Move a POV along the real-world clock by hand. Positive delta means this

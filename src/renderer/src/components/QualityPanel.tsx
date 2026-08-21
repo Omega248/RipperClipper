@@ -97,6 +97,22 @@ export default function QualityPanel(): JSX.Element {
     }
   }
 
+  /** Toggles a preset as the one auto-applied to a project's export settings when it's created. */
+  const setDefaultPreset = async (id: string | null): Promise<void> => {
+    if (!appSettings) return
+    try {
+      const next = await window.api.updateSettings({
+        exportPresets: appSettings.exportPresets.map((p) => {
+          const { isDefault: _drop, ...rest } = p
+          return p.id === id ? { ...rest, isDefault: true } : rest
+        })
+      })
+      setAppSettings(next)
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not set the default preset'), message: message(err) })
+    }
+  }
+
   const inspect = async (): Promise<void> => {
     if (!source) return
     setInspecting(true)
@@ -155,7 +171,17 @@ export default function QualityPanel(): JSX.Element {
             <ul className="version-history-list">
               {presets.map((p) => (
                 <li key={p.id} className="version-history-row">
-                  <span>{p.name}</span>
+                  <span>
+                    {p.name}
+                    {p.isDefault && ' · default'}
+                  </span>
+                  <IconButton
+                    icon="star"
+                    size="compact"
+                    selected={p.isDefault}
+                    label={p.isDefault ? `"${p.name}" is the default preset` : `Make "${p.name}" the default preset`}
+                    onClick={() => void setDefaultPreset(p.isDefault ? null : p.id)}
+                  />
                   <IconButton
                     icon="close"
                     size="compact"

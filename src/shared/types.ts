@@ -72,6 +72,8 @@ export interface ClipSegment {
   lastMessage?: string
   /** Free-text triage label ("Highlight", "Needs review", …). Colour is derived from the text. */
   tag?: string | null
+  /** When this clip was created — absent on clips saved before this field existed. */
+  createdAt?: string
 }
 
 /**
@@ -275,6 +277,8 @@ export interface ExportPreset {
   id: string
   name: string
   settings: ExportSettings
+  /** Auto-applied to a project's export settings when it's created. At most one preset carries this. */
+  isDefault?: boolean
 }
 
 export interface AppSettings {
@@ -305,6 +309,8 @@ export interface AppSettings {
     sidePanelWidth?: number
     /** Bottom timeline strip height in px. Unset means "size to content". */
     timelineHeight?: number
+    /** A short chime when an export batch finishes, alongside the toast/notification. */
+    exportCompletionSound: boolean
   }
   shortcuts: Record<string, string>
   /** Saved export-setting bundles, applied to the current project on demand. */

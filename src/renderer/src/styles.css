@@ -939,6 +939,28 @@ hr.rule {
   border-top: 2px solid var(--accent);
 }
 
+.clip-item.is-multiselected {
+  background: var(--accent-subtle);
+}
+
+.clip-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.clip-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
 .clip-index {
   padding-top: 2px;
   color: var(--text-tertiary);
@@ -1625,6 +1647,11 @@ table.matrix tr.dim td {
   overflow-wrap: anywhere;
 }
 
+.toast-action {
+  grid-column: 2;
+  justify-self: start;
+}
+
 /* ============================ streamers dialog ========================= */
 
 .streamer-list {
@@ -1701,6 +1728,12 @@ table.matrix tr.dim td {
   gap: var(--space-1);
   width: 100%;
   padding: var(--space-1) 0 var(--space-2);
+}
+
+.vod-checked-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .group-import-row {

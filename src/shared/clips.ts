@@ -44,7 +44,8 @@ export function makeClip(init: {
     order: init.order,
     status: 'idle',
     eventStartTime: init.eventStartTime ?? null,
-    eventEndTime: init.eventEndTime ?? null
+    eventEndTime: init.eventEndTime ?? null,
+    createdAt: new Date().toISOString()
   }
 }
 
@@ -116,7 +117,8 @@ export function duplicateClip(clips: ClipSegment[], clipId: string): ClipSegment
     status: 'idle',
     exportedPath: undefined,
     lastMessage: undefined,
-    order: original.order + 1
+    order: original.order + 1,
+    createdAt: new Date().toISOString()
   }
   const next = clips.map((c) => (c.order > original.order ? { ...c, order: c.order + 1 } : c))
   return normalizeOrder([...next, copy])
@@ -139,6 +141,31 @@ export function reorderClips(clips: ClipSegment[], from: number, to: number): Cl
 
 export function clipsForSource(clips: ClipSegment[], sourceId: string): ClipSegment[] {
   return normalizeOrder(clips.filter((c) => c.sourceId === sourceId))
+}
+
+/**
+ * IDs of clips whose range overlaps another clip's by at least half the
+ * shorter one's length — likely the same moment marked twice rather than
+ * two genuinely different clips that happen to touch.
+ */
+export function overlappingClipIds(clips: ClipSegment[], minOverlapFraction = 0.5): Set<string> {
+  const flagged = new Set<string>()
+  for (let i = 0; i < clips.length; i++) {
+    for (let j = i + 1; j < clips.length; j++) {
+      const a = clips[i]
+      const b = clips[j]
+      const overlapStart = Math.max(a.startSeconds, b.startSeconds)
+      const overlapEnd = Math.min(a.endSeconds, b.endSeconds)
+      const overlap = overlapEnd - overlapStart
+      if (overlap <= 0) continue
+      const shorter = Math.min(a.durationSeconds, b.durationSeconds)
+      if (shorter > 0 && overlap / shorter >= minOverlapFraction) {
+        flagged.add(a.id)
+        flagged.add(b.id)
+      }
+    }
+  }
+  return flagged
 }
 
 function nextCopyName(name: string, existing: string[]): string {

@@ -335,6 +335,19 @@ export class ExportQueue extends EventEmitter {
     }
   }
 
+  /**
+   * Move a job to a new position in the list. `order` doubles as run
+   * priority — see `pump()` — so this also changes which queued job starts
+   * next, not just where it's displayed.
+   */
+  reorder(jobId: string, toIndex: number): void {
+    const from = this.order.indexOf(jobId)
+    if (from === -1) return
+    const [id] = this.order.splice(from, 1)
+    this.order.splice(Math.max(0, Math.min(toIndex, this.order.length)), 0, id)
+    this.emitJobs()
+  }
+
   /** Remove finished jobs. Completed work is never dropped implicitly. */
   clearFinished(): void {
     for (const [id, task] of [...this.tasks.entries()]) {

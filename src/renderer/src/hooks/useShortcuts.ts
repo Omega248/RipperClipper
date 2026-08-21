@@ -23,15 +23,17 @@ function isTypingTarget(target: EventTarget | null): boolean {
  * Global editing shortcuts. They never fire while the user is typing into a
  * field, so renaming a clip cannot accidentally delete it.
  *
- * `onFindInPovs` is a callback rather than a store action because opening
- * that dialog is App-local UI state, the same as every other dialog's
- * open/close flag.
+ * `onFindInPovs`/`onCommandPalette` are callbacks rather than store actions
+ * because opening those dialogs is App-local UI state, the same as every
+ * other dialog's open/close flag.
  */
-export function useShortcuts(onFindInPovs: () => void): void {
-  // A ref, not a dependency: an inline arrow prop would otherwise re-attach
+export function useShortcuts(onFindInPovs: () => void, onCommandPalette: () => void): void {
+  // Refs, not dependencies: an inline arrow prop would otherwise re-attach
   // the window listener on every render that passes a fresh closure.
   const onFindInPovsRef = useRef(onFindInPovs)
   onFindInPovsRef.current = onFindInPovs
+  const onCommandPaletteRef = useRef(onCommandPalette)
+  onCommandPaletteRef.current = onCommandPalette
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -42,6 +44,14 @@ export function useShortcuts(onFindInPovs: () => void): void {
 
       const match = (action: keyof typeof DEFAULT_SHORTCUTS): boolean =>
         shortcuts[action] === binding
+
+      // Fixed, not user-remappable — the same convention as every other app's
+      // command palette, so it's never a surprise which key opens it.
+      if (binding === 'Ctrl+KeyK') {
+        e.preventDefault()
+        onCommandPaletteRef.current()
+        return
+      }
 
       const time = state.currentTime
 
@@ -83,7 +93,7 @@ export function useShortcuts(onFindInPovs: () => void): void {
       }
       if (match('addClip')) {
         e.preventDefault()
-        state.createClip()
+        state.requestCreateClip()
         return
       }
       if (match('deleteClip')) {
