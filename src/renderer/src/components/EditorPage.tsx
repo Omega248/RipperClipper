@@ -1,7 +1,9 @@
-import { useState } from 'react'
-import { activeVideoItemAt } from '@shared/timeline'
+import { useCallback, useRef, useState } from 'react'
+import { pipCompositionAt } from '@shared/timeline'
 import { useStore } from '../store.js'
 import { usePlayerViewport } from '../player/usePlayerViewport.js'
+import TimelineLivePlayer from '../player/TimelineLivePlayer.js'
+import type { TimelineLivePlayerHandle } from '../player/TimelineLivePlayer.js'
 import Transport from './Transport.js'
 import MediaLibrary from './MediaLibrary.js'
 import TimelineEditor from './TimelineEditor.js'
@@ -25,12 +27,23 @@ export default function EditorPage({
   onExport: () => void
   onShowGuide: () => void
 }): JSX.Element {
-  const { element: player, buildPreview } = usePlayerViewport({ onShowGuide })
+  const { element: fallbackPlayer, buildPreview } = usePlayerViewport({ onShowGuide })
   const project = useStore((s) => s.project)
   const playhead = useStore((s) => s.timelinePlayheadSeconds)
   const selectedItemId = useStore((s) => s.selectedTimelineItemId)
   const [tab, setTab] = useState<SidebarTab>('library')
   const [userPickedTab, setUserPickedTab] = useState(false)
+  // Whether the live warm-pool player could take the current cut itself —
+  // false only for a POV the built-in player can't stream directly, in
+  // which case the older build-a-local-proxy player takes over for it.
+  const [liveActive, setLiveActive] = useState(false)
+  const livePlayerRef = useRef<TimelineLivePlayerHandle>(null)
+
+  const setActiveLive = useCallback((sourceId: string, localSeconds: number): boolean => {
+    const ok = livePlayerRef.current?.setActive(sourceId, localSeconds) ?? false
+    setLiveActive(ok)
+    return ok
+  }, [])
 
   // Selecting a clip is a strong signal the user wants its properties —
   // switch there automatically, but only until they deliberately pick a tab
@@ -42,7 +55,7 @@ export default function EditorPage({
     setTab(next)
   }
 
-  const activeItem = project?.timeline ? activeVideoItemAt(project.timeline, playhead) : null
+  const activeItem = project?.timeline ? (pipCompositionAt(project.timeline, playhead)?.background ?? null) : null
   const t = activeItem?.transform
   const playerTransform =
     t && (t.x !== 0 || t.y !== 0 || t.scale !== 1 || t.rotation !== 0)
@@ -57,9 +70,12 @@ export default function EditorPage({
           <div className="player-wrap">
             <div
               className="editor-player-transform"
-              style={{ transform: playerTransform, opacity: playerOpacity }}
+              style={{ transform: playerTransform, opacity: playerOpacity, display: liveActive ? 'block' : 'none' }}
             >
-              {player}
+              <TimelineLivePlayer ref={livePlayerRef} timeline={project?.timeline} playheadSeconds={playhead} />
+            </div>
+            <div style={{ display: liveActive ? 'none' : 'block', width: '100%', height: '100%' }}>
+              {fallbackPlayer}
             </div>
             <WatermarkOverlay />
           </div>
@@ -94,7 +110,7 @@ export default function EditorPage({
         </aside>
       </div>
       <div className="editor-timeline-area">
-        <TimelineEditor onExport={onExport} onWatchSource={buildPreview} />
+        <TimelineEditor onExport={onExport} onWatchSource={buildPreview} onSetActiveLive={setActiveLive} />
       </div>
     </div>
   )

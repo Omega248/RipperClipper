@@ -2936,6 +2936,14 @@ canvas.wave.draggable {
   transition: transform var(--motion-fast) var(--motion-ease), opacity var(--motion-fast) var(--motion-ease);
 }
 
+/* Positioning context for the warm-pool videos and PiP inset box, which
+   size and place themselves with absolute percentages against this. */
+.timeline-live-player {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
 /* ---- editor: media library ---- */
 
 .media-library {

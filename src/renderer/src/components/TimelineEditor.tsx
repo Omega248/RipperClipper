@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { activeVideoItemAt, timelineDurationSeconds } from '@shared/timeline'
+import { pipCompositionAt, timelineDurationSeconds } from '@shared/timeline'
 import { clipRangeInPov } from '@shared/povMapping'
 import { povLabel } from '@shared/pov'
 import { formatDuration, formatTimecode } from '@shared/time'
@@ -46,20 +46,27 @@ interface MovePreview {
 
 export default function TimelineEditor({
   onExport,
-  onWatchSource
+  onWatchSource,
+  onSetActiveLive
 }: {
   onExport: () => void
   /**
    * Builds (or reuses, if a prefetch already did) a local instantly-playable
-   * copy of a POV range — the Editor's actual media source, the same way a
-   * normal editor plays from ingested proxies rather than re-streaming the
-   * original on every cut. Called silently on every POV swap; a miss just
-   * falls back to the live stream, same as before this existed.
+   * copy of a POV range — the fallback path for a POV `onSetActiveLive`
+   * can't take live (see below). Called silently on every such POV swap; a
+   * miss just falls back to the live stream, same as before this existed.
    */
   onWatchSource: (
     target: { startSeconds: number; endSeconds: number },
     opts: { silent: true }
   ) => Promise<void>
+  /**
+   * Hands a cut straight to the warm live-preview pool: makes `sourceId`
+   * the visible/audible picture, seeked to `localSeconds`, with no rebuild —
+   * true if it could, false for a POV it doesn't keep warm (not
+   * live-playable at all), which is when `onWatchSource` is asked instead.
+   */
+  onSetActiveLive: (sourceId: string, localSeconds: number) => boolean
 }): JSX.Element {
   const project = useStore((s) => s.project)
   const ensureTimeline = useStore((s) => s.ensureTimeline)
@@ -128,24 +135,29 @@ export default function TimelineEditor({
     return () => ro.disconnect()
   }, [durationSeconds])
 
-  /** Show the frame the playhead is now on: whichever POV is on top, at the equivalent point in its own source. */
+  /** Show the frame the playhead is now on: whichever POV is the background at this instant, at the equivalent point in its own source. */
   const watch = (seconds: number): void => {
     setTimelinePlayhead(seconds)
     if (!timeline) return
-    const active = activeVideoItemAt(timeline, seconds)
+    const active = pipCompositionAt(timeline, seconds)?.background ?? null
     const changedItem = active?.id !== activeItemId
     setActiveItemId(active?.id ?? null)
     if (!active) return
     const localSeconds = active.sourceStartSeconds + (seconds - active.timelineStartSeconds)
     setActiveSource(active.sourceId)
-    playerBus.seek(localSeconds)
-    // Only worth asking for on an actual cut — a click within the same item
-    // is a plain seek, which the already-attached player handles on its own.
-    if (changedItem) {
-      void onWatchSource(
-        { startSeconds: active.sourceStartSeconds, endSeconds: active.sourceEndSeconds },
-        { silent: true }
-      )
+    // The warm live pool takes almost every cut instantly, no rebuild. Only
+    // a POV it can't stream directly (see TimelineLivePlayer) falls back to
+    // the older build-a-local-proxy player, and only on an actual cut — a
+    // seek within the same item is a plain scrub either player handles alone.
+    const live = onSetActiveLive(active.sourceId, localSeconds)
+    if (!live) {
+      playerBus.seek(localSeconds)
+      if (changedItem) {
+        void onWatchSource(
+          { startSeconds: active.sourceStartSeconds, endSeconds: active.sourceEndSeconds },
+          { silent: true }
+        )
+      }
     }
   }
 
@@ -169,7 +181,7 @@ export default function TimelineEditor({
     const active = timeline.items.find((i) => i.id === activeItemId)
     if (!active) return
     const derived = active.timelineStartSeconds + (currentTime - active.sourceStartSeconds)
-    const next = activeVideoItemAt(timeline, derived)
+    const next = pipCompositionAt(timeline, derived)?.background ?? null
     if (next) {
       setTimelinePlayhead(Math.max(0, derived))
       if (next.id !== active.id) watch(derived)
