@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import {
   channelVideosUrl,
   kickVodsFromChannel,
   parseChannelUrl,
+  publishedAtFromRawInfo,
   sameStreamer,
   vodsFromFlatPlaylist
 } from '../../src/main/services/streamers.js'
@@ -174,8 +175,32 @@ describe('streamer groups', () => {
 
   it('renames a group', async () => {
     const [group] = await service.createGroup('Ballas')
-    const renamed = await service.renameGroup(group.id, 'Ballas Family')
+    const renamed = await service.updateGroup(group.id, { name: 'Ballas Family' })
     expect(renamed[0].name).toBe('Ballas Family')
+  })
+
+  it('creates a group with an icon and colour', async () => {
+    const [group] = await service.createGroup('PD', '🚓', '#3b82f6')
+    expect(group.icon).toBe('🚓')
+    expect(group.color).toBe('#3b82f6')
+  })
+
+  it('rejects a colour outside the fixed palette rather than storing an arbitrary one', async () => {
+    const [group] = await service.createGroup('Custom', undefined, '#123456')
+    expect(group.color).toBeUndefined()
+  })
+
+  it('updates icon and colour independently of name', async () => {
+    const [group] = await service.createGroup('EMS')
+    const updated = await service.updateGroup(group.id, { icon: '🚑', color: '#22c55e' })
+    expect(updated[0]).toMatchObject({ name: 'EMS', icon: '🚑', color: '#22c55e' })
+  })
+
+  it('clears an icon or colour by setting it to an empty string / invalid value', async () => {
+    const [group] = await service.createGroup('EMS', '🚑', '#22c55e')
+    const cleared = await service.updateGroup(group.id, { icon: '', color: 'not-a-colour' })
+    expect(cleared[0].icon).toBeUndefined()
+    expect(cleared[0].color).toBeUndefined()
   })
 
   it('assigns a streamer to groups and reports them back', async () => {
@@ -210,5 +235,84 @@ describe('streamer groups', () => {
 
     const after = await service.list()
     expect(after[0].groupIds).toEqual([pd.id])
+  })
+})
+
+describe('publishedAtFromRawInfo', () => {
+  it('prefers a numeric timestamp, converted from Unix seconds', () => {
+    expect(publishedAtFromRawInfo({ timestamp: 1_767_225_600 })).toBe('2026-01-01T00:00:00.000Z')
+  })
+
+  it('falls back to an 8-digit upload_date when there is no timestamp', () => {
+    expect(publishedAtFromRawInfo({ upload_date: '20260115' })).toBe('2026-01-15T00:00:00.000Z')
+  })
+
+  it('returns null when yt-dlp reported neither — the flat channel listing, usually', () => {
+    expect(publishedAtFromRawInfo({})).toBeNull()
+  })
+
+  it('ignores an upload_date that is not exactly 8 digits rather than misparsing it', () => {
+    expect(publishedAtFromRawInfo({ upload_date: '2026-01-15' })).toBeNull()
+  })
+})
+
+describe('Twitch/YouTube VOD date enrichment', () => {
+  let dir: string
+  let log: Logger
+  let resolver: ResolverService
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cookieclip-streamers-'))
+    log = new Logger(join(dir, 'logs'))
+    resolver = new ResolverService(log)
+    service = new StreamerService(log, resolver, dir)
+  })
+
+  afterEach(async () => {
+    log.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('looks up each VOD missing a date individually, since the flat channel listing never has one', async () => {
+    vi.spyOn(resolver, 'flatPlaylist').mockResolvedValue({
+      entries: [
+        { id: 'v1', title: 'VOD 1', url: 'https://www.twitch.tv/videos/1', duration: 100 },
+        { id: 'v2', title: 'VOD 2', url: 'https://www.twitch.tv/videos/2', duration: 200 }
+      ]
+    })
+    vi.spyOn(resolver, 'resolve').mockImplementation(async (url: string) => {
+      if (url.endsWith('/1')) return { timestamp: 1_767_225_600 }
+      throw new Error('rate limited')
+    })
+
+    const streamers = await service.add('twitch.tv/somechannel')
+    const vods = await service.vods(streamers[0].id)
+
+    const v1 = vods.find((v) => v.url.endsWith('/1'))
+    const v2 = vods.find((v) => v.url.endsWith('/2'))
+    expect(v1?.publishedAt).toBe('2026-01-01T00:00:00.000Z')
+    // One VOD's lookup failing must not blank the rest of the list, or lose the VOD.
+    expect(v2?.publishedAt).toBeNull()
+  })
+
+  it('never makes a per-video lookup for a VOD that already has a date', async () => {
+    vi.spyOn(resolver, 'flatPlaylist').mockResolvedValue({
+      entries: [
+        {
+          id: 'v1',
+          title: 'VOD 1',
+          url: 'https://www.twitch.tv/videos/1',
+          duration: 100,
+          timestamp: 1_767_225_600
+        }
+      ]
+    })
+    const resolveSpy = vi.spyOn(resolver, 'resolve')
+
+    const streamers = await service.add('twitch.tv/somechannel')
+    await service.vods(streamers[0].id)
+
+    expect(resolveSpy).not.toHaveBeenCalled()
   })
 })

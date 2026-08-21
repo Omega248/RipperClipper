@@ -86,8 +86,8 @@ const api: RendererApi = {
   setStreamerGroups: (id, groupIds) => invoke(IPC.streamersSetGroups, id, groupIds),
 
   listStreamerGroups: () => invoke(IPC.streamerGroupsList),
-  createStreamerGroup: (name) => invoke(IPC.streamerGroupsCreate, name),
-  renameStreamerGroup: (id, name) => invoke(IPC.streamerGroupsRename, id, name),
+  createStreamerGroup: (name, icon, color) => invoke(IPC.streamerGroupsCreate, name, icon, color),
+  updateStreamerGroup: (id, patch) => invoke(IPC.streamerGroupsUpdate, id, patch),
   deleteStreamerGroup: (id) => invoke(IPC.streamerGroupsDelete, id),
 
   enqueueExports: (req) => invoke(IPC.exportEnqueue, req),

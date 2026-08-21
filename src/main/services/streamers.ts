@@ -7,9 +7,11 @@ import type { EventOverlapReply, SavedStreamer, StreamerGroup, StreamerVod } fro
 import { streamsCoveringEvent } from '../../shared/eventStreams.js'
 import type { WatermarkConfig } from '../../shared/watermark.js'
 import { createId } from '../../shared/clips.js'
+import { isStreamerGroupColor } from '../../shared/streamerGroupColors.js'
 import { atomicWriteJson } from './projects.js'
 import type { Logger } from './logger.js'
 import type { ResolverService } from '../media/resolver.js'
+import { ConcurrencyLimiter } from './limiter.js'
 
 /**
  * The streamer library: channels the editor works with regularly, and their
@@ -101,6 +103,23 @@ export function kickVodsFromChannel(payload: unknown, slug: string): StreamerVod
 }
 
 /** yt-dlp's flat playlist of a channel's videos → the same shape. */
+/**
+ * yt-dlp reports a video's date as either a Unix timestamp or an 8-digit
+ * `YYYYMMDD` string, when it reports one at all — used both for the flat
+ * channel listing (which usually has neither) and a full per-video lookup
+ * (which reliably does).
+ */
+export function publishedAtFromRawInfo(entry: {
+  timestamp?: number
+  upload_date?: string
+}): string | null {
+  if (typeof entry.timestamp === 'number') return new Date(entry.timestamp * 1000).toISOString()
+  if (typeof entry.upload_date === 'string' && /^\d{8}$/.test(entry.upload_date)) {
+    return `${entry.upload_date.slice(0, 4)}-${entry.upload_date.slice(4, 6)}-${entry.upload_date.slice(6, 8)}T00:00:00.000Z`
+  }
+  return null
+}
+
 export function vodsFromFlatPlaylist(payload: unknown): StreamerVod[] {
   const entries = (payload as { entries?: Array<Record<string, any>> } | null)?.entries
   if (!Array.isArray(entries)) return []
@@ -117,12 +136,7 @@ export function vodsFromFlatPlaylist(payload: unknown): StreamerVod[] {
       url,
       title: typeof entry.title === 'string' ? entry.title : url,
       durationSeconds: typeof entry.duration === 'number' ? Math.round(entry.duration) : null,
-      publishedAt:
-        typeof entry.timestamp === 'number'
-          ? new Date(entry.timestamp * 1000).toISOString()
-          : typeof entry.upload_date === 'string' && /^\d{8}$/.test(entry.upload_date)
-            ? `${entry.upload_date.slice(0, 4)}-${entry.upload_date.slice(4, 6)}-${entry.upload_date.slice(6, 8)}T00:00:00.000Z`
-            : null,
+      publishedAt: publishedAtFromRawInfo(entry),
       thumbnailUrl: typeof entry.thumbnail === 'string' ? entry.thumbnail : undefined,
       viewCount: typeof entry.view_count === 'number' ? entry.view_count : undefined
     })
@@ -135,6 +149,7 @@ export class StreamerService {
   private cache: SavedStreamer[] | null = null
   private readonly groupsFile: string
   private groupsCache: StreamerGroup[] | null = null
+  private readonly dateLookupLimiter = new ConcurrencyLimiter(4)
 
   constructor(
     private readonly log: Logger,
@@ -160,28 +175,54 @@ export class StreamerService {
     if (this.groupsCache) return this.groupsCache
     try {
       const parsed = JSON.parse(await readFile(this.groupsFile, 'utf8')) as unknown
-      this.groupsCache = Array.isArray(parsed) ? (parsed as StreamerGroup[]).filter(isGroup) : []
+      this.groupsCache = Array.isArray(parsed)
+        ? (parsed as StreamerGroup[]).filter(isGroup).map((g) => ({
+            ...g,
+            color: isStreamerGroupColor(g.color) ? g.color : undefined
+          }))
+        : []
     } catch {
       this.groupsCache = []
     }
     return this.groupsCache
   }
 
-  async createGroup(name: string): Promise<StreamerGroup[]> {
+  async createGroup(name: string, icon?: string, color?: string): Promise<StreamerGroup[]> {
     const trimmed = name.trim()
     if (trimmed === '') return this.listGroups()
     const current = await this.listGroups()
     const existing = current.find((g) => g.name.toLowerCase() === trimmed.toLowerCase())
     if (existing) return current
-    const group: StreamerGroup = { id: createId('grp'), name: trimmed }
+    const group: StreamerGroup = {
+      id: createId('grp'),
+      name: trimmed,
+      ...(icon?.trim() ? { icon: icon.trim() } : {}),
+      ...(isStreamerGroupColor(color) ? { color } : {})
+    }
     return this.writeGroups([...current, group])
   }
 
-  async renameGroup(id: string, name: string): Promise<StreamerGroup[]> {
-    const trimmed = name.trim()
+  async updateGroup(
+    id: string,
+    patch: Partial<Pick<StreamerGroup, 'name' | 'icon' | 'color'>>
+  ): Promise<StreamerGroup[]> {
     const current = await this.listGroups()
-    if (trimmed === '') return current
-    return this.writeGroups(current.map((g) => (g.id === id ? { ...g, name: trimmed } : g)))
+    return this.writeGroups(
+      current.map((g) => {
+        if (g.id !== id) return g
+        const next = { ...g }
+        if (patch.name !== undefined && patch.name.trim() !== '') next.name = patch.name.trim()
+        if (patch.icon !== undefined) {
+          if (patch.icon.trim() === '') delete next.icon
+          else next.icon = patch.icon.trim()
+        }
+        if (patch.color !== undefined) {
+          if (isStreamerGroupColor(patch.color)) next.color = patch.color
+          else delete next.color
+        }
+        return next
+      })
+    )
   }
 
   /** Also strips the group from every streamer's membership list. */
@@ -416,7 +457,32 @@ export class StreamerService {
 
   private async resolverVods(streamer: SavedStreamer, signal?: AbortSignal): Promise<StreamerVod[]> {
     const raw = await this.resolver.flatPlaylist(streamer.channelUrl, { signal })
-    return vodsFromFlatPlaylist(raw)
+    const vods = vodsFromFlatPlaylist(raw)
+    return this.enrichWithDates(vods, signal)
+  }
+
+  /**
+   * The flat channel listing yt-dlp uses to list VODs in one request never
+   * carries a date for Twitch or YouTube (Kick's own API always does — see
+   * kickVods). The date only exists on each VOD's own page, so getting it
+   * costs one extra yt-dlp call per VOD; bounded to a handful at once so a
+   * channel with many VODs doesn't spawn dozens of processes together, and
+   * one VOD's lookup failing (deleted, rate-limited, whatever) only leaves
+   * that one undated rather than failing the whole list.
+   */
+  private async enrichWithDates(vods: StreamerVod[], signal?: AbortSignal): Promise<StreamerVod[]> {
+    return Promise.all(
+      vods.map(async (vod) => {
+        if (vod.publishedAt !== null) return vod
+        try {
+          const info = await this.dateLookupLimiter.run(() => this.resolver.resolve(vod.url, { signal }))
+          const publishedAt = publishedAtFromRawInfo(info)
+          return publishedAt ? { ...vod, publishedAt } : vod
+        } catch {
+          return vod
+        }
+      })
+    )
   }
 
   private async write(next: SavedStreamer[]): Promise<SavedStreamer[]> {

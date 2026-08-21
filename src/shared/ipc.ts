@@ -136,6 +136,10 @@ export interface SavedStreamer {
 export interface StreamerGroup {
   id: string
   name: string
+  /** A short glyph shown before the name — usually one emoji, never required. */
+  icon?: string
+  /** One of STREAMER_GROUP_COLORS (shared/streamerGroupColors.ts). */
+  color?: string
 }
 
 /** What the renderer asks for when it wants to know who else was live. */
@@ -216,7 +220,7 @@ export const IPC = {
   // streamer groups
   streamerGroupsList: 'streamer-groups:list',
   streamerGroupsCreate: 'streamer-groups:create',
-  streamerGroupsRename: 'streamer-groups:rename',
+  streamerGroupsUpdate: 'streamer-groups:update',
   streamerGroupsDelete: 'streamer-groups:delete',
 
   // waveform
@@ -444,8 +448,11 @@ export interface RendererApi {
   setStreamerGroups(id: string, groupIds: string[]): Promise<SavedStreamer[]>
 
   listStreamerGroups(): Promise<StreamerGroup[]>
-  createStreamerGroup(name: string): Promise<StreamerGroup[]>
-  renameStreamerGroup(id: string, name: string): Promise<StreamerGroup[]>
+  createStreamerGroup(name: string, icon?: string, color?: string): Promise<StreamerGroup[]>
+  updateStreamerGroup(
+    id: string,
+    patch: Partial<Pick<StreamerGroup, 'name' | 'icon' | 'color'>>
+  ): Promise<StreamerGroup[]>
   /** Also clears the group from every streamer's membership list. */
   deleteStreamerGroup(id: string): Promise<StreamerGroup[]>
   /** Project passed on the command line, e.g. by double-clicking a .cookieclip. */

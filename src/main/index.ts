@@ -42,6 +42,7 @@ import type {
   FilmstripQuery,
   FilmstripReply,
   PreviewMediaRequest,
+  StreamerGroup,
   TimelineExportRequest
 } from '../shared/ipc.js'
 import type { AppSettings, PlatformId, ProjectFile, VodSource } from '../shared/types.js'
@@ -672,8 +673,12 @@ function registerIpc(): void {
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
 
   handle(IPC.streamerGroupsList, () => streamers.listGroups())
-  handle(IPC.streamerGroupsCreate, (name: string) => streamers.createGroup(name))
-  handle(IPC.streamerGroupsRename, (id: string, name: string) => streamers.renameGroup(id, name))
+  handle(IPC.streamerGroupsCreate, (name: string, icon?: string, color?: string) =>
+    streamers.createGroup(name, icon, color)
+  )
+  handle(IPC.streamerGroupsUpdate, (id: string, patch: Partial<Pick<StreamerGroup, 'name' | 'icon' | 'color'>>) =>
+    streamers.updateGroup(id, patch)
+  )
   handle(IPC.streamerGroupsDelete, (id: string) => streamers.deleteGroup(id))
 
   handle(IPC.depsStatus, () => tools.status())

@@ -222,8 +222,10 @@ back to slow software AV1 encoding. Every export states which encoder it actuall
    panel — which also suggests other saved streamers whose VODs overlap the event you're currently
    looking at ("Other saved POVs live at this time"). Pasting a link that's already in the project
    switches to the existing POV instead of adding a duplicate. Saved streamers can be sorted into
-   groups (PD, a gang, EMS, …) and filtered by one, for finding everyone on one side of an event
-   without remembering who currently plays for it.
+   groups (PD, a gang, EMS, …), each with its own colour and icon, and filtered by one — for finding
+   everyone on one side of an event without remembering who currently plays for it. Results from
+   "Other saved POVs live at this time" and "Who was live at" can be sorted by group instead of by
+   time, so one side of an event reads as one block.
 2. **Synchronise.** Automatic where the platform's own metadata is reliable enough, corroborated
    automatically by cross-correlating audio between POVs once each one is opened; a visual
    waveform-based manual alignment is available per VOD and per clip for anything that still needs

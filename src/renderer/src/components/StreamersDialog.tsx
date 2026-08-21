@@ -22,6 +22,23 @@ import {
   StatusBadge
 } from '../ui/index.js'
 
+/** A group's own colour and icon, badge-shaped — Badge itself only knows the fixed status tones. */
+function GroupChip({ group }: { group: StreamerGroup }): JSX.Element {
+  return (
+    <span
+      className="ui-badge group-chip"
+      style={
+        group.color
+          ? { borderColor: group.color, backgroundColor: `${group.color}22`, color: group.color }
+          : undefined
+      }
+    >
+      {group.icon && <span aria-hidden="true">{group.icon}</span>}
+      {group.name}
+    </span>
+  )
+}
+
 interface Props {
   onClose: () => void
   /** Load a VOD into the current project, exactly as pasting its link would. */
@@ -66,6 +83,11 @@ export default function StreamersDialog({
   const [added, setAdded] = useState<Set<string>>(new Set())
   const [groups, setGroups] = useState<StreamerGroup[]>([])
   const [groupFilter, setGroupFilter] = useState<string | null>(null)
+  // Applies to both "Live during…" and "Who was live at…" results: 'time'
+  // keeps them closest-to-the-moment first (how they already arrive), 'group'
+  // clusters a group's members together, so everyone on one side of an event
+  // reads as one block instead of being scattered through the list.
+  const [sortMode, setSortMode] = useState<'time' | 'group'>('time')
   // A streamer opens the dialog to assign their groups; 'manage' opens it to
   // rename/delete groups themselves, with no membership checkboxes.
   const [groupsDialog, setGroupsDialog] = useState<SavedStreamer | 'manage' | null>(null)
@@ -165,19 +187,22 @@ export default function StreamersDialog({
     }
   }
 
-  const createGroup = async (name: string): Promise<void> => {
+  const createGroup = async (name: string, icon: string, color: string): Promise<void> => {
     try {
-      setGroups(await window.api.createStreamerGroup(name))
+      setGroups(await window.api.createStreamerGroup(name, icon, color))
     } catch (err) {
       toast({ kind: 'error', title: title(err, 'Could not create that group'), message: message(err) })
     }
   }
 
-  const renameGroup = async (id: string, name: string): Promise<void> => {
+  const updateGroup = async (
+    id: string,
+    patch: { name: string; icon: string; color: string }
+  ): Promise<void> => {
     try {
-      setGroups(await window.api.renameStreamerGroup(id, name))
+      setGroups(await window.api.updateStreamerGroup(id, patch))
     } catch (err) {
-      toast({ kind: 'error', title: title(err, 'Could not rename that group'), message: message(err) })
+      toast({ kind: 'error', title: title(err, 'Could not update that group'), message: message(err) })
     }
   }
 
@@ -235,6 +260,37 @@ export default function StreamersDialog({
     .filter((st) => groupFilter === null || st.groupIds?.includes(groupFilter))
   const shownVods =
     needle === '' ? vods : vods.filter((v) => v.title.toLowerCase().includes(needle))
+
+  /** A streamer's groups, alphabetised, as one sortable string — ungrouped sorts last. */
+  const groupSortKey = (streamerId: string): string => {
+    const ids = streamers.find((s) => s.id === streamerId)?.groupIds ?? []
+    const names = ids.map((id) => groups.find((g) => g.id === id)?.name).filter((n): n is string => Boolean(n))
+    return names.length > 0 ? names.slice().sort().join(', ') : '￿'
+  }
+
+  const streamerGroupChips = (streamerId: string): JSX.Element[] =>
+    (streamers.find((s) => s.id === streamerId)?.groupIds ?? [])
+      .map((id) => groups.find((g) => g.id === id))
+      .filter((g): g is StreamerGroup => Boolean(g))
+      .map((g) => <GroupChip key={g.id} group={g} />)
+
+  const sortedAtTime =
+    sortMode === 'time' || !atTime
+      ? atTime
+      : [...atTime].sort(
+          (a, b) =>
+            groupSortKey(a.streamer.id).localeCompare(groupSortKey(b.streamer.id)) ||
+            a.offsetSeconds - b.offsetSeconds
+        )
+
+  const sortedOverlapStreams =
+    sortMode === 'time' || !overlap
+      ? (overlap?.streams ?? [])
+      : [...overlap.streams].sort(
+          (a, b) =>
+            groupSortKey(a.streamerId).localeCompare(groupSortKey(b.streamerId)) ||
+            a.coverage.offsetSeconds - b.coverage.offsetSeconds
+        )
 
   /** One row shape for a VOD, wherever it came from. */
   const vodRow = (
@@ -320,23 +376,19 @@ export default function StreamersDialog({
 
           {(groups.length > 0 || streamers.length > 0) && (
             <div className="group-filter-row">
-              <button
-                type="button"
-                className={`ui-badge is-clickable${groupFilter === null ? ' is-accent' : ''}`}
-                onClick={() => setGroupFilter(null)}
-              >
-                All
-              </button>
-              {groups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  className={`ui-badge is-clickable${groupFilter === g.id ? ' is-accent' : ''}`}
-                  onClick={() => setGroupFilter((prev) => (prev === g.id ? null : g.id))}
-                >
-                  {g.name}
-                </button>
-              ))}
+              <Select
+                size="compact"
+                value={groupFilter ?? ''}
+                onChange={(value) => setGroupFilter(value === '' ? null : value)}
+                label="Filter by group"
+                options={[
+                  { value: '', label: 'All groups' },
+                  ...groups.map((g) => ({
+                    value: g.id,
+                    label: [g.icon, g.name].filter(Boolean).join(' ')
+                  }))
+                ]}
+              />
               <Button size="compact" variant="ghost" icon="settings" onClick={() => setGroupsDialog('manage')}>
                 Manage groups
               </Button>
@@ -374,11 +426,7 @@ export default function StreamersDialog({
                   )}
                   {(streamer.groupIds ?? []).map((id) => {
                     const group = groups.find((g) => g.id === id)
-                    return group ? (
-                      <Badge key={id} tone="neutral">
-                        {group.name}
-                      </Badge>
-                    ) : null
+                    return group ? <GroupChip key={id} group={group} /> : null
                   })}
                 </span>
               </button>
@@ -438,7 +486,7 @@ export default function StreamersDialog({
 
               {!overlapLoading &&
                 overlap &&
-                overlap.streams.map((entry) =>
+                sortedOverlapStreams.map((entry) =>
                   vodRow(
                     `overlap-${entry.streamerId}-${entry.vod.url}`,
                     entry.vod.thumbnailUrl,
@@ -456,6 +504,7 @@ export default function StreamersDialog({
                       {entry.availability === 'loaded' && (
                         <StatusBadge status="complete" label="Already loaded" />
                       )}
+                      {streamerGroupChips(entry.streamerId)}
                     </>,
                     entry.vod.url
                   )
@@ -494,6 +543,18 @@ export default function StreamersDialog({
                 Clear
               </Button>
             )}
+            {groups.length > 0 && (
+              <Select
+                size="compact"
+                value={sortMode}
+                onChange={(value) => setSortMode(value as 'time' | 'group')}
+                label="Sort results by"
+                options={[
+                  { value: 'time', label: 'Sort: closest time' },
+                  { value: 'group', label: 'Sort: by group' }
+                ]}
+              />
+            )}
           </div>
 
           {atTime && atTime.length > 0 && (
@@ -503,7 +564,7 @@ export default function StreamersDialog({
                 {new Date(parseLocalDateTime(when)!).toLocaleString()}. Loading one seeks straight to
                 that moment once its timing is known.
               </p>
-              {atTime.map((hit) =>
+              {sortedAtTime!.map((hit) =>
                 vodRow(
                   `${hit.streamer.id}-${hit.vod.url}`,
                   hit.vod.thumbnailUrl,
@@ -521,6 +582,7 @@ export default function StreamersDialog({
                     {hit.vod.publishedAt && (
                       <span>started {new Date(hit.vod.publishedAt).toLocaleString()}</span>
                     )}
+                    {streamerGroupChips(hit.streamer.id)}
                   </>,
                   hit.vod.url
                 )
@@ -570,8 +632,8 @@ export default function StreamersDialog({
         groups={groups}
         streamer={groupsDialog === 'manage' ? null : groupsDialog}
         onClose={() => setGroupsDialog(null)}
-        onCreate={(name) => void createGroup(name)}
-        onRename={(id, name) => void renameGroup(id, name)}
+        onCreate={(name, icon, color) => void createGroup(name, icon, color)}
+        onUpdate={(id, patch) => void updateGroup(id, patch)}
         onDelete={(id) => void deleteGroup(id)}
         onToggleMembership={
           groupsDialog === 'manage'
