@@ -150,7 +150,8 @@ export class StreamerService {
   private cache: SavedStreamer[] | null = null
   private readonly groupsFile: string
   private groupsCache: StreamerGroup[] | null = null
-  private readonly dateLookupLimiter = new ConcurrencyLimiter(4)
+  /** Bounds concurrent yt-dlp full resolves — used for date enrichment and quality probing alike. */
+  private readonly resolveLimiter = new ConcurrencyLimiter(4)
 
   constructor(
     private readonly log: Logger,
@@ -245,6 +246,62 @@ export class StreamerService {
   async setGroups(streamerId: string, groupIds: string[]): Promise<SavedStreamer[]> {
     const current = await this.list()
     return this.write(current.map((s) => (s.id === streamerId ? { ...s, groupIds } : s)))
+  }
+
+  /**
+   * Mark two saved streamers as the same real person restreaming to more than
+   * one platform. If either is already linked to others, the new streamer
+   * joins that existing group rather than starting a second one.
+   */
+  async linkPerson(idA: string, idB: string): Promise<SavedStreamer[]> {
+    if (idA === idB) return this.list()
+    const current = await this.list()
+    const a = current.find((s) => s.id === idA)
+    const b = current.find((s) => s.id === idB)
+    if (!a || !b) return current
+    const personId = a.personId ?? b.personId ?? createId('person')
+    return this.write(
+      current.map((s) => (s.id === idA || s.id === idB ? { ...s, personId } : s))
+    )
+  }
+
+  /** Undoes linkPerson for one streamer — a "link" of one streamer alone is meaningless. */
+  async unlinkPerson(id: string): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    const streamer = current.find((s) => s.id === id)
+    if (!streamer?.personId) return current
+    const personId = streamer.personId
+    const others = current.filter((s) => s.personId === personId && s.id !== id)
+    const stripPersonIds = new Set([id, ...(others.length === 1 ? [others[0]!.id] : [])])
+    return this.write(
+      current.map((s) => {
+        if (!stripPersonIds.has(s.id)) return s
+        const { personId: _drop, ...rest } = s
+        return rest
+      })
+    )
+  }
+
+  /**
+   * Best resolution available for each VOD, so a moment covered by two linked
+   * streamers can be resolved to whichever copy is actually the better watch.
+   * Bounded to a handful at once via the same limiter as date enrichment,
+   * since both are the same underlying yt-dlp full resolve.
+   */
+  async probeQuality(urls: string[], signal?: AbortSignal): Promise<Record<string, number | null>> {
+    const entries = await Promise.all(
+      urls.map(async (url): Promise<[string, number | null]> => {
+        try {
+          const info = await this.resolveLimiter.run(() => this.resolver.resolve(url, { signal }))
+          const heights = (info.formats ?? []).map((f) => f.height ?? 0)
+          const best = heights.length > 0 ? Math.max(...heights) : 0
+          return [url, best > 0 ? best : null]
+        } catch {
+          return [url, null]
+        }
+      })
+    )
+    return Object.fromEntries(entries)
   }
 
   private async writeGroups(next: StreamerGroup[]): Promise<StreamerGroup[]> {
@@ -477,7 +534,7 @@ export class StreamerService {
       vods.map(async (vod) => {
         if (vod.publishedAt !== null) return vod
         try {
-          const info = await this.dateLookupLimiter.run(() => this.resolver.resolve(vod.url, { signal }))
+          const info = await this.resolveLimiter.run(() => this.resolver.resolve(vod.url, { signal }))
           const publishedAt = publishedAtFromRawInfo(info)
           return publishedAt ? { ...vod, publishedAt } : vod
         } catch {

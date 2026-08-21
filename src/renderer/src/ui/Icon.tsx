@@ -80,6 +80,7 @@ export type IconName =
   | 'flame'
   | 'star'
   | 'briefcase'
+  | 'list'
 
 /** Path data only — every icon inherits the same stroke settings below. */
 const PATHS: Record<IconName, string> = {
@@ -152,7 +153,8 @@ const PATHS: Record<IconName, string> = {
   flame:
     'M12 3c.5 3-2.5 4-3 6.5a3.5 3.5 0 0 0 7 0c0-1-.5-2-.5-2 1.5 1 2.5 3 2.5 5a5.5 5.5 0 1 1-11 0C7 8 12 6 12 3z',
   star: 'M12 3l2.5 5.6L21 9.3l-4.6 4.3 1.2 6.4L12 16.9l-5.6 3.1 1.2-6.4L3 9.3l6.5-.7L12 3z',
-  briefcase: 'M4 8h16v11H4V8zM9 8V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 13h16'
+  briefcase: 'M4 8h16v11H4V8zM9 8V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 13h16',
+  list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01'
 }
 
 interface Props {

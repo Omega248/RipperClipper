@@ -74,6 +74,13 @@ export default function StreamersDialog({
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [input, setInput] = useState('')
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkText, setBulkText] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [linkPickerFor, setLinkPickerFor] = useState<string | null>(null)
+  // Best resolution seen for a VOD, fetched only for URLs that turn out to be
+  // one half of a same-person multistream pair — most VODs never need this.
+  const [qualityByUrl, setQualityByUrl] = useState<Record<string, number | null>>({})
   const [when, setWhen] = useState('')
   const [atTime, setAtTime] = useState<Array<VodAtTime<StreamerVod> & { streamer: SavedStreamer }> | null>(null)
   const [searching, setSearching] = useState(false)
@@ -177,6 +184,44 @@ export default function StreamersDialog({
     }
   }
 
+  /**
+   * Add several channels at once — one per line, each either a full channel
+   * URL (platform detected from it) or a bare name (added under whichever
+   * platform is currently selected). Lets someone paste in a roster they
+   * already keep elsewhere instead of adding channels one at a time.
+   */
+  const bulkAdd = async (): Promise<void> => {
+    const lines = [...new Set(bulkText.split('\n').map((l) => l.trim()).filter(Boolean))]
+    if (lines.length === 0) return
+    setBulkBusy(true)
+    let list = streamers
+    let addedCount = 0
+    let failedCount = 0
+    for (const line of lines) {
+      const before = list.length
+      try {
+        list = await window.api.addStreamer(line, platform)
+        if (list.length > before) addedCount++
+      } catch {
+        failedCount++
+      }
+    }
+    setStreamers(list)
+    setBulkBusy(false)
+    setBulkText('')
+    setBulkOpen(false)
+    const skipped = lines.length - addedCount - failedCount
+    const detail = [
+      skipped > 0 ? `${skipped} already saved` : null,
+      failedCount > 0 ? `${failedCount} could not be recognised` : null
+    ].filter(Boolean)
+    toast({
+      kind: failedCount > 0 ? 'error' : 'success',
+      title: `Added ${addedCount} streamer${addedCount === 1 ? '' : 's'}`,
+      message: detail.length > 0 ? detail.join(', ') : 'All lines were added.'
+    })
+  }
+
   const remove = async (streamer: SavedStreamer): Promise<void> => {
     try {
       setStreamers(await window.api.removeStreamer(streamer.id))
@@ -217,6 +262,23 @@ export default function StreamersDialog({
       if (groupFilter === id) setGroupFilter(null)
     } catch (err) {
       toast({ kind: 'error', title: title(err, 'Could not delete that group'), message: message(err) })
+    }
+  }
+
+  const linkPerson = async (idA: string, idB: string): Promise<void> => {
+    try {
+      setStreamers(await window.api.linkStreamerPerson(idA, idB))
+      setLinkPickerFor(null)
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not link streamers'), message: message(err) })
+    }
+  }
+
+  const unlinkPerson = async (id: string): Promise<void> => {
+    try {
+      setStreamers(await window.api.unlinkStreamerPerson(id))
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not unlink'), message: message(err) })
     }
   }
 
@@ -276,11 +338,58 @@ export default function StreamersDialog({
       .filter((g): g is StreamerGroup => Boolean(g))
       .map((g) => <GroupChip key={g.id} group={g} />)
 
-  /** Buttons to bulk-import every not-yet-loaded VOD for one group, colour-matched to it. */
-  const groupImportButtons = (entries: Array<{ streamerId: string; url: string }>): JSX.Element[] => {
+  interface MultistreamInfo {
+    /** True once quality is known for at least two of the linked person's covering VODs. */
+    resolved: boolean
+    /** False only once resolved and a linked copy is confirmed higher quality. */
+    isBest: boolean
+    otherNames: string
+  }
+
+  /**
+   * For every pair (or more) of results that come from streamers linked as
+   * the same person, works out which copy is the better watch. Undecided
+   * until at least two of them have a known resolution, so nothing is ever
+   * demoted on a guess.
+   */
+  const clusterInfoFor = (
+    entries: Array<{ streamerId: string; url: string }>
+  ): Map<string, MultistreamInfo> => {
+    const byPerson = new Map<string, Array<{ streamerId: string; url: string }>>()
+    for (const entry of entries) {
+      const personId = streamers.find((s) => s.id === entry.streamerId)?.personId
+      if (!personId) continue
+      byPerson.set(personId, [...(byPerson.get(personId) ?? []), entry])
+    }
+    const out = new Map<string, MultistreamInfo>()
+    for (const bucket of byPerson.values()) {
+      if (bucket.length < 2) continue
+      const known = bucket.filter((e) => typeof qualityByUrl[e.url] === 'number')
+      const resolved = known.length >= 2
+      const bestUrl = resolved
+        ? known.reduce((a, b) => ((qualityByUrl[b.url] as number) > (qualityByUrl[a.url] as number) ? b : a)).url
+        : null
+      for (const entry of bucket) {
+        const otherNames = bucket
+          .filter((o) => o.url !== entry.url)
+          .map((o) => streamers.find((s) => s.id === o.streamerId)?.displayName)
+          .filter((n): n is string => Boolean(n))
+          .join(', ')
+        out.set(entry.url, { resolved, isBest: resolved ? entry.url === bestUrl : true, otherNames })
+      }
+    }
+    return out
+  }
+
+  /** Buttons to bulk-import every not-yet-loaded, non-duplicate VOD for one group, colour-matched to it. */
+  const groupImportButtons = (
+    entries: Array<{ streamerId: string; url: string }>,
+    cluster: Map<string, MultistreamInfo>
+  ): JSX.Element[] => {
     const byGroup = new Map<string, { group: StreamerGroup; urls: string[] }>()
     for (const entry of entries) {
       if (loaded.has(entry.url) || added.has(entry.url)) continue
+      if (cluster.get(entry.url)?.isBest === false) continue
       for (const id of streamers.find((s) => s.id === entry.streamerId)?.groupIds ?? []) {
         const group = groups.find((g) => g.id === id)
         if (!group) continue
@@ -325,12 +434,26 @@ export default function StreamersDialog({
             a.coverage.offsetSeconds - b.coverage.offsetSeconds
         )
 
-  const overlapGroupButtons = groupImportButtons(
-    (overlap?.streams ?? []).map((s) => ({ streamerId: s.streamerId, url: s.vod.url }))
-  )
-  const atTimeGroupButtons = groupImportButtons(
-    (atTime ?? []).map((h) => ({ streamerId: h.streamer.id, url: h.vod.url }))
-  )
+  const overlapEntries = (overlap?.streams ?? []).map((s) => ({ streamerId: s.streamerId, url: s.vod.url }))
+  const atTimeEntries = (atTime ?? []).map((h) => ({ streamerId: h.streamer.id, url: h.vod.url }))
+  const overlapCluster = clusterInfoFor(overlapEntries)
+  const atTimeCluster = clusterInfoFor(atTimeEntries)
+  const overlapGroupButtons = groupImportButtons(overlapEntries, overlapCluster)
+  const atTimeGroupButtons = groupImportButtons(atTimeEntries, atTimeCluster)
+
+  // Only URLs that are one half of an unresolved multistream pair need a
+  // quality lookup — everything else never touches this.
+  useEffect(() => {
+    const undecided = [...overlapCluster.entries(), ...atTimeCluster.entries()]
+      .filter(([url, info]) => !info.resolved && !(url in qualityByUrl))
+      .map(([url]) => url)
+    const missing = [...new Set(undecided)]
+    if (missing.length === 0) return
+    void window.api.streamerVodQuality(missing).then((result) => {
+      setQualityByUrl((prev) => ({ ...prev, ...result }))
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlap, atTime, streamers])
 
   /** One row shape for a VOD, wherever it came from. */
   const vodRow = (
@@ -338,9 +461,11 @@ export default function StreamersDialog({
     thumbnailUrl: string | null | undefined,
     heading: JSX.Element,
     meta: JSX.Element,
-    url: string
+    url: string,
+    multistream?: MultistreamInfo
   ): JSX.Element => {
     const isAdded = loaded.has(url) || added.has(url)
+    const isSecondary = multistream !== undefined && multistream.resolved && !multistream.isBest
     return (
       <div className="vod" key={key}>
         {thumbnailUrl ? (
@@ -352,16 +477,27 @@ export default function StreamersDialog({
         )}
         <div className="vod-text">
           <div className="vod-title">{heading}</div>
-          <div className="vod-meta">{meta}</div>
+          <div className="vod-meta">
+            {meta}
+            {multistream && multistream.otherNames !== '' && (
+              <Badge tone={!multistream.resolved ? 'neutral' : multistream.isBest ? 'success' : 'warning'}>
+                {!multistream.resolved
+                  ? 'Multistream — checking quality…'
+                  : multistream.isBest
+                    ? `Best quality vs ${multistream.otherNames}`
+                    : `Lower quality than ${multistream.otherNames}`}
+              </Badge>
+            )}
+          </div>
         </div>
         <Button
-          variant="primary"
+          variant={isSecondary ? 'ghost' : 'primary'}
           size="compact"
           icon={isAdded ? 'check' : 'plus'}
           disabled={isAdded}
           onClick={() => importOne(url)}
         >
-          {isAdded ? 'Added' : 'Load as POV'}
+          {isAdded ? 'Added' : isSecondary ? 'Load anyway' : 'Load as POV'}
         </Button>
       </div>
     )
@@ -405,7 +541,43 @@ export default function StreamersDialog({
             <Button variant="primary" icon="plus" onClick={() => void add()}>
               Save
             </Button>
+            <IconButton
+              icon="list"
+              size="compact"
+              label={bulkOpen ? 'Close bulk add' : 'Add a list of streamers at once'}
+              onClick={() => setBulkOpen((v) => !v)}
+            />
           </div>
+
+          {bulkOpen && (
+            <div className="bulk-add">
+              <textarea
+                className="ui-input bulk-add-input"
+                rows={4}
+                placeholder={
+                  'One channel per line — a link (twitch.tv/name) or just a name,\nadded under the platform selected above.'
+                }
+                value={bulkText}
+                onChange={(e) => setBulkText(e.target.value)}
+                aria-label="Streamer names or links, one per line"
+              />
+              <div className="bulk-add-actions">
+                <Button
+                  size="compact"
+                  variant="primary"
+                  icon="plus"
+                  loading={bulkBusy}
+                  disabled={bulkText.trim() === ''}
+                  onClick={() => void bulkAdd()}
+                >
+                  Add all
+                </Button>
+                <Button size="compact" variant="ghost" onClick={() => setBulkOpen(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
 
           <SearchInput
             value={filter}
@@ -449,38 +621,90 @@ export default function StreamersDialog({
             />
           )}
 
-          {shownStreamers.map((streamer) => (
-            <div
-              key={streamer.id}
-              className={`streamer${selected === streamer.id ? ' active' : ''}`}
-            >
-              <button className="streamer-pick" onClick={() => void loadVods(streamer.id)}>
-                <span className="streamer-name">{streamer.displayName}</span>
-                <span className="streamer-meta">
-                  <span className="tag">{streamer.platform}</span>
-                  {streamer.lastUsedAt && (
-                    <span>used {new Date(streamer.lastUsedAt).toLocaleDateString()}</span>
-                  )}
-                  {(streamer.groupIds ?? []).map((id) => {
-                    const group = groups.find((g) => g.id === id)
-                    return group ? <GroupChip key={id} group={group} /> : null
-                  })}
-                </span>
-              </button>
-              <IconButton
-                icon="users"
-                size="compact"
-                label={`Edit groups for ${streamer.displayName}`}
-                onClick={() => setGroupsDialog(streamer)}
-              />
-              <IconButton
-                icon="trash"
-                size="compact"
-                label={`Remove ${streamer.displayName}`}
-                onClick={() => void remove(streamer)}
-              />
-            </div>
-          ))}
+          {shownStreamers.map((streamer) => {
+            const linkedWith = streamer.personId
+              ? streamers.filter((s) => s.personId === streamer.personId && s.id !== streamer.id)
+              : []
+            return (
+              <div
+                key={streamer.id}
+                className={`streamer${selected === streamer.id ? ' active' : ''}`}
+              >
+                <button className="streamer-pick" onClick={() => void loadVods(streamer.id)}>
+                  <span className="streamer-name">{streamer.displayName}</span>
+                  <span className="streamer-meta">
+                    <span className="tag">{streamer.platform}</span>
+                    {streamer.lastUsedAt && (
+                      <span>used {new Date(streamer.lastUsedAt).toLocaleDateString()}</span>
+                    )}
+                    {(streamer.groupIds ?? []).map((id) => {
+                      const group = groups.find((g) => g.id === id)
+                      return group ? <GroupChip key={id} group={group} /> : null
+                    })}
+                    {linkedWith.map((other) => (
+                      <span key={other.id} className="ui-badge person-link-chip">
+                        <Icon name="link" size={12} />
+                        same as {other.displayName}
+                      </span>
+                    ))}
+                  </span>
+                </button>
+                <IconButton
+                  icon="link"
+                  size="compact"
+                  label={
+                    linkedWith.length > 0
+                      ? `Manage same-person links for ${streamer.displayName}`
+                      : `Link ${streamer.displayName} to another platform as the same person`
+                  }
+                  onClick={() => setLinkPickerFor((prev) => (prev === streamer.id ? null : streamer.id))}
+                />
+                <IconButton
+                  icon="users"
+                  size="compact"
+                  label={`Edit groups for ${streamer.displayName}`}
+                  onClick={() => setGroupsDialog(streamer)}
+                />
+                <IconButton
+                  icon="trash"
+                  size="compact"
+                  label={`Remove ${streamer.displayName}`}
+                  onClick={() => void remove(streamer)}
+                />
+                {linkPickerFor === streamer.id && (
+                  <div className="link-picker">
+                    {linkedWith.map((other) => (
+                      <span key={other.id} className="ui-badge person-link-chip">
+                        {other.displayName}
+                        <button
+                          type="button"
+                          className="person-link-remove"
+                          aria-label={`Unlink ${other.displayName}`}
+                          onClick={() => void unlinkPerson(streamer.id)}
+                        >
+                          <Icon name="close" size={10} />
+                        </button>
+                      </span>
+                    ))}
+                    <Select
+                      size="compact"
+                      value=""
+                      label={`Link ${streamer.displayName} as the same person as`}
+                      options={[
+                        { value: '', label: 'Choose a streamer…' },
+                        ...streamers
+                          .filter((s) => s.id !== streamer.id && !linkedWith.some((o) => o.id === s.id))
+                          .map((s) => ({ value: s.id, label: `${s.displayName} (${s.platform})` }))
+                      ]}
+                      onChange={(value) => {
+                        if (value) void linkPerson(streamer.id, value)
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </aside>
 
         <section className="streamer-vods">
@@ -492,13 +716,19 @@ export default function StreamersDialog({
                   {!overlapLoading &&
                     overlap &&
                     overlap.streams.some(
-                      (entry) => !loaded.has(entry.vod.url) && !added.has(entry.vod.url)
+                      (entry) =>
+                        !loaded.has(entry.vod.url) &&
+                        !added.has(entry.vod.url) &&
+                        overlapCluster.get(entry.vod.url)?.isBest !== false
                     ) && (
                       <Button
                         size="compact"
                         icon="plus"
                         onClick={() => {
-                          for (const entry of overlap.streams) importOne(entry.vod.url)
+                          for (const entry of overlap.streams) {
+                            if (overlapCluster.get(entry.vod.url)?.isBest === false) continue
+                            importOne(entry.vod.url)
+                          }
                         }}
                       >
                         Import all
@@ -547,7 +777,8 @@ export default function StreamersDialog({
                       )}
                       {streamerGroupChips(entry.streamerId)}
                     </>,
-                    entry.vod.url
+                    entry.vod.url,
+                    overlapCluster.get(entry.vod.url)
                   )
                 )}
 
@@ -628,7 +859,8 @@ export default function StreamersDialog({
                     )}
                     {streamerGroupChips(hit.streamer.id)}
                   </>,
-                  hit.vod.url
+                  hit.vod.url,
+                  atTimeCluster.get(hit.vod.url)
                 )
               )}
               <hr className="rule" />

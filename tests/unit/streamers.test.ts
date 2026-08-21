@@ -321,3 +321,113 @@ describe('Twitch/YouTube VOD date enrichment', () => {
     expect(resolveSpy).not.toHaveBeenCalled()
   })
 })
+
+describe('same-person links', () => {
+  let dir: string
+  let log: Logger
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cookieclip-streamers-'))
+    log = new Logger(join(dir, 'logs'))
+    service = new StreamerService(log, new ResolverService(log), dir)
+  })
+
+  afterEach(async () => {
+    log.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('links two streamers to the same personId', async () => {
+    await service.add('twitch.tv/leonarwho')
+    await service.add('kick.com/leonarwho')
+    const [a, b] = await service.list()
+
+    const linked = await service.linkPerson(a.id, b.id)
+
+    expect(linked[0].personId).toBeDefined()
+    expect(linked[0].personId).toBe(linked[1].personId)
+  })
+
+  it('linking a third streamer to either half joins the same group rather than starting a new one', async () => {
+    await service.add('twitch.tv/leonarwho')
+    await service.add('kick.com/leonarwho')
+    await service.add('youtube.com/@leonarwho')
+    const [a, b, c] = await service.list()
+    await service.linkPerson(a.id, b.id)
+
+    const linked = await service.linkPerson(b.id, c.id)
+
+    const [la, lb, lc] = linked
+    expect(la.personId).toBe(lb.personId)
+    expect(lb.personId).toBe(lc.personId)
+  })
+
+  it('linking a streamer to itself is a no-op', async () => {
+    await service.add('twitch.tv/leonarwho')
+    const [a] = await service.list()
+
+    const result = await service.linkPerson(a.id, a.id)
+
+    expect(result[0].personId).toBeUndefined()
+  })
+
+  it('unlinking one of a pair clears both — a link of one streamer alone is meaningless', async () => {
+    await service.add('twitch.tv/leonarwho')
+    await service.add('kick.com/leonarwho')
+    const [a, b] = await service.list()
+    await service.linkPerson(a.id, b.id)
+
+    const after = await service.unlinkPerson(a.id)
+
+    expect(after[0].personId).toBeUndefined()
+    expect(after[1].personId).toBeUndefined()
+  })
+
+  it('unlinking one of three leaves the remaining two linked to each other', async () => {
+    await service.add('twitch.tv/leonarwho')
+    await service.add('kick.com/leonarwho')
+    await service.add('youtube.com/@leonarwho')
+    const [a, b, c] = await service.list()
+    await service.linkPerson(a.id, b.id)
+    await service.linkPerson(b.id, c.id)
+
+    const after = await service.unlinkPerson(a.id)
+
+    const [ua, ub, uc] = after
+    expect(ua.personId).toBeUndefined()
+    expect(ub.personId).toBeDefined()
+    expect(ub.personId).toBe(uc.personId)
+  })
+})
+
+describe('VOD quality probing', () => {
+  let dir: string
+  let log: Logger
+  let resolver: ResolverService
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cookieclip-streamers-'))
+    log = new Logger(join(dir, 'logs'))
+    resolver = new ResolverService(log)
+    service = new StreamerService(log, resolver, dir)
+  })
+
+  afterEach(async () => {
+    log.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('reports the tallest resolution offered for each VOD', async () => {
+    vi.spyOn(resolver, 'resolve').mockImplementation(async (url: string) => {
+      if (url === 'https://a') return { formats: [{ height: 480 }, { height: 1080 }, { height: 720 }] }
+      throw new Error('unreachable')
+    })
+
+    const result = await service.probeQuality(['https://a', 'https://b'])
+
+    expect(result['https://a']).toBe(1080)
+    expect(result['https://b']).toBeNull()
+  })
+})

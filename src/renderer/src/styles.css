@@ -1641,6 +1641,27 @@ table.matrix tr.dim td {
   padding-bottom: var(--space-2);
 }
 
+.bulk-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.bulk-add-input {
+  width: 100%;
+  height: auto;
+  min-height: 84px;
+  resize: vertical;
+  font: var(--type-body-small);
+  line-height: 1.4;
+}
+
+.bulk-add-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
 .group-filter-row {
   display: flex;
   flex-wrap: wrap;
@@ -1651,6 +1672,35 @@ table.matrix tr.dim td {
 
 .group-chip {
   gap: var(--space-1);
+}
+
+.person-link-chip {
+  gap: var(--space-1);
+}
+
+.person-link-remove {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  margin-left: 2px;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.person-link-remove:hover {
+  opacity: 1;
+}
+
+.link-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-1) 0 var(--space-2);
 }
 
 .group-import-row {
@@ -1752,6 +1802,7 @@ table.matrix tr.dim td {
 .streamer {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   border-radius: var(--radius-medium);
@@ -1785,6 +1836,10 @@ table.matrix tr.dim td {
 }
 
 .streamer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
   color: var(--text-tertiary);
   font: var(--type-caption);
 }

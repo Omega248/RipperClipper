@@ -125,6 +125,13 @@ export interface SavedStreamer {
   watermark?: WatermarkConfig
   /** Which StreamerGroups this streamer's current character belongs to — PD, a gang, EMS, … */
   groupIds?: string[]
+  /**
+   * Shared by every saved entry that is the same real person restreaming to
+   * more than one platform, so a moment covered by two of them can be
+   * resolved to whichever copy is actually the better watch instead of
+   * showing the same broadcast twice.
+   */
+  personId?: string
 }
 
 /**
@@ -216,6 +223,9 @@ export const IPC = {
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   streamersSetGroups: 'streamers:set-groups',
+  streamersLinkPerson: 'streamers:link-person',
+  streamersUnlinkPerson: 'streamers:unlink-person',
+  streamersVodQuality: 'streamers:vod-quality',
 
   // streamer groups
   streamerGroupsList: 'streamer-groups:list',
@@ -446,6 +456,12 @@ export interface RendererApi {
   streamerVods(id: string): Promise<StreamerVod[]>
   /** Replaces a streamer's whole group membership list. */
   setStreamerGroups(id: string, groupIds: string[]): Promise<SavedStreamer[]>
+  /** Marks two saved streamers as the same real person restreaming elsewhere. */
+  linkStreamerPerson(idA: string, idB: string): Promise<SavedStreamer[]>
+  /** Undoes linkStreamerPerson for one streamer. */
+  unlinkStreamerPerson(id: string): Promise<SavedStreamer[]>
+  /** Best resolution available for each VOD URL, null where it could not be determined. */
+  streamerVodQuality(urls: string[]): Promise<Record<string, number | null>>
 
   listStreamerGroups(): Promise<StreamerGroup[]>
   createStreamerGroup(name: string, icon?: string, color?: string): Promise<StreamerGroup[]>
