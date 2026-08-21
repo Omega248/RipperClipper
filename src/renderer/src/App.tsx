@@ -35,6 +35,7 @@ import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
 import EventPage from './components/EventPage.js'
 import EventSearch from './components/EventSearch.js'
+import HealthPage from './components/HealthPage.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -1097,6 +1098,7 @@ export default function App(): JSX.Element {
               ['event', 'Event'],
               ...(EditorPage ? ([['editor', 'Editor']] as const) : []),
               ['properties', 'Properties'],
+              ['health', 'Health'],
               ['export', 'Export']
             ] as const
           ).map(([id, label]) => (
@@ -1280,6 +1282,7 @@ export default function App(): JSX.Element {
         </Suspense>
       )}
       {page === 'event' && <EventPage onLoadVod={loadVod} />}
+      {page === 'health' && <HealthPage onLoadVod={loadVod} />}
       {page === 'properties' && (
         <div className="page">
           <PropertiesPage />

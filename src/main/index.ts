@@ -23,6 +23,7 @@ import { SourceService } from './services/sources.js'
 import { StreamerService } from './services/streamers.js'
 import { DiscoveryService } from './services/discovery.js'
 import { TranscriptService } from './services/transcripts.js'
+import { StorageService } from './services/storage.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
 import { UpdateService } from './services/updater.js'
@@ -116,6 +117,64 @@ const sources = new SourceService(log, registry, resolver)
 const streamers = new StreamerService(log, resolver, stateDir)
 const discovery = new DiscoveryService(log, streamers, resolver)
 const transcripts = new TranscriptService(log, resolver)
+/**
+ * Storage areas, resolved lazily so they follow the settings the editor has
+ * actually chosen (cache and temp are both configurable) rather than the
+ * defaults captured at startup. Projects and exports are listed so the total
+ * is honest, but never marked clearable — they are the only things here that
+ * cannot be rebuilt.
+ */
+const storage = new StorageService(log, () => [
+  {
+    id: 'temp',
+    label: 'Temporary working files',
+    consequence: 'Nothing — these are the scratch files of finished or abandoned exports.',
+    path: tempRoot,
+    clearable: true
+  },
+  {
+    id: 'media-cache',
+    label: 'Downloaded media segments',
+    consequence: 'Clips you re-export will download their segments again.',
+    path: cache.dir,
+    clearable: true
+  },
+  {
+    id: 'previews',
+    label: 'Playable previews',
+    consequence: 'Ranges made playable for sources the player cannot decode are rebuilt on demand.',
+    path: join(userData, 'cache', 'previews'),
+    clearable: true
+  },
+  {
+    id: 'thumbnails',
+    label: 'Filmstrips and thumbnails',
+    consequence: 'Timeline filmstrips and clip thumbnails are regenerated as you scroll.',
+    path: thumbCache.dir,
+    clearable: true
+  },
+  {
+    id: 'waveforms',
+    label: 'Waveforms',
+    consequence: 'Audio waveforms are recomputed when a clip is next opened.',
+    path: waveCache.dir,
+    clearable: true
+  },
+  {
+    id: 'scenes',
+    label: 'Scene detection',
+    consequence: 'Detected cuts are found again the next time you snap a mark.',
+    path: sceneCache.dir,
+    clearable: true
+  },
+  {
+    id: 'projects',
+    label: 'Projects and their backups',
+    consequence: 'Cannot be cleared here — these are your own files.',
+    path: defaultProjectsDir,
+    clearable: false
+  }
+])
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
@@ -720,6 +779,8 @@ function registerIpc(): void {
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
   handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
   handle(IPC.transcriptsFor, (sources: VodSource[]) => transcripts.forSources(sources))
+  handle(IPC.storageReport, () => storage.report())
+  handle(IPC.storageClear, (areaId: string) => storage.clear(areaId))
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
   handle(IPC.streamersSetFavorite, (id: string, favorite: boolean) => streamers.setFavorite(id, favorite))
   handle(IPC.streamersRestore, (streamer: SavedStreamer) => streamers.restore(streamer))

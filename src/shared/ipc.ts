@@ -225,6 +225,23 @@ export interface EventDiscoveryReply {
   notes: string[]
 }
 
+/** One measurable area of disk (§17). */
+export interface StorageArea {
+  id: string
+  label: string
+  /** What is actually lost by clearing it — never just "cache". */
+  consequence: string
+  path: string
+  sizeBytes: number
+  /** False for anything that cannot be rebuilt: projects, exports. */
+  clearable: boolean
+}
+
+export interface StorageReport {
+  areas: StorageArea[]
+  totalBytes: number
+}
+
 /** One past broadcast in the streamer picker. */
 export interface StreamerVod {
   url: string
@@ -274,6 +291,8 @@ export const IPC = {
   streamersOverlap: 'streamers:overlap',
   discoverEvent: 'discovery:event',
   transcriptsFor: 'transcripts:for-sources',
+  storageReport: 'storage:report',
+  storageClear: 'storage:clear',
   streamersSetGroups: 'streamers:set-groups',
   streamersSetFavorite: 'streamers:set-favorite',
   streamersRestore: 'streamers:restore',
@@ -533,6 +552,10 @@ export interface RendererApi {
    * main/services/transcripts.ts for why that is a fact, not a failure.
    */
   transcriptsFor(sources: VodSource[]): Promise<Transcript[]>
+  /** Disk used per area (§17). */
+  storageReport(): Promise<StorageReport>
+  /** Empties one clearable area. Protected areas are refused in the main process. */
+  storageClear(areaId: string): Promise<StorageReport>
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>

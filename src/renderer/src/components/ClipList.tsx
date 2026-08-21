@@ -3,6 +3,7 @@ import { clipStatus } from '@shared/status'
 import { formatDuration, formatTimecode } from '@shared/time'
 import { tagTone } from '@shared/clipTags'
 import { overlappingClipIds } from '@shared/clips'
+import { collectionCounts } from '@shared/search'
 import type { ClipSegment } from '@shared/types'
 import { useActiveClips, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
@@ -44,6 +45,8 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
   const currentTime = useStore((s) => s.currentTime)
   const hasSource = useStore((s) => s.activeSourceId !== null)
   const setPage = useStore((s) => s.setPage)
+  const addClipCollection = useStore((s) => s.addClipCollection)
+  const projectEvent = useStore((s) => s.project?.event)
 
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   const [overIndex, setOverIndex] = useState<number | null>(null)
@@ -52,6 +55,9 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
   const [tagPrompt, setTagPrompt] = useState<ClipSegment | null>(null)
   const [bulkTagPrompt, setBulkTagPrompt] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('order')
+  // 'all' shows everything; null shows only the clips in no collection.
+  const [collectionFilter, setCollectionFilter] = useState<string | null | 'all'>('all')
+  const [newCollection, setNewCollection] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const lastClickedIndex = useRef<number | null>(null)
 
@@ -143,14 +149,20 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
     }
   ]
 
+  // Filing is a view, never a change to the clips themselves — an unfiled
+  // clip is still in the event, just not in a folder.
+  const inCollection =
+    collectionFilter === 'all' ? clips : clips.filter((c) => (c.collectionId ?? null) === collectionFilter)
+
   const displayClips =
     sortMode === 'order'
-      ? clips
-      : [...clips].sort((a, b) => {
+      ? inCollection
+      : [...inCollection].sort((a, b) => {
           if (sortMode === 'duration') return b.durationSeconds - a.durationSeconds
           if (sortMode === 'povCount') return (b.povMappings?.length ?? 0) - (a.povMappings?.length ?? 0)
           return (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
         })
+  const counts = collectionCounts(projectEvent, clips)
   const overlapping = overlappingClipIds(clips)
   const totalDuration = clips.reduce((sum, c) => sum + c.durationSeconds, 0)
 
@@ -172,7 +184,44 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
             { value: 'created', label: 'Sort: newest first' }
           ]}
         />
+        <Select
+          size="compact"
+          value={collectionFilter === null ? '__unfiled' : collectionFilter}
+          onChange={(v) =>
+            setCollectionFilter(v === 'all' ? 'all' : v === '__unfiled' ? null : v)
+          }
+          label="Filter by collection"
+          options={[
+            { value: 'all', label: 'All collections' },
+            ...counts.map((c) => ({
+              value: c.id === null ? '__unfiled' : c.id,
+              label: `${c.name} (${c.count})`
+            }))
+          ]}
+        />
+        <Button
+          size="compact"
+          icon="plus"
+          title="Group clips into a named collection — Bank Entry, Chase, Arrest"
+          onClick={() => setNewCollection('')}
+        >
+          Collection
+        </Button>
       </div>
+
+      {newCollection !== null && (
+        <PromptDialog
+          title="New collection"
+          label="Name"
+          defaultValue=""
+          confirmLabel="Create"
+          onCancel={() => setNewCollection(null)}
+          onConfirm={(name) => {
+            addClipCollection(name)
+            setNewCollection(null)
+          }}
+        />
+      )}
 
       {selectedIds.size > 0 && (
         <div className="clip-bulk-bar">

@@ -4,7 +4,11 @@ import { applyTemplate } from '@shared/filenames'
 import { useActiveClips, useActiveSource, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
 import PovMatrix from './PovMatrix.js'
-import { Button, EmptyState, Field, Input, Notice, TimeInput } from '../ui/index.js'
+import ClipThumbnails from './ClipThumbnails.js'
+import { sortedCollections, unusedPovIds, workflowOf } from '@shared/collections'
+import { CLIP_WORKFLOW_LABEL, CLIP_WORKFLOW_ORDER } from '@shared/types'
+import type { ClipWorkflowState } from '@shared/types'
+import { Button, EmptyState, Field, Input, Notice, Select, TimeInput } from '../ui/index.js'
 
 /**
  * Numeric precision for the selected clip.
@@ -18,6 +22,8 @@ export default function Properties(): JSX.Element {
   const source = useActiveSource()
   const selectedClipId = useStore((s) => s.selectedClipId)
   const patchClip = useStore((s) => s.patchClip)
+  const setClipWorkflowState = useStore((s) => s.setClipWorkflowState)
+  const setClipCollectionId = useStore((s) => s.setClipCollectionId)
   const project = useStore((s) => s.project)
   const inPoint = useStore((s) => s.inPoint)
   const outPoint = useStore((s) => s.outPoint)
@@ -192,6 +198,49 @@ export default function Properties(): JSX.Element {
               </Notice>
             )}
             <PovMatrix clip={clip} />
+
+            {/* Where this clip has got to, and which folder it lives in.
+                Both are organisation, so they sit together and neither
+                touches the clip's real-world time or its POV mappings. */}
+            <div className="clip-organise">
+              <Field label="Stage">
+                <Select
+                  size="compact"
+                  label="Workflow state"
+                  value={workflowOf(clip)}
+                  options={CLIP_WORKFLOW_ORDER.map((state) => ({
+                    value: state,
+                    label: CLIP_WORKFLOW_LABEL[state]
+                  }))}
+                  onChange={(value) => setClipWorkflowState(clip.id, value as ClipWorkflowState)}
+                />
+              </Field>
+              <Field label="Collection">
+                <Select
+                  size="compact"
+                  label="Collection"
+                  value={clip.collectionId ?? ''}
+                  options={[
+                    { value: '', label: 'Unfiled' },
+                    ...sortedCollections(project?.event).map((c) => ({ value: c.id, label: c.name }))
+                  ]}
+                  onChange={(value) => setClipCollectionId(clip.id, value === '' ? null : value)}
+                />
+              </Field>
+            </div>
+
+            {/* §9 + §8 in one object: what the moment looks like from every
+                angle that has it, with the ones actually used marked. */}
+            <ClipThumbnails clip={clip} />
+
+            {unusedPovIds(clip).length > 0 && (
+              <Notice tone="info">
+                {unusedPovIds(clip).length} POV{unusedPovIds(clip).length === 1 ? '' : 's'} cover this
+                moment but {unusedPovIds(clip).length === 1 ? 'has' : 'have'} not been used — footage
+                worth a look before calling this one done.
+              </Notice>
+            )}
+
             {clip.exportedPath && (
               <Button
                 size="compact"
