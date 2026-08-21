@@ -139,6 +139,16 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
                     }
                   />
                 </Field>
+                <Field
+                  label="Scrubbing"
+                  hint="Built previews (for a range the player can't play natively, or when the Editor is open) downscale to a lighter file — faster to seek within, lower picture quality. Only affects preview playback, never what gets exported."
+                >
+                  <Checkbox
+                    checked={settings.ui.fastPreview}
+                    label="Prefer fast scrubbing over preview picture quality"
+                    onChange={(checked) => void save({ ui: { ...settings.ui, fastPreview: checked } })}
+                  />
+                </Field>
               </div>
             </section>
           )}

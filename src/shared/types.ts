@@ -311,6 +311,8 @@ export interface AppSettings {
     timelineHeight?: number
     /** A short chime when an export batch finishes, alongside the toast/notification. */
     exportCompletionSound: boolean
+    /** Built previews downscale to a lighter proxy — faster to seek within, at the cost of picture quality. */
+    fastPreview: boolean
   }
   shortcuts: Record<string, string>
   /** Saved export-setting bundles, applied to the current project on demand. */

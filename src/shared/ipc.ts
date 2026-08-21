@@ -26,6 +26,8 @@ export interface PreviewMediaRequest {
   source: VodSource
   startSeconds: number
   endSeconds: number
+  /** A lighter proxy at this picture height instead of the source's own — for rapid scrubbing. */
+  height?: number
 }
 
 export interface PreviewMediaReply {

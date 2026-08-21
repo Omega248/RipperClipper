@@ -118,6 +118,13 @@ export class PreviewMediaService {
     signal?: AbortSignal
     onProgress?: (fraction: number, message: string) => void
     hwAccel?: HwAccelPreference
+    /**
+     * A lighter proxy instead of the source's own resolution — for rapid
+     * scrubbing, where decode speed matters more than picture quality.
+     * Downscaling always means a re-encode, even for a range that would
+     * otherwise just be stream-copied.
+     */
+    height?: number
   }): Promise<PreviewAsset> {
     if (!(req.endSeconds > req.startSeconds)) {
       throw Errors.invalidRange('That range is empty, so there is nothing to preview.')
@@ -130,7 +137,8 @@ export class PreviewMediaService {
           req.stream.id,
           req.stream.url,
           req.startSeconds.toFixed(3),
-          req.endSeconds.toFixed(3)
+          req.endSeconds.toFixed(3),
+          req.height ? `h${req.height}` : 'full'
         ].join('|')
       )
       .digest('hex')
@@ -190,6 +198,10 @@ export class PreviewMediaService {
       throw Errors.qualityUnavailable('a previewable picture', reason)
     }
 
+    // A stream copy can't resize anything — downscaling always forces a
+    // real re-encode, whatever classifyPreview would otherwise have picked.
+    const transcoding = plan === 'transcode' || Boolean(req.height)
+
     const offset = Math.max(0, req.startSeconds - window.windowStartSeconds)
     const duration = req.endSeconds - req.startSeconds
     const output = join(this.cacheDir, `${id}.mp4`)
@@ -197,7 +209,7 @@ export class PreviewMediaService {
     // not a container it knows.
     const staged = join(this.cacheDir, `${id}.partial.mp4`)
 
-    req.onProgress?.(0.55, plan === 'remux' ? 'Repackaging…' : 'Preparing the preview…')
+    req.onProgress?.(0.55, transcoding ? 'Preparing the preview…' : 'Repackaging…')
 
     // Same reasoning as the exporter's precise-cut path: a transcode decodes
     // and re-encodes regardless, so it is worth putting on the GPU when one
@@ -206,7 +218,7 @@ export class PreviewMediaService {
     const hwEncoder = hwAccel !== 'none' ? this.ffmpeg.pickHwEncoder(hwAccel, 'h264') : null
     const common = [
       '-y',
-      ...(plan === 'transcode' && hwEncoder ? ['-hwaccel', 'auto'] : []),
+      ...(transcoding && hwEncoder ? ['-hwaccel', 'auto'] : []),
       '-ss',
       offset.toFixed(3),
       '-i',
@@ -214,10 +226,10 @@ export class PreviewMediaService {
       '-t',
       duration.toFixed(3)
     ]
-    const args =
-      plan === 'transcode'
+    const args = transcoding
         ? [
             ...common,
+            ...(req.height ? ['-vf', `scale=-2:${req.height}`] : []),
             '-c:v',
             hwEncoder ?? 'libx264',
             ...(hwEncoder ? [] : ['-preset', 'veryfast', '-crf', '20']),
@@ -226,7 +238,7 @@ export class PreviewMediaService {
             '-c:a',
             'aac',
             '-b:a',
-            '192k',
+            req.height ? '128k' : '192k',
             '-movflags',
             '+faststart',
             staged
@@ -245,7 +257,7 @@ export class PreviewMediaService {
     try {
       await this.ffmpeg.exec(args, {
         signal: req.signal,
-        label: `preview ${plan}`,
+        label: `preview ${transcoding ? 'transcode' : 'remux'}`,
         onProgress: (p) =>
           req.onProgress?.(
             0.55 + Math.min(1, p.outTimeSeconds / Math.max(0.1, duration)) * 0.4,
@@ -254,7 +266,9 @@ export class PreviewMediaService {
       })
     } catch (err) {
       // A stream copy can fail on an odd container; re-encoding always works.
-      if (plan === 'remux') {
+      // (Only reachable when the copy branch was actually taken — a height
+      // request always takes the transcode branch above instead.)
+      if (!transcoding) {
         this.log.warn('preview', 'Copy failed; re-encoding the preview instead')
         await this.ffmpeg.exec(
           [...common, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-movflags', '+faststart', staged],
@@ -269,7 +283,7 @@ export class PreviewMediaService {
     const asset: PreviewAsset = {
       id,
       path: output,
-      plan,
+      plan: transcoding ? 'transcode' : plan,
       reason,
       startSeconds: req.startSeconds,
       endSeconds: req.endSeconds,
@@ -278,7 +292,8 @@ export class PreviewMediaService {
     this.assets.set(id, asset)
     this.schedulePrune()
     this.log.info('preview', 'Built preview media', {
-      plan,
+      plan: transcoding ? 'transcode' : plan,
+      height: req.height,
       seconds: Math.round(duration),
       source: req.source.title
     })

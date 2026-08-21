@@ -60,7 +60,8 @@ export function defaultSettings(paths: {
     ui: {
       theme: 'system',
       timelineFollowPlayhead: true,
-      exportCompletionSound: false
+      exportCompletionSound: false,
+      fastPreview: false
     },
     shortcuts: { ...DEFAULT_SHORTCUTS },
     exportPresets: []
@@ -104,7 +105,14 @@ export function mergeSettings(base: AppSettings, patch: unknown): AppSettings {
     },
     ui: {
       ...base.ui,
-      ...pick(p.ui, ['theme', 'timelineFollowPlayhead', 'sidePanelWidth', 'timelineHeight', 'exportCompletionSound'])
+      ...pick(p.ui, [
+        'theme',
+        'timelineFollowPlayhead',
+        'sidePanelWidth',
+        'timelineHeight',
+        'exportCompletionSound',
+        'fastPreview'
+      ])
     },
     shortcuts: {
       ...base.shortcuts,

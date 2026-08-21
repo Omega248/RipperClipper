@@ -12,6 +12,9 @@ import { Button, ErrorState, Icon } from '../ui/index.js'
  */
 export const PREVIEW_PAD_SECONDS = 5
 
+/** Picture height a "fast scrubbing" preview downscales to when that setting is on. */
+const FAST_PREVIEW_HEIGHT = 480
+
 /**
  * The video viewport: whichever POV is active, played through the app's own
  * player. Extracted so the Video page and the Editor page can each mount
@@ -71,7 +74,12 @@ export function usePlayerViewport(opts: { onShowGuide: () => void }): {
         : Math.min(src.durationSeconds, Math.max(60, state.currentTime + 90))
       if (!buildOpts?.silent) setMakingPreview('Preparing a playable preview of this range…')
       try {
-        const result = await window.api.previewMedia({ source: src, startSeconds: from, endSeconds: to })
+        const result = await window.api.previewMedia({
+          source: src,
+          startSeconds: from,
+          endSeconds: to,
+          height: state.settings?.ui.fastPreview ? FAST_PREVIEW_HEIGHT : undefined
+        })
         setMadePreview({
           sourceId: src.id,
           url: result.url,

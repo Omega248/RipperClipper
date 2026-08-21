@@ -645,7 +645,8 @@ function registerIpc(): void {
       startSeconds: Math.max(0, req.startSeconds),
       endSeconds: Math.min(req.source.durationSeconds, req.endSeconds),
       workDir: join(tempRoot, 'preview-media'),
-      hwAccel: settings.current.export.hwAccel
+      hwAccel: settings.current.export.hwAccel,
+      height: req.height
     })
     return {
       url: `${localServer?.loopbackUrl ?? ''}/local?id=${asset.id}`,
