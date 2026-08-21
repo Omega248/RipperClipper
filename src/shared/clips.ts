@@ -82,6 +82,7 @@ export function updateClip(
       | 'eventEndTime'
       | 'videoSourceId'
       | 'audioSourceId'
+      | 'tag'
     >
   >,
   sourceDuration: number

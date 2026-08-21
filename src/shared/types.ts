@@ -70,6 +70,8 @@ export interface ClipSegment {
   exportedPath?: string
   /** Human readable note about the last export (e.g. keyframe drift). */
   lastMessage?: string
+  /** Free-text triage label ("Highlight", "Needs review", …). Colour is derived from the text. */
+  tag?: string | null
 }
 
 /**

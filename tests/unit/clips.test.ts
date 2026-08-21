@@ -61,6 +61,16 @@ describe('clip management', () => {
     expect(() => updateClip(base, base[0].id, { endSeconds: 10 }, DURATION)).toThrow()
   })
 
+  it('sets and clears a triage tag without touching anything else', () => {
+    const base = seed()
+    const tagged = updateClip(base, base[0].id, { tag: 'Highlight' }, DURATION)
+    expect(tagged[0].tag).toBe('Highlight')
+    expect(tagged[0].startSeconds).toBe(750)
+
+    const cleared = updateClip(tagged, tagged[0].id, { tag: null }, DURATION)
+    expect(cleared[0].tag).toBeNull()
+  })
+
   it('duplicates with a distinct id and name', () => {
     const base = seed()
     const clips = duplicateClip(base, base[0].id)

@@ -167,7 +167,7 @@ interface Actions {
 
   patchClip: (
     id: string,
-    patch: Partial<Pick<ClipSegment, 'name' | 'startSeconds' | 'endSeconds' | 'status'>>
+    patch: Partial<Pick<ClipSegment, 'name' | 'startSeconds' | 'endSeconds' | 'status' | 'tag'>>
   ) => void
   deleteClip: (id: string) => void
   copyClip: (id: string) => void

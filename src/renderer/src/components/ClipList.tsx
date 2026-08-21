@@ -1,15 +1,18 @@
 import { useState } from 'react'
 import { clipStatus } from '@shared/status'
 import { formatDuration, formatTimecode } from '@shared/time'
+import { tagTone } from '@shared/clipTags'
 import type { ClipSegment } from '@shared/types'
 import { useActiveClips, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
 import {
+  Badge,
   Button,
   ConfirmDialog,
   ContextMenu,
   EmptyState,
   IconButton,
+  PromptDialog,
   StatusDot
 } from '../ui/index.js'
 import type { MenuItem } from '../ui/index.js'
@@ -26,6 +29,7 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
   const selectClip = useStore((s) => s.selectClip)
   const deleteClip = useStore((s) => s.deleteClip)
   const copyClip = useStore((s) => s.copyClip)
+  const patchClip = useStore((s) => s.patchClip)
   const moveClip = useStore((s) => s.moveClip)
   const setSequenceIndex = useStore((s) => s.setSequenceIndex)
   const setInPoint = useStore((s) => s.setInPoint)
@@ -39,6 +43,7 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
   const [overIndex, setOverIndex] = useState<number | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; clip: ClipSegment } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<ClipSegment | null>(null)
+  const [tagPrompt, setTagPrompt] = useState<ClipSegment | null>(null)
 
   if (clips.length === 0) {
     return (
@@ -102,6 +107,23 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
     { id: 'duplicate', label: 'Duplicate', icon: 'copy', onSelect: () => copyClip(clip.id) },
     { id: 'export', label: 'Export this clip', icon: 'download', onSelect: () => onExportClip(clip) },
     {
+      id: 'tag',
+      label: clip.tag ? 'Change tag…' : 'Set tag…',
+      icon: 'file',
+      separatorBefore: true,
+      onSelect: () => setTagPrompt(clip)
+    },
+    ...(clip.tag
+      ? [
+          {
+            id: 'untag',
+            label: 'Clear tag',
+            icon: 'close' as const,
+            onSelect: () => patchClip(clip.id, { tag: null })
+          }
+        ]
+      : []),
+    {
       id: 'delete',
       label: 'Delete',
       icon: 'trash',
@@ -160,7 +182,12 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
           <div style={{ minWidth: 0 }}>
             <div className="clip-name">
               <StatusDot status={clipStatus(clip.status)} />
-              {clip.name}
+              <span className="ellipsis">{clip.name}</span>
+              {clip.tag && (
+                <Badge tone={tagTone(clip.tag)} glyph="●">
+                  {clip.tag}
+                </Badge>
+              )}
             </div>
             <div className="clip-times">
               {formatTimecode(clip.startSeconds)} → {formatTimecode(clip.endSeconds)} ·{' '}
@@ -221,6 +248,21 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
           onConfirm={() => {
             deleteClip(confirmDelete.id)
             setConfirmDelete(null)
+          }}
+        />
+      )}
+
+      {tagPrompt && (
+        <PromptDialog
+          title={`Tag "${tagPrompt.name}"`}
+          description="A short label for triage — Highlight, Needs review, whatever helps you scan the list. Leave it blank to remove the tag."
+          label="Tag"
+          defaultValue={tagPrompt.tag ?? ''}
+          confirmLabel="Set tag"
+          onCancel={() => setTagPrompt(null)}
+          onConfirm={(value) => {
+            patchClip(tagPrompt.id, { tag: value.trim() === '' ? null : value.trim() })
+            setTagPrompt(null)
           }}
         />
       )}
