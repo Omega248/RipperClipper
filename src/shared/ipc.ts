@@ -2,6 +2,7 @@ import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './water
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
 import type { Transcript } from './transcript.js'
+import type { ProjectPackage } from './packaging.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
@@ -293,6 +294,8 @@ export const IPC = {
   transcriptsFor: 'transcripts:for-sources',
   storageReport: 'storage:report',
   storageClear: 'storage:clear',
+  packageExport: 'package:export',
+  packageImport: 'package:import',
   streamersSetGroups: 'streamers:set-groups',
   streamersSetFavorite: 'streamers:set-favorite',
   streamersRestore: 'streamers:restore',
@@ -556,6 +559,13 @@ export interface RendererApi {
   storageReport(): Promise<StorageReport>
   /** Empties one clearable area. Protected areas are refused in the main process. */
   storageClear(areaId: string): Promise<StorageReport>
+  /** Writes a portable package (§20). Null when the editor cancels the save dialog. */
+  packageExport(req: {
+    project: ProjectFile
+    options: { clipIds?: string[]; includeExportPaths?: boolean; note?: string }
+  }): Promise<{ path: string; clips: number; povs: number } | null>
+  /** Reads a package. Null when cancelled; throws when the file is not a package. */
+  packageImport(): Promise<ProjectPackage | null>
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>

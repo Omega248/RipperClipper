@@ -8,6 +8,8 @@ import {
 } from '@shared/event'
 import { CLIP_WORKFLOW_LABEL, CLIP_WORKFLOW_ORDER } from '@shared/types'
 import { workflowOf } from '@shared/collections'
+import { attentionLine, summariseProject } from '@shared/dashboard'
+import { message, title } from './QualityPanel.js'
 import { isSynced, localToEvent } from '@shared/sync'
 import { useStore } from '../store.js'
 import EventTimeline from './EventTimeline.js'
@@ -45,13 +47,15 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
   const setEventInfo = useStore((s) => s.setEventInfo)
   const addEventMoment = useStore((s) => s.addEventMoment)
   const removeEventMoment = useStore((s) => s.removeEventMoment)
+  const toast = useStore((s) => s.toast)
   const [showDiscovery, setShowDiscovery] = useState(false)
   const [momentName, setMomentName] = useState('')
 
-  const window = useMemo(() => (project ? eventWindow(project) : null), [project])
-  const summary = useMemo(() => (project ? participantSummary(project) : null), [project])
+  const eventRange = useMemo(() => (project ? eventWindow(project) : null), [project])
+  const participants = useMemo(() => (project ? participantSummary(project) : null), [project])
   const coverage = useMemo(() => (project ? eventCoverageFraction(project) : 0), [project])
   const moments = useMemo(() => sortedMoments(project?.event), [project?.event])
+  const summary = useMemo(() => (project ? summariseProject(project) : null), [project])
 
   const workflowCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -62,6 +66,28 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
     return counts
   }, [project?.clips])
 
+  /**
+   * §20 — write the work out as one portable file. The main process owns the
+   * save dialog and the actual write; nothing here knows a path.
+   */
+  const exportPackage = async (): Promise<void> => {
+    if (!project) return
+    try {
+      const result = await window.api.packageExport({
+        project,
+        options: { includeExportPaths: true }
+      })
+      if (!result) return // cancelled
+      toast({
+        kind: 'success',
+        title: 'Package exported',
+        message: `${result.clips} clip${result.clips === 1 ? '' : 's'} and ${result.povs} POV${result.povs === 1 ? '' : 's'}. The VODs are referenced, not copied.`
+      })
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not export package'), message: message(err) })
+    }
+  }
+
   if (!project) return <></>
   const event = project.event
 
@@ -70,10 +96,20 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
       <PageHeader
         title={event?.name?.trim() || project.name}
         description="Everything known about this real-world event: who filmed it, what they covered, and every moment cut from it."
+        meta={summary ? <span className="event-attention">{attentionLine(summary)}</span> : undefined}
         actions={
-          <Button variant="primary" icon="search" onClick={() => setShowDiscovery(true)}>
-            Find POVs by time
-          </Button>
+          <>
+            <Button
+              icon="download"
+              title="Save this event's work — clips, sync, edits, watermarks — as one portable file. The VODs are named, not copied."
+              onClick={() => void exportPackage()}
+            >
+              Export package
+            </Button>
+            <Button variant="primary" icon="search" onClick={() => setShowDiscovery(true)}>
+              Find POVs by time
+            </Button>
+          </>
         }
       />
 
@@ -108,7 +144,7 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
 
       <Section title="At a glance">
         <div className="event-stats">
-          <Stat label="Participants" value={String(summary?.loaded ?? 0)} hint="POVs loaded" />
+          <Stat label="Participants" value={String(participants?.loaded ?? 0)} hint="POVs loaded" />
           <Stat
             label="Event coverage"
             value={`${Math.round(coverage * 100)}%`}
@@ -118,14 +154,14 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
           <Stat label="Collections" value={String(event?.collections.length ?? 0)} />
         </div>
 
-        {summary && (
+        {participants && (
           <div className="event-participant-breakdown">
-            <Badge tone="success">{summary.fullCoverage} full coverage</Badge>
-            {summary.partialCoverage > 0 && <Badge tone="warning">{summary.partialCoverage} partial</Badge>}
-            {summary.missing > 0 && <Badge tone="neutral">{summary.missing} not recording</Badge>}
+            <Badge tone="success">{participants.fullCoverage} full coverage</Badge>
+            {participants.partialCoverage > 0 && <Badge tone="warning">{participants.partialCoverage} partial</Badge>}
+            {participants.missing > 0 && <Badge tone="neutral">{participants.missing} not recording</Badge>}
             {/* Kept distinct from "not recording" on purpose: this one is work
                 still to do, not a fact about the event. */}
-            {summary.unknown > 0 && <Badge tone="danger">{summary.unknown} not aligned yet</Badge>}
+            {participants.unknown > 0 && <Badge tone="danger">{participants.unknown} not aligned yet</Badge>}
           </div>
         )}
 
@@ -151,7 +187,7 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
           />
           <Button
             icon="plus"
-            disabled={momentName.trim() === '' || !window}
+            disabled={momentName.trim() === '' || !eventRange}
             title="Marks the current playhead position on the event clock"
             onClick={() => {
               const state = useStore.getState()
@@ -162,8 +198,8 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
               // the active POV isn't on the event clock yet.
               const at =
                 source?.syncMapping && isSynced(source.syncMapping)
-                  ? (localToEvent(source.syncMapping, state.currentTime) ?? window?.startSeconds ?? 0)
-                  : (window?.startSeconds ?? 0)
+                  ? (localToEvent(source.syncMapping, state.currentTime) ?? eventRange?.startSeconds ?? 0)
+                  : (eventRange?.startSeconds ?? 0)
               addEventMoment({ timeSeconds: at, name: momentName.trim() })
               setMomentName('')
             }}

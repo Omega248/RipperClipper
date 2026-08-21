@@ -8,6 +8,7 @@ import Transport from './Transport.js'
 import MediaLibrary from './MediaLibrary.js'
 import TimelineEditor from './TimelineEditor.js'
 import Inspector from './Inspector.js'
+import PrepareForEditor from './PrepareForEditor.js'
 import WatermarkOverlay from './WatermarkOverlay.js'
 import { Icon } from '../ui/index.js'
 
@@ -33,6 +34,7 @@ export default function EditorPage({
   const selectedItemId = useStore((s) => s.selectedTimelineItemId)
   const [tab, setTab] = useState<SidebarTab>('library')
   const [userPickedTab, setUserPickedTab] = useState(false)
+  const [showPrepare, setShowPrepare] = useState(false)
   // Whether the live warm-pool player could take the current cut itself —
   // false only for a POV the built-in player can't stream directly, in
   // which case the older build-a-local-proxy player takes over for it.
@@ -109,8 +111,14 @@ export default function EditorPage({
           </div>
         </aside>
       </div>
+      {showPrepare && <PrepareForEditor onClose={() => setShowPrepare(false)} />}
       <div className="editor-timeline-area">
-        <TimelineEditor onExport={onExport} onWatchSource={buildPreview} onSetActiveLive={setActiveLive} />
+        <TimelineEditor
+          onExport={onExport}
+          onWatchSource={buildPreview}
+          onSetActiveLive={setActiveLive}
+          onPrepare={() => setShowPrepare(true)}
+        />
       </div>
     </div>
   )

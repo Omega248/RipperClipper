@@ -47,7 +47,8 @@ interface MovePreview {
 export default function TimelineEditor({
   onExport,
   onWatchSource,
-  onSetActiveLive
+  onSetActiveLive,
+  onPrepare
 }: {
   onExport: () => void
   /**
@@ -67,6 +68,8 @@ export default function TimelineEditor({
    * live-playable at all), which is when `onWatchSource` is asked instead.
    */
   onSetActiveLive: (sourceId: string, localSeconds: number) => boolean
+  /** Opens the gather-material dialog (§19). Dev-only, like the Editor itself. */
+  onPrepare: () => void
 }): JSX.Element {
   const project = useStore((s) => s.project)
   const ensureTimeline = useStore((s) => s.ensureTimeline)
@@ -407,6 +410,7 @@ export default function TimelineEditor({
   return (
     <div className="timeline-editor">
       <TimelineToolbar
+        onPrepare={onPrepare}
         pxPerSecond={pxPerSecond}
         setPxPerSecond={setPxPerSecond}
         ripple={ripple}
@@ -757,11 +761,15 @@ function TimelineToolbar(props: {
   canSeparateAudio: boolean
   onExport: () => void
   canExport: boolean
+  onPrepare: () => void
 }): JSX.Element {
   return (
     <div className="clip-timeline-head">
       <span className="mono">{props.durationLabel} total</span>
       <span className="topbar-divider" />
+      <Button size="compact" icon="download" onClick={props.onPrepare} title="Bring gathered clips, their POVs, sync and edits into this sequence">
+        Prepare
+      </Button>
       <Button size="compact" icon="plus" onClick={props.onAddVideoTrack}>
         Video track
       </Button>

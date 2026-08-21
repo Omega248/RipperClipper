@@ -1,12 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, shell, Tray } from 'electron'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
 import { Logger } from './services/logger.js'
 import { SettingsStore } from './services/settings.js'
 import { CacheManager } from './services/cache.js'
-import { ProjectStore, PROJECT_EXTENSION } from './services/projects.js'
+import { ProjectStore, PROJECT_EXTENSION, atomicWriteJson } from './services/projects.js'
+import { PACKAGE_EXTENSION, buildPackage, readPackage } from '../shared/packaging.js'
+import type { PackageOptions } from '../shared/packaging.js'
 import { FfmpegService } from './media/ffmpeg.js'
 import { ResolverService } from './media/resolver.js'
 import { RangeFetcher } from './media/rangeFetcher.js'
@@ -613,6 +615,49 @@ function registerIpc(): void {
     const saved = await projects.save(project, result.filePath)
     return { path: result.filePath, project: saved }
   })
+  /**
+   * §20 — a portable package: the work, never the media. See
+   * shared/packaging.ts for why the VODs are named rather than carried.
+   */
+  handle(IPC.packageExport, async (req: { project: ProjectFile; options: PackageOptions }) => {
+    const result = await dialog.showSaveDialog({
+      title: 'Export package',
+      defaultPath: join(
+        await ensureDefaultProjectsDir(),
+        `${req.project.name.replace(/[\\/:*?"<>|]/g, '_')}.${PACKAGE_EXTENSION}`
+      ),
+      filters: [{ name: 'Ripper Clipper package', extensions: [PACKAGE_EXTENSION] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    const pkg = buildPackage(req.project, { ...req.options, appVersion: app.getVersion() })
+    await atomicWriteJson(result.filePath, pkg)
+    log.info('packaging', 'Exported a package', {
+      path: result.filePath,
+      clips: pkg.project.clips.length
+    })
+    return { path: result.filePath, clips: pkg.project.clips.length, povs: pkg.project.sources.length }
+  })
+
+  handle(IPC.packageImport, async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Open package',
+      defaultPath: await ensureDefaultProjectsDir(),
+      properties: ['openFile'],
+      filters: [{ name: 'Ripper Clipper package', extensions: [PACKAGE_EXTENSION] }]
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    const raw = await readFile(result.filePaths[0], 'utf8')
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      throw Errors.projectCorrupt(result.filePaths[0], 'not valid JSON')
+    }
+    // readPackage refuses anything that is not actually a package, so an
+    // unrelated JSON file can never arrive as an empty project.
+    return readPackage(parsed)
+  })
+
   handle(IPC.projectOpen, async () => {
     const result = await dialog.showOpenDialog({
       title: 'Open project',
