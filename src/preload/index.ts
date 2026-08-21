@@ -94,6 +94,7 @@ const api: RendererApi = {
   retryAllFailed: () => invoke(IPC.exportRetryAllFailed),
   clearFinished: () => invoke(IPC.exportClearFinished),
   listJobs: () => invoke(IPC.exportList),
+  exportClipListCsv: (csv, suggestedName) => invoke(IPC.exportClipListCsv, csv, suggestedName),
 
   cacheStats: () => invoke(IPC.cacheStats),
   clearCache: () => invoke(IPC.cacheClear),

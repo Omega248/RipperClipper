@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, shell } from 'electron'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
@@ -756,6 +756,16 @@ function registerIpc(): void {
   handle(IPC.exportRetryAllFailed, () => queue.retryAllFailed())
   handle(IPC.exportClearFinished, () => queue.clearFinished())
   handle(IPC.exportList, () => queue.list())
+  handle(IPC.exportClipListCsv, async (csv: string, suggestedName: string) => {
+    const result = await dialog.showSaveDialog({
+      title: 'Export clip list',
+      defaultPath: join(await ensureDefaultProjectsDir(), suggestedName),
+      filters: [{ name: 'CSV', extensions: ['csv'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    await writeFile(result.filePath, csv, 'utf8')
+    return result.filePath
+  })
 
   handle(IPC.cacheStats, () => cache.stats())
   handle(IPC.cacheClear, async () => {

@@ -227,6 +227,7 @@ export const IPC = {
   exportRetryAllFailed: 'export:retry-all-failed',
   exportClearFinished: 'export:clear-finished',
   exportList: 'export:list',
+  exportClipListCsv: 'export:clip-list-csv',
 
   // cache / disk
   cacheStats: 'cache:stats',
@@ -433,6 +434,8 @@ export interface RendererApi {
   retryAllFailed(): Promise<void>
   clearFinished(): Promise<void>
   listJobs(): Promise<ExportJob[]>
+  /** Prompts for a save location and writes the CSV; null if the user cancelled. */
+  exportClipListCsv(csv: string, suggestedName: string): Promise<string | null>
 
   cacheStats(): Promise<CacheStats>
   clearCache(): Promise<CacheStats>

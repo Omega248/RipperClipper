@@ -4,10 +4,12 @@ import { formatBytes } from '@shared/errors'
 import { povLabel } from '@shared/pov'
 import { planExport } from '@shared/povMapping'
 import { formatDuration } from '@shared/time'
+import { buildClipListCsv } from '@shared/clipListCsv'
+import type { ClipListRow } from '@shared/clipListCsv'
 import type { ClipSegment, DiskSpaceInfo } from '@shared/types'
 import { useStore } from '../store.js'
 import QueuePanel from './QueuePanel.js'
-import QualityPanel from './QualityPanel.js'
+import QualityPanel, { message, title } from './QualityPanel.js'
 import { resolveWatermark, streamerFor } from '@shared/watermark'
 import { Badge, Button, EmptyState, Notice, PageHeader, StatusBadge } from '../ui/index.js'
 
@@ -29,6 +31,7 @@ export default function ExportPage({
   const project = useStore((s) => s.project)
   const settings = useStore((s) => s.settings)
   const streamers = useStore((s) => s.streamers)
+  const toast = useStore((s) => s.toast)
   const [chosen, setChosen] = useState<Set<string>>(new Set())
 
   const outputDirectory = project?.outputDirectory ?? settings?.outputDirectory ?? ''
@@ -111,6 +114,27 @@ export default function ExportPage({
   const selected = rows.filter((r) => chosen.has(r.clip.id))
   const exportable = rows.filter((r) => r.plan)
 
+  const exportCsv = async (): Promise<void> => {
+    const csvRows: ClipListRow[] = rows.map((r) => ({
+      name: r.clip.name,
+      videoPov: r.videoSource ? povLabel(r.videoSource) : 'no POV covers it',
+      audioPov: r.audioSource ? povLabel(r.audioSource) : '—',
+      durationSeconds: r.clip.durationSeconds,
+      resolution: r.resolution,
+      watermarked: r.watermarked,
+      path: r.path
+    }))
+    try {
+      const path = await window.api.exportClipListCsv(
+        buildClipListCsv(csvRows),
+        `${project.name} - clip list.csv`
+      )
+      if (path) toast({ kind: 'success', title: 'Clip list exported', message: path })
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not export the clip list'), message: message(err) })
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -129,6 +153,9 @@ export default function ExportPage({
         }
         actions={
           <>
+            <Button variant="ghost" icon="file" onClick={() => void exportCsv()}>
+              Export clip list (.csv)
+            </Button>
             <Button
               disabled={selected.length === 0}
               onClick={() => onExport(selected.map((r) => r.clip))}
