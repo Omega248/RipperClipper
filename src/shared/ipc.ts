@@ -1,6 +1,7 @@
 import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './watermark.js'
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
+import type { Transcript } from './transcript.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
@@ -272,6 +273,7 @@ export const IPC = {
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   discoverEvent: 'discovery:event',
+  transcriptsFor: 'transcripts:for-sources',
   streamersSetGroups: 'streamers:set-groups',
   streamersSetFavorite: 'streamers:set-favorite',
   streamersRestore: 'streamers:restore',
@@ -525,6 +527,12 @@ export interface RendererApi {
    * it could not sweep — see main/services/discovery.ts.
    */
   discoverEvent(req: EventDiscoveryRequest): Promise<EventDiscoveryReply>
+  /**
+   * Transcripts for these POVs, fetched on first use and cached. POVs whose
+   * platform publishes no captions are simply absent from the reply — see
+   * main/services/transcripts.ts for why that is a fact, not a failure.
+   */
+  transcriptsFor(sources: VodSource[]): Promise<Transcript[]>
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>

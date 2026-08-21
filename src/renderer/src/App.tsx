@@ -34,6 +34,7 @@ import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
 import EventPage from './components/EventPage.js'
+import EventSearch from './components/EventSearch.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -88,6 +89,7 @@ export default function App(): JSX.Element {
   const [showStreamers, setShowStreamers] = useState(false)
   const [showFind, setShowFind] = useState(false)
   const [showDiscovery, setShowDiscovery] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
   const [timelineView, setTimelineView] = useState<'event' | 'clip'>('event')
   // 'pov' corrects the whole VOD; 'clip' corrects the selected clip only.
   const [showWaveform, setShowWaveform] = useState<'pov' | 'clip' | null>(null)
@@ -1111,6 +1113,15 @@ export default function App(): JSX.Element {
 
         <span className="spacer" />
 
+        <Button
+          icon="search"
+          onClick={() => setShowSearch(true)}
+          disabled={!store.project}
+          title="Search clips, POVs, collections, moments and anything said on camera"
+        >
+          Search
+        </Button>
+
         <div className="nav-badge-anchor">
           <Button
             icon="users"
@@ -1532,6 +1543,7 @@ export default function App(): JSX.Element {
       {showGuide && <QuickGuide onClose={() => setShowGuide(false)} />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
       {showFind && <FindInPovs onClose={() => setShowFind(false)} />}
+      {showSearch && <EventSearch onClose={() => setShowSearch(false)} />}
       {showDiscovery && (
         <EventDiscovery onClose={() => setShowDiscovery(false)} onLoadVod={loadVod} />
       )}
