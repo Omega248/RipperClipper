@@ -45,7 +45,9 @@ import {
 import type {
   AppSettings,
   ClipSegment,
+  ClipWorkflowState,
   EditorTimeline,
+  EventInfo,
   ExportJob,
   Marker,
   MarkerCategory,
@@ -57,12 +59,22 @@ import type {
   TimelineTrack,
   VodSource
 } from '@shared/types'
+import { emptyEvent } from '@shared/event'
+import {
+  addCollection,
+  removeCollection,
+  renameCollection,
+  reorderCollection,
+  setClipCollection,
+  setClipWorkflow,
+  setPovUsed
+} from '@shared/collections'
 import type { SavedStreamer } from '@shared/ipc'
 import type { WatermarkConfig } from '@shared/watermark'
 import type { EnvInfo, InstallProgress, ToastEvent, UpdateStatus } from '@shared/ipc'
 
 /** The three workspaces inside a clip. The multi-track editor lives inside 'video', as a timeline mode. */
-export type WorkspacePage = 'video' | 'editor' | 'properties' | 'export'
+export type WorkspacePage = 'video' | 'event' | 'editor' | 'properties' | 'export'
 
 export interface Toast extends ToastEvent {
   id: string
@@ -182,6 +194,20 @@ interface Actions {
   copyClip: (id: string) => void
   moveClip: (from: number, to: number) => void
   selectClip: (id: string | null) => void
+
+  /** The event this project covers — see shared/event.ts and shared/collections.ts. */
+  /** Creates the event block if absent. Safe to call whenever; a no-op once one exists. */
+  ensureEvent: () => void
+  setEventInfo: (patch: Partial<Pick<EventInfo, 'name' | 'startSeconds' | 'endSeconds' | 'note'>>) => void
+  addClipCollection: (name: string) => void
+  renameClipCollection: (id: string, name: string) => void
+  removeClipCollection: (id: string) => void
+  reorderClipCollection: (id: string, toIndex: number) => void
+  setClipCollectionId: (clipId: string, collectionId: string | null) => void
+  setClipWorkflowState: (clipId: string, workflow: ClipWorkflowState) => void
+  setClipPovUsed: (clipId: string, sourceId: string, used: boolean) => void
+  addEventMoment: (init: { timeSeconds: number; name: string; note?: string }) => void
+  removeEventMoment: (id: string) => void
 
   /** The Editor's multi-track timeline — see shared/timeline.ts. */
   /** Creates the project's timeline (V1 + A1) if it doesn't exist yet. Safe to call whenever the Editor opens — a no-op once one exists. */
@@ -701,6 +727,117 @@ export const useStore = create<Store>((set, get) => ({
       project: {
         ...s.project,
         clips: s.project.clips.map((c) => (c.id === clipId ? { ...c, [key]: sourceId } : c))
+      },
+      dirty: true
+    })
+  },
+
+  // ---------------------------------------------------------------- event --
+  // Every one of these edits organisation, never truth: a clip's real-world
+  // time, its POV mappings and what it exports are untouched by filing it,
+  // renaming a folder, or marking a POV used.
+
+  ensureEvent: () => {
+    const s = get()
+    if (!s.project || s.project.event) return
+    set({ project: { ...s.project, event: emptyEvent() }, dirty: true })
+  },
+
+  setEventInfo: (patch) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    const event = s.project.event ?? emptyEvent()
+    set({ project: { ...s.project, event: { ...event, ...patch } }, dirty: true })
+  },
+
+  addClipCollection: (name) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    const { event } = addCollection(s.project.event ?? emptyEvent(), name)
+    set({ project: { ...s.project, event }, dirty: true })
+  },
+
+  renameClipCollection: (id, name) => {
+    const s = get()
+    if (!s.project?.event) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, event: renameCollection(s.project.event, id, name) },
+      dirty: true
+    })
+  },
+
+  removeClipCollection: (id) => {
+    const s = get()
+    if (!s.project?.event) return
+    s.pushHistory()
+    // Clips survive the folder — see removeCollection.
+    const next = removeCollection(s.project.event, s.project.clips, id)
+    set({ project: { ...s.project, event: next.event, clips: next.clips }, dirty: true })
+  },
+
+  reorderClipCollection: (id, toIndex) => {
+    const s = get()
+    if (!s.project?.event) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, event: reorderCollection(s.project.event, id, toIndex) },
+      dirty: true
+    })
+  },
+
+  setClipCollectionId: (clipId, collectionId) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, clips: setClipCollection(s.project.clips, clipId, collectionId) },
+      dirty: true
+    })
+  },
+
+  setClipWorkflowState: (clipId, workflow) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, clips: setClipWorkflow(s.project.clips, clipId, workflow) },
+      dirty: true
+    })
+  },
+
+  setClipPovUsed: (clipId, sourceId, used) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, clips: setPovUsed(s.project.clips, clipId, sourceId, used) },
+      dirty: true
+    })
+  },
+
+  addEventMoment: (init) => {
+    const s = get()
+    if (!s.project) return
+    s.pushHistory()
+    const event = s.project.event ?? emptyEvent()
+    const moment = { id: createId('moment'), ...init }
+    set({
+      project: { ...s.project, event: { ...event, moments: [...event.moments, moment] } },
+      dirty: true
+    })
+  },
+
+  removeEventMoment: (id) => {
+    const s = get()
+    if (!s.project?.event) return
+    s.pushHistory()
+    set({
+      project: {
+        ...s.project,
+        event: { ...s.project.event, moments: s.project.event.moments.filter((m) => m.id !== id) }
       },
       dirty: true
     })

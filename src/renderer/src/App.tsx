@@ -33,6 +33,7 @@ import WatermarkEditor from './components/WatermarkEditor.js'
 import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
+import EventPage from './components/EventPage.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -1091,6 +1092,7 @@ export default function App(): JSX.Element {
           {(
             [
               ['video', 'Video'],
+              ['event', 'Event'],
               ...(EditorPage ? ([['editor', 'Editor']] as const) : []),
               ['properties', 'Properties'],
               ['export', 'Export']
@@ -1266,6 +1268,7 @@ export default function App(): JSX.Element {
           />
         </Suspense>
       )}
+      {page === 'event' && <EventPage onLoadVod={loadVod} />}
       {page === 'properties' && (
         <div className="page">
           <PropertiesPage />

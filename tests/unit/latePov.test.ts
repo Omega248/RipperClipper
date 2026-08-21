@@ -32,7 +32,7 @@ function pov(id: string, startedIso: string, durationSeconds = 7200): VodSource 
 function emptyProject(): ProjectFile {
   const now = new Date().toISOString()
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: 'p',
     name: 'MRPD Shootout',
     createdAt: now,

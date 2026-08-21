@@ -4,7 +4,18 @@ import { Errors } from '../../shared/errors.js'
 import { DEFAULT_EXPORT_SETTINGS } from '../../shared/defaults.js'
 import { createId, normalizeOrder } from '../../shared/clips.js'
 import { refreshClipMappings } from '../../shared/povMapping.js'
-import type { ClipSegment, ExportSettings, Marker, ProjectFile, VodSource } from '../../shared/types.js'
+import { CLIP_WORKFLOW_ORDER } from '../../shared/types.js'
+import type {
+  ClipCollection,
+  ClipSegment,
+  ClipWorkflowState,
+  EventInfo,
+  EventMoment,
+  ExportSettings,
+  Marker,
+  ProjectFile,
+  VodSource
+} from '../../shared/types.js'
 import type { SyncAnchor } from '../../shared/sync.js'
 import type { Logger } from './logger.js'
 import type { ProjectBackupInfo, RecoveryInfo } from '../../shared/ipc.js'
@@ -39,7 +50,7 @@ export class ProjectStore {
   createProject(name: string): ProjectFile {
     const now = new Date().toISOString()
     return {
-      schemaVersion: 4,
+      schemaVersion: 5,
       id: createId('proj'),
       name: name.trim() === '' ? 'Untitled project' : name.trim(),
       createdAt: now,
@@ -266,7 +277,14 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
           : c.endSeconds - c.startSeconds,
       // Never restore a transient status from disk.
       status:
-        c.status === 'complete' || c.status === 'failed' ? c.status : ('idle' as ClipSegment['status'])
+        c.status === 'complete' || c.status === 'failed' ? c.status : ('idle' as ClipSegment['status']),
+      // v5 additions. A v4 clip has none of these and reads as exactly what
+      // it was: loose in the event, freshly found, no POV decided on yet.
+      collectionId: typeof c.collectionId === 'string' ? c.collectionId : null,
+      workflow: isWorkflowState(c.workflow) ? c.workflow : 'found',
+      usedPovIds: Array.isArray(c.usedPovIds)
+        ? c.usedPovIds.filter((id): id is string => typeof id === 'string')
+        : []
     }))
   )
 
@@ -283,7 +301,7 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
   const mappedClips = refreshClipMappings(clips, sources, new Date().toISOString())
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: typeof p.id === 'string' ? p.id : createId('proj'),
     name: typeof p.name === 'string' && p.name !== '' ? p.name : basename(path).replace(/\.[^.]+$/, ''),
     createdAt: typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString(),
@@ -296,7 +314,53 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
       ...DEFAULT_EXPORT_SETTINGS,
       ...(typeof p.exportSettings === 'object' && p.exportSettings !== null ? p.exportSettings : {})
     }),
-    outputDirectory: typeof p.outputDirectory === 'string' ? p.outputDirectory : null
+    outputDirectory: typeof p.outputDirectory === 'string' ? p.outputDirectory : null,
+    ...(normalizeEvent(p.event) ? { event: normalizeEvent(p.event)! } : {})
+  }
+}
+
+/**
+ * The v5 event block, or undefined for a project that predates it.
+ *
+ * Every field is optional and independently defaulted: a project half-way
+ * through gaining an event (named but with no window declared yet, say) must
+ * load as exactly that rather than being rejected or silently blanked.
+ */
+function isWorkflowState(value: unknown): value is ClipWorkflowState {
+  return typeof value === 'string' && (CLIP_WORKFLOW_ORDER as string[]).includes(value)
+}
+
+function normalizeEvent(input: unknown): EventInfo | undefined {
+  if (typeof input !== 'object' || input === null) return undefined
+  const e = input as Record<string, unknown>
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+  return {
+    name: typeof e.name === 'string' && e.name.trim() !== '' ? e.name : null,
+    startSeconds: num(e.startSeconds),
+    endSeconds: num(e.endSeconds),
+    collections: Array.isArray(e.collections)
+      ? (e.collections as unknown[])
+          .filter(
+            (c): c is ClipCollection =>
+              typeof c === 'object' &&
+              c !== null &&
+              typeof (c as ClipCollection).id === 'string' &&
+              typeof (c as ClipCollection).name === 'string'
+          )
+          .map((c, i) => ({ ...c, order: typeof c.order === 'number' ? c.order : i }))
+      : [],
+    moments: Array.isArray(e.moments)
+      ? (e.moments as unknown[]).filter(
+          (m): m is EventMoment =>
+            typeof m === 'object' &&
+            m !== null &&
+            typeof (m as EventMoment).id === 'string' &&
+            typeof (m as EventMoment).name === 'string' &&
+            typeof (m as EventMoment).timeSeconds === 'number'
+        )
+      : [],
+    ...(typeof e.note === 'string' ? { note: e.note } : {})
   }
 }
 

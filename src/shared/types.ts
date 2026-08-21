@@ -74,6 +74,88 @@ export interface ClipSegment {
   tag?: string | null
   /** When this clip was created — absent on clips saved before this field existed. */
   createdAt?: string
+  /** Which collection (§6) this clip is filed under. Absent means loose in the event. */
+  collectionId?: string | null
+  /**
+   * Where this clip has got to (§7). Absent means `found` — the state a clip
+   * is in the moment it is marked, so existing projects need no migration
+   * beyond reading the absence.
+   */
+  workflow?: ClipWorkflowState
+  /**
+   * POVs the editor has actually decided to use for this clip (§8).
+   *
+   * Distinct from `povMappings`, which says which POVs *could* show the
+   * moment. "Available but never looked at" is the state worth surfacing —
+   * it is how footage nobody considered gets found — and that cannot be
+   * derived from availability alone.
+   */
+  usedPovIds?: string[]
+  /** Cached contact-sheet thumbnail (§9), as data URLs keyed by POV. */
+  thumbnails?: Record<string, string>
+}
+
+/**
+ * How far along a clip is (§7). Deliberately few and linear: the point is a
+ * glanceable "what still needs work", not a workflow engine.
+ */
+export type ClipWorkflowState =
+  | 'found'
+  | 'reviewed'
+  | 'povs-collected'
+  | 'ready-for-edit'
+  | 'in-edit'
+  | 'exported'
+
+export const CLIP_WORKFLOW_ORDER: ClipWorkflowState[] = [
+  'found',
+  'reviewed',
+  'povs-collected',
+  'ready-for-edit',
+  'in-edit',
+  'exported'
+]
+
+export const CLIP_WORKFLOW_LABEL: Record<ClipWorkflowState, string> = {
+  found: 'Found',
+  reviewed: 'Reviewed',
+  'povs-collected': 'POVs collected',
+  'ready-for-edit': 'Ready for edit',
+  'in-edit': 'In edit',
+  exported: 'Exported'
+}
+
+/** A named grouping of clips inside one event (§6) — "Bank Robbery", "Chase". */
+export interface ClipCollection {
+  id: string
+  name: string
+  /** Position in the sidebar. Lower sorts first. */
+  order: number
+  note?: string
+}
+
+/** A notable instant on the event timeline (§21) — "18:44 Crash". */
+export interface EventMoment {
+  id: string
+  /** Real-world epoch seconds. */
+  timeSeconds: number
+  name: string
+  note?: string
+}
+
+/**
+ * What makes a project an *event* rather than a bag of VODs (§2): the
+ * real-world window it happened in, and the organisation layered on top.
+ */
+export interface EventInfo {
+  /** Display name, e.g. "NoPixel — bank robbery". Null until named. */
+  name: string | null
+  /** Real-world epoch seconds. Null until the editor declares the window. */
+  startSeconds: number | null
+  endSeconds: number | null
+  collections: ClipCollection[]
+  moments: EventMoment[]
+  note?: string
 }
 
 /**
@@ -428,8 +510,12 @@ export interface ProjectFile {
    *   4 — music detection and music separation removed; a v3 project's music
    *       findings are dropped and music actions become mutes on load.
    *       VOD sources may carry a watermark override.
+   *   5 — the project states the real-world event it covers (`event`), and
+   *       clips carry collection, workflow state and used-POV tracking. All
+   *       of it is additive: a v4 project loads with no event block and every
+   *       clip reading as `found`, which is exactly what it was.
    */
-  schemaVersion: 4
+  schemaVersion: 5
   id: string
   name: string
   createdAt: string
@@ -443,6 +529,12 @@ export interface ProjectFile {
   outputDirectory: string | null
   /** The Editor's multi-track timeline. Absent until the Editor is opened for the first time. */
   timeline?: EditorTimeline
+  /**
+   * The real-world event this project covers (§2). Absent on projects saved
+   * before events existed; `eventWindow()` falls back to the span the clips
+   * themselves occupy so nothing depends on it being filled in.
+   */
+  event?: EventInfo
 }
 
 export type JobStage =

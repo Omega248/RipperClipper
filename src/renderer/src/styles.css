@@ -3220,3 +3220,250 @@ canvas.wave.draggable {
   height: 100%;
   background: var(--accent);
 }
+
+/* ---- the event: timeline, coverage map, stats ---- */
+
+.event-page {
+  overflow-y: auto;
+}
+
+.event-details {
+  display: grid;
+  gap: 8px;
+  max-width: 720px;
+}
+
+.event-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.event-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 132px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+}
+
+.event-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.event-stat-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.event-stat-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+
+.event-participant-breakdown,
+.event-workflow-breakdown {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.event-workflow-chip {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+/* -- the timeline itself -- */
+
+.event-timeline {
+  display: grid;
+  gap: 8px;
+}
+
+.event-timeline-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-dim);
+  /* Aligned to the tracks, not the labels, so the times sit over the bars. */
+  padding-left: 132px;
+}
+
+.event-timeline-span {
+  opacity: 0.7;
+}
+
+.event-moments {
+  position: relative;
+  height: 20px;
+  margin-left: 132px;
+}
+
+.event-moment {
+  position: absolute;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  max-width: 96px;
+}
+
+.event-moment-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.event-moment-name {
+  max-width: 96px;
+}
+
+.event-rows {
+  display: grid;
+  gap: 3px;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+
+.event-row-name {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.event-row-name:hover {
+  background: var(--surface-hover, var(--surface));
+}
+
+.event-row-track {
+  position: relative;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.event-row-span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+/* Partial coverage is deliberately a different fill, not just a shorter bar:
+   colour survives a glance where length alone does not. */
+.event-row-span.is-partial {
+  background: var(--warning, #d08442);
+}
+
+.event-row-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+}
+
+.event-row-track.is-unknown {
+  /* Hatched rather than empty: "we don't know" must not read as "nothing". */
+  background: repeating-linear-gradient(
+    45deg,
+    var(--surface-sunken),
+    var(--surface-sunken) 5px,
+    var(--surface) 5px,
+    var(--surface) 10px
+  );
+}
+
+.event-clips {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.event-clips-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.event-clips-track {
+  position: relative;
+  height: 22px;
+}
+
+.event-clip {
+  position: absolute;
+  top: 0;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  min-width: 8px;
+}
+
+.event-clip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft, var(--surface));
+}
+
+.event-moment-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  max-width: 620px;
+}
+
+.event-moment-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.event-moment-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  font-size: 12px;
+}

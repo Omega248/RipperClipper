@@ -27,7 +27,7 @@ function pov(id: string, startedIso: string): VodSource {
 function project(): ProjectFile {
   const now = new Date().toISOString()
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     id: 'p',
     name: 'p',
     createdAt: now,
