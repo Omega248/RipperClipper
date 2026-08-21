@@ -270,6 +270,13 @@ export interface ExportSettings {
   folderTemplate: string
 }
 
+/** A named, reusable bundle of export settings — quality, container, cutting, filenames. */
+export interface ExportPreset {
+  id: string
+  name: string
+  settings: ExportSettings
+}
+
 export interface AppSettings {
   outputDirectory: string
   concurrency: number
@@ -300,6 +307,8 @@ export interface AppSettings {
     timelineHeight?: number
   }
   shortcuts: Record<string, string>
+  /** Saved export-setting bundles, applied to the current project on demand. */
+  exportPresets: ExportPreset[]
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark'

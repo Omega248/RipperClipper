@@ -1,4 +1,4 @@
-import type { AppSettings, ExportSettings } from './types.js'
+import type { AppSettings, ExportPreset, ExportSettings } from './types.js'
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   container: 'mp4',
@@ -61,7 +61,8 @@ export function defaultSettings(paths: {
       theme: 'system',
       timelineFollowPlayhead: true
     },
-    shortcuts: { ...DEFAULT_SHORTCUTS }
+    shortcuts: { ...DEFAULT_SHORTCUTS },
+    exportPresets: []
   }
 }
 
@@ -109,8 +110,38 @@ export function mergeSettings(base: AppSettings, patch: unknown): AppSettings {
       ...(typeof p.shortcuts === 'object' && p.shortcuts !== null
         ? (p.shortcuts as Record<string, string>)
         : {})
-    }
+    },
+    exportPresets: parseExportPresets(p.exportPresets, base.exportPresets)
   }
+}
+
+/** Structurally-invalid entries are dropped rather than failing the whole load. */
+function parseExportPresets(value: unknown, fallback: ExportPreset[]): ExportPreset[] {
+  if (!Array.isArray(value)) return fallback
+  const out: ExportPreset[] = []
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const e = entry as Record<string, unknown>
+    if (typeof e.id !== 'string' || typeof e.name !== 'string') continue
+    out.push({
+      id: e.id,
+      name: e.name,
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        ...pick<ExportSettings>(e.settings, [
+          'container',
+          'cutMode',
+          'quality',
+          'hwAccel',
+          'keyframeToleranceSeconds',
+          'uncertainPaddingSeconds',
+          'filenameTemplate',
+          'folderTemplate'
+        ])
+      }
+    })
+  }
+  return out
 }
 
 function pick<T extends object>(value: unknown, keys: Array<keyof T>): Partial<T> {

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { formatBytes } from '@shared/errors'
+import { createId } from '@shared/clips'
 import type {
   ExportContainer,
   ExportSettings,
@@ -9,7 +10,7 @@ import type {
 } from '@shared/types'
 import { applyTemplate, buildFolderSegments } from '@shared/filenames'
 import { useActiveSource, useStore } from '../store.js'
-import { Button, EmptyState, Field, Input, Select } from '../ui/index.js'
+import { Button, EmptyState, Field, IconButton, Input, PromptDialog, Select } from '../ui/index.js'
 
 const QUALITIES: Array<{ value: QualityPreference; label: string }> = [
   { value: 'best', label: 'Best available' },
@@ -52,7 +53,11 @@ export default function QualityPanel(): JSX.Element {
   const project = useStore((s) => s.project)
   const setSourceFormats = useStore((s) => s.setSourceFormats)
   const toast = useStore((s) => s.toast)
+  const appSettings = useStore((s) => s.settings)
+  const setAppSettings = useStore((s) => s.setSettings)
   const [inspecting, setInspecting] = useState(false)
+  const [applyPresetId, setApplyPresetId] = useState('')
+  const [savePresetPrompt, setSavePresetPrompt] = useState(false)
 
   if (!project) return <EmptyState icon="file" title="No project loaded" />
 
@@ -62,6 +67,34 @@ export default function QualityPanel(): JSX.Element {
       project: { ...project, exportSettings: { ...settings, ...next } },
       dirty: true
     })
+  }
+
+  const presets = appSettings?.exportPresets ?? []
+
+  const savePreset = async (name: string): Promise<void> => {
+    if (!appSettings || name.trim() === '') return
+    const preset = { id: createId('preset'), name: name.trim(), settings: { ...settings } }
+    try {
+      const next = await window.api.updateSettings({
+        exportPresets: [...appSettings.exportPresets, preset]
+      })
+      setAppSettings(next)
+      toast({ kind: 'success', title: 'Preset saved', message: `"${preset.name}" is ready to reuse.` })
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not save that preset'), message: message(err) })
+    }
+  }
+
+  const deletePreset = async (id: string): Promise<void> => {
+    if (!appSettings) return
+    try {
+      const next = await window.api.updateSettings({
+        exportPresets: appSettings.exportPresets.filter((p) => p.id !== id)
+      })
+      setAppSettings(next)
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not delete that preset'), message: message(err) })
+    }
   }
 
   const inspect = async (): Promise<void> => {
@@ -91,6 +124,51 @@ export default function QualityPanel(): JSX.Element {
 
   return (
     <div>
+      <div className="panel-section">
+        <h3>Presets</h3>
+        <div className="rows">
+          <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+              <Field label="Apply a saved preset" htmlFor="preset-apply">
+                <Select
+                  id="preset-apply"
+                  block
+                  disabled={presets.length === 0}
+                  value={applyPresetId}
+                  options={[
+                    { value: '', label: presets.length === 0 ? 'No presets saved yet' : 'Choose one…' },
+                    ...presets.map((p) => ({ value: p.id, label: p.name }))
+                  ]}
+                  onChange={(value) => {
+                    const preset = presets.find((p) => p.id === value)
+                    if (preset) patch(preset.settings)
+                    setApplyPresetId('')
+                  }}
+                />
+              </Field>
+            </div>
+            <Button icon="save" onClick={() => setSavePresetPrompt(true)}>
+              Save current as preset…
+            </Button>
+          </div>
+          {presets.length > 0 && (
+            <ul className="version-history-list">
+              {presets.map((p) => (
+                <li key={p.id} className="version-history-row">
+                  <span>{p.name}</span>
+                  <IconButton
+                    icon="close"
+                    size="compact"
+                    label={`Delete preset "${p.name}"`}
+                    onClick={() => void deletePreset(p.id)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
       <div className="panel-section">
         <h3>Quality and format</h3>
         <div className="rows">
@@ -294,6 +372,20 @@ export default function QualityPanel(): JSX.Element {
             ))}
           </ul>
         </div>
+      )}
+
+      {savePresetPrompt && (
+        <PromptDialog
+          title="Save export preset"
+          description="Quality, container, cutting mode, filenames and folders — everything currently set on this page."
+          label="Preset name"
+          confirmLabel="Save"
+          onCancel={() => setSavePresetPrompt(false)}
+          onConfirm={(value) => {
+            void savePreset(value)
+            setSavePresetPrompt(false)
+          }}
+        />
       )}
     </div>
   )
