@@ -14,6 +14,7 @@ import { isSynced, localToEvent } from '@shared/sync'
 import { useStore } from '../store.js'
 import EventTimeline from './EventTimeline.js'
 import EventDiscovery from './EventDiscovery.js'
+import MomentDetail from './MomentDetail.js'
 import { Badge, Button, Field, Input, PageHeader, Section } from '../ui/index.js'
 
 /**
@@ -50,6 +51,7 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
   const toast = useStore((s) => s.toast)
   const [showDiscovery, setShowDiscovery] = useState(false)
   const [momentName, setMomentName] = useState('')
+  const [openMomentId, setOpenMomentId] = useState<string | null>(null)
 
   const eventRange = useMemo(() => (project ? eventWindow(project) : null), [project])
   const participants = useMemo(() => (project ? participantSummary(project) : null), [project])
@@ -225,6 +227,13 @@ export default function EventPage({ onLoadVod }: { onLoadVod: (url: string) => P
           </ul>
         )}
       </Section>
+
+      {openMomentId && moments.find((m) => m.id === openMomentId) && (
+        <MomentDetail
+          moment={moments.find((m) => m.id === openMomentId)!}
+          onClose={() => setOpenMomentId(null)}
+        />
+      )}
 
       {showDiscovery && (
         <EventDiscovery onClose={() => setShowDiscovery(false)} onLoadVod={onLoadVod} />
