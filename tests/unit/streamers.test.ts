@@ -10,7 +10,8 @@ import {
   parseChannelUrl,
   publishedAtFromRawInfo,
   sameStreamer,
-  vodsFromFlatPlaylist
+  vodsFromFlatPlaylist,
+  withParticipation
 } from '../../src/main/services/streamers.js'
 import { Logger } from '../../src/main/services/logger.js'
 import { ResolverService } from '../../src/main/media/resolver.js'
@@ -480,5 +481,47 @@ describe('favourites and undo', () => {
     const result = await service.restore(streamer)
 
     expect(result).toEqual([streamer])
+  })
+})
+
+describe('streamer participation (§13)', () => {
+  const base: SavedStreamer = {
+    id: 'str_1',
+    platform: 'twitch',
+    handle: 'someone',
+    displayName: 'Someone',
+    channelUrl: 'https://twitch.tv/someone/videos',
+    addedAt: '2026-08-01T00:00:00Z',
+    lastUsedAt: null
+  }
+
+  it('records the event a POV was loaded into', () => {
+    const next = withParticipation(base, { projectId: 'p1', projectName: 'Bank Robbery' })
+    expect(next.participation).toHaveLength(1)
+    expect(next.participation![0].projectName).toBe('Bank Robbery')
+  })
+
+  it('updates rather than duplicating when the same event is loaded again', () => {
+    // Loading a second POV from the same channel into the same event must not
+    // list that event twice.
+    let next = withParticipation(base, { projectId: 'p1', projectName: 'Bank Robbery' })
+    next = withParticipation(next, { projectId: 'p1', projectName: 'Bank Robbery (renamed)' })
+    expect(next.participation).toHaveLength(1)
+    expect(next.participation![0].projectName).toBe('Bank Robbery (renamed)')
+  })
+
+  it('keeps the newest events first', () => {
+    let next = withParticipation(base, { projectId: 'p1', projectName: 'First' })
+    next = withParticipation(next, { projectId: 'p2', projectName: 'Second' })
+    expect(next.participation!.map((p) => p.projectName)).toEqual(['Second', 'First'])
+  })
+
+  it('caps the list — a recency aid, not an archive', () => {
+    let next = base
+    for (let i = 0; i < 30; i++) {
+      next = withParticipation(next, { projectId: `p${i}`, projectName: `Event ${i}` })
+    }
+    expect(next.participation!.length).toBeLessThanOrEqual(20)
+    expect(next.participation![0].projectName).toBe('Event 29')
   })
 })

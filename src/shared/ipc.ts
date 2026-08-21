@@ -155,6 +155,24 @@ export interface SavedStreamer {
   personId?: string
   /** Kept at the top of the streamer list regardless of last-used date. */
   favorite?: boolean
+  /**
+   * Events this channel has supplied a POV for (§13). Recorded when a POV of
+   * theirs is loaded, so the library answers "who have I actually worked
+   * with, and on what" rather than just listing channels. Capped and
+   * newest-first — a recency aid, not an archive; the projects themselves
+   * remain the record of what happened.
+   */
+  participation?: StreamerParticipation[]
+}
+
+/** One event a saved streamer supplied a POV for. */
+export interface StreamerParticipation {
+  projectId: string
+  projectName: string
+  /** The event's own name, when the project declared one. */
+  eventName?: string
+  /** ISO 8601 — when the POV was loaded, not when the event happened. */
+  at: string
 }
 
 /**
@@ -498,7 +516,11 @@ export interface RendererApi {
   pickOutputDirectory(): Promise<string | null>
   pickFile(kind: 'ffmpeg' | 'ffprobe' | 'ytdlp'): Promise<string | null>
 
-  resolveSource(url: string): Promise<VodSource>
+  /** `event` is recorded as this streamer's participation (§13); omitting it just skips that. */
+  resolveSource(
+    url: string,
+    event?: { projectId: string; projectName: string; eventName?: string }
+  ): Promise<VodSource>
   inspectFormats(source: VodSource): Promise<StreamInfo[]>
 
   newProject(name: string): Promise<ProjectFile>

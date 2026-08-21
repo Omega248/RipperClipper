@@ -686,6 +686,19 @@ export default function StreamersDialog({
                         same as {other.displayName}
                       </span>
                     ))}
+                    {/* §13 — what this channel has actually been worked on,
+                        which is what makes the library a profile rather than
+                        a list of names. */}
+                    {(streamer.participation?.length ?? 0) > 0 && (
+                      <span
+                        title={streamer
+                          .participation!.map((p) => p.eventName || p.projectName)
+                          .join(', ')}
+                      >
+                        {streamer.participation!.length} event
+                        {streamer.participation!.length === 1 ? '' : 's'}
+                      </span>
+                    )}
                   </span>
                 </button>
                 <IconButton

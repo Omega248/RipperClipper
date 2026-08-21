@@ -3,7 +3,13 @@ import { join } from 'node:path'
 import { net } from 'electron'
 import { Errors } from '../../shared/errors.js'
 import type { PlatformId } from '../../shared/types.js'
-import type { EventOverlapReply, SavedStreamer, StreamerGroup, StreamerVod } from '../../shared/ipc.js'
+import type {
+  EventOverlapReply,
+  SavedStreamer,
+  StreamerGroup,
+  StreamerParticipation,
+  StreamerVod
+} from '../../shared/ipc.js'
 import { streamsCoveringEvent } from '../../shared/eventStreams.js'
 import type { WatermarkConfig } from '../../shared/watermark.js'
 import { createId } from '../../shared/clips.js'
@@ -365,6 +371,8 @@ export class StreamerService {
     channelHandle?: string
     creator?: string
     title?: string
+    /** The event this POV was loaded into, for §13's participation record. */
+    event?: { projectId: string; projectName: string; eventName?: string }
   }): Promise<SavedStreamer[]> {
     const handle = (source.channelHandle ?? '').trim()
     if (handle === '' || /\s/.test(handle)) {
@@ -374,7 +382,11 @@ export class StreamerService {
     }
     const current = await this.list()
     const existing = current.find((s) => sameStreamer(s, { platform: source.platform, handle }))
-    if (existing) return current
+    // An already-known channel still gains the participation record: the
+    // point of §13 is what they have worked on, which grows every time.
+    if (existing) {
+      return source.event ? this.write(current.map((s) => (s.id === existing.id ? withParticipation(s, source.event!) : s))) : current
+    }
 
     const streamer: SavedStreamer = {
       id: createId('str'),
@@ -389,7 +401,10 @@ export class StreamerService {
       platform: source.platform,
       handle
     })
-    return this.write([...current, streamer])
+    return this.write([
+      ...current,
+      source.event ? withParticipation(streamer, source.event) : streamer
+    ])
   }
 
   async remove(id: string): Promise<SavedStreamer[]> {
@@ -569,6 +584,26 @@ export class StreamerService {
     await atomicWriteJson(this.file, next)
     return next
   }
+}
+
+/** How many events a streamer's profile remembers. A recency aid, not an archive. */
+const MAX_PARTICIPATION = 20
+
+/**
+ * Record that this channel supplied a POV for an event (§13).
+ *
+ * Keyed by project, so re-loading a second POV from the same channel into the
+ * same event updates that entry rather than listing the event twice — and so
+ * renaming the event later corrects the record instead of leaving a stale
+ * duplicate beside it.
+ */
+export function withParticipation(
+  streamer: SavedStreamer,
+  event: { projectId: string; projectName: string; eventName?: string }
+): SavedStreamer {
+  const entry: StreamerParticipation = { ...event, at: new Date().toISOString() }
+  const rest = (streamer.participation ?? []).filter((p) => p.projectId !== event.projectId)
+  return { ...streamer, participation: [entry, ...rest].slice(0, MAX_PARTICIPATION) }
 }
 
 function handleOnly(

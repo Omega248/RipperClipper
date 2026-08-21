@@ -580,14 +580,18 @@ function registerIpc(): void {
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
 
-  handle(IPC.sourceResolve, async (url: string) => {
+  handle(
+    IPC.sourceResolve,
+    async (url: string, event?: { projectId: string; projectName: string; eventName?: string }) => {
     const source = await sources.resolve(url)
-    // Loading a POV is how a streamer earns a place in the library.
-    await streamers.remember(source).catch((err) =>
+    // Loading a POV is how a streamer earns a place in the library — and, when
+    // the caller says which event it was for, what they have worked on (§13).
+    await streamers.remember({ ...source, event }).catch((err) =>
       log.warn('streamers', 'Could not save this streamer automatically', err)
     )
-    return source
-  })
+      return source
+    }
+  )
   handle(IPC.sourceInspectFormats, (source: VodSource) => sources.inspectFormats(source))
 
   handle(IPC.projectNew, (name: string) => projects.createProject(name))

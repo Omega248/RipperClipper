@@ -44,7 +44,7 @@ const api: RendererApi = {
   pickOutputDirectory: () => invoke(IPC.settingsPickOutputDir),
   pickFile: (kind) => invoke(IPC.settingsPickFile, kind),
 
-  resolveSource: (url) => invoke(IPC.sourceResolve, url),
+  resolveSource: (url, event) => invoke(IPC.sourceResolve, url, event),
   inspectFormats: (source) => invoke(IPC.sourceInspectFormats, source),
 
   newProject: (name) => invoke(IPC.projectNew, name),

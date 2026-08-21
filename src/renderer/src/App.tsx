@@ -564,7 +564,19 @@ export default function App(): JSX.Element {
     if (target.trim() === '') return
     setLoading(true)
     try {
-      const resolved = await window.api.resolveSource(target.trim())
+      // Naming the event this POV is being loaded into is what lets the
+      // streamer library record who has worked on what (§13).
+      const current = useStore.getState().project
+      const resolved = await window.api.resolveSource(
+        target.trim(),
+        current
+          ? {
+              projectId: current.id,
+              projectName: current.name,
+              ...(current.event?.name ? { eventName: current.event.name } : {})
+            }
+          : undefined
+      )
       const existing = useStore.getState().project?.sources.find((s) => s.id === resolved.id)
       if (existing) {
         store.setActiveSource(existing.id)
