@@ -280,6 +280,67 @@ export function activeVideoItemAt(timeline: EditorTimeline, seconds: number): Ti
   )
 }
 
+/** Every video item covering a moment, bottom track first. */
+export function activeVideoLayersAt(timeline: EditorTimeline, seconds: number): TimelineItem[] {
+  const visibleTrackIds = new Set(
+    timeline.tracks.filter((t) => t.kind === 'video' && !t.hidden).map((t) => t.id)
+  )
+  const trackOrder = new Map(timeline.tracks.map((t) => [t.id, t.order]))
+  return timeline.items
+    .filter(
+      (i) =>
+        i.kind === 'video' &&
+        visibleTrackIds.has(i.trackId) &&
+        seconds >= i.timelineStartSeconds &&
+        seconds < i.timelineEndSeconds
+    )
+    .sort((a, b) => (trackOrder.get(a.trackId) ?? 0) - (trackOrder.get(b.trackId) ?? 0))
+}
+
+/**
+ * What's actually on screen at a moment: a background (the lowest video
+ * layer not itself marked `pip`, or just the bottom layer if every one of
+ * them is) and, at most, one inset — the topmost layer marked `pip` above
+ * it. Everything else that happens to overlap is neither shown nor hidden
+ * by this on purpose: only an explicit `pip` flag turns an overlap into a
+ * composite, so an accidental drag-over on the timeline never silently
+ * starts compositing two POVs together.
+ */
+/**
+ * A reasonable corner inset for a video item that's just had `pip` turned
+ * on but has no transform of its own yet (or an identity one, which would
+ * otherwise cover the whole background — nonsensical for a "picture in
+ * picture"). Bottom-right, a bit under a third of the frame. The Inspector
+ * applies this the moment `pip` is switched on, so its sliders always
+ * reflect where the inset actually renders; the export filter graph
+ * (main/media/pipFilter.ts) falls back to the same constant defensively,
+ * for a `pip` item that somehow still carries no meaningful transform.
+ */
+export const DEFAULT_PIP_TRANSFORM: TimelineTransform = { x: 0.62, y: 0.62, scale: 0.28, rotation: 0 }
+
+const IDENTITY_TRANSFORM: TimelineTransform = { x: 0, y: 0, scale: 1, rotation: 0 }
+
+/** True for "no transform at all" or one that's a no-op — used by both the export filter graph and the Inspector. */
+export function isIdentityTransform(transform: TimelineTransform | undefined | null): boolean {
+  const t = transform ?? IDENTITY_TRANSFORM
+  return t.x === 0 && t.y === 0 && t.scale === 1 && t.rotation % 360 === 0
+}
+
+export function pipCompositionAt(
+  timeline: EditorTimeline,
+  seconds: number
+): { background: TimelineItem; inset: TimelineItem | null } | null {
+  const layers = activeVideoLayersAt(timeline, seconds) // bottom track first
+  if (layers.length === 0) return null
+  const nonPip = layers.filter((l) => !l.pip)
+  // Topmost non-pip layer wins the background, same "topmost wins" rule as
+  // before — a pip item never displaces what would otherwise be showing.
+  const background = nonPip.length > 0 ? nonPip[nonPip.length - 1] : layers[layers.length - 1]
+  const insetCandidates = layers.filter((l) => l.pip && l.id !== background.id)
+  const inset = insetCandidates.length > 0 ? insetCandidates[insetCandidates.length - 1] : null
+  return { background, inset }
+}
+
 /** Every audio item sounding at a given timeline second, respecting mute/solo. */
 export function activeAudioItemsAt(timeline: EditorTimeline, seconds: number): TimelineItem[] {
   const audioTracks = timeline.tracks.filter((t) => t.kind === 'audio')
@@ -325,6 +386,14 @@ export interface ExportSegment {
   opacity?: number
   /** Absent inherits the POV's saved watermark; 'none' disables it for this segment only. */
   watermarkOverride?: WatermarkConfig | 'none'
+  /** A second POV composited as an inset over this segment's picture, when one was placed on a `pip` item. */
+  pip?: {
+    sourceId: string
+    sourceClipId?: string
+    startSeconds: number
+    endSeconds: number
+    transform?: TimelineTransform
+  }
 }
 
 /** The higher-order track wins when more than one item of a kind is active. */
@@ -353,13 +422,14 @@ function editsForWindow(edits: AudioEdit[] | undefined, windowStart: number, win
 
 /**
  * Breaks the whole timeline into segments the export pipeline can render one
- * real cut per — every point where the active video item, or the active
- * audio item, changes is a new segment. A stretch with no video item on top
- * is a gap: nothing is rendered there, the same way a clip that never got
- * made simply isn't in the output. True picture-in-picture (more than one
- * video item visible at once) and mixing more than one simultaneous audio
- * item are both out of scope here — the topmost item wins, the same rule
- * `activeVideoItemAt` already uses for the live preview.
+ * real cut per — every point where the active video item, the active
+ * audio item, or the pip composition changes is a new segment. A stretch
+ * with no video item on top is a gap: nothing is rendered there, the same
+ * way a clip that never got made simply isn't in the output. Mixing more
+ * than one simultaneous audio item is still out of scope — the topmost
+ * audio item wins — but picture-in-picture is not: a video item marked
+ * `pip` that overlaps the background layer is exported as a real
+ * compositied inset, not just hidden underneath.
  */
 export function computeExportSegments(timeline: EditorTimeline): ExportSegment[] {
   const boundaries = new Set<number>()
@@ -376,8 +446,9 @@ export function computeExportSegments(timeline: EditorTimeline): ExportSegment[]
     if (end - start < 0.001) continue
     const mid = (start + end) / 2
 
-    const video = activeVideoItemAt(timeline, mid)
-    if (!video) continue
+    const composition = pipCompositionAt(timeline, mid)
+    if (!composition) continue
+    const video = composition.background
     const audio = topmostByTrackOrder(timeline, activeAudioItemsAt(timeline, mid))
 
     const videoWindowStart = start - video.timelineStartSeconds
@@ -396,6 +467,19 @@ export function computeExportSegments(timeline: EditorTimeline): ExportSegment[]
       transform: video.transform,
       opacity: video.opacity,
       watermarkOverride: video.watermarkOverride
+    }
+
+    if (composition.inset) {
+      const inset = composition.inset
+      const insetWindowStart = start - inset.timelineStartSeconds
+      const insetWindowEnd = end - inset.timelineStartSeconds
+      segment.pip = {
+        sourceId: inset.sourceId,
+        sourceClipId: inset.sourceClipId,
+        startSeconds: inset.sourceStartSeconds + insetWindowStart,
+        endSeconds: inset.sourceStartSeconds + insetWindowEnd,
+        transform: inset.transform
+      }
     }
 
     if (audio) {

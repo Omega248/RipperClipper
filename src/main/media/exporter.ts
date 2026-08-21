@@ -13,6 +13,7 @@ import type {
 } from '../../shared/types.js'
 import { buildWatermarkFilter } from './watermarkFilter.js'
 import { buildTransformFilter, isIdentityTransform } from './transformFilter.js'
+import { buildPipFilter } from './pipFilter.js'
 import type { ResolvedWatermark } from '../../shared/watermark.js'
 import { buildAudioFilter } from '../../shared/audioEdits.js'
 import type { AudioEdit } from '../../shared/audioEdits.js'
@@ -61,6 +62,18 @@ export interface ExportClipRequest {
   transform?: TimelineTransform
   /** 0..1. Same re-render implication as `transform`. */
   opacity?: number
+  /**
+   * A second POV composited as an inset over this clip's picture. Its own
+   * range is in *that* POV's local time, fetched independently — same
+   * reasoning as `audioOverride`. Drawing it is the same re-render
+   * implication as `transform`: a stream copy stops being possible.
+   */
+  pip?: {
+    stream: StreamInfo
+    startSeconds: number
+    endSeconds: number
+    transform?: TimelineTransform
+  }
   /**
    * Hand-drawn mute/bleep/duck ranges for this clip's chosen sound POV, in the
    * clip's own timeline. Like the watermark, applying one means the audio can
@@ -163,6 +176,29 @@ export class Exporter {
         totalSegments += audioWindow.totalSegments
       }
 
+      // -------------------------------------------------------- fetch pip ----
+      let pipWindow: Awaited<ReturnType<RangeFetcher['fetchWindow']>> | null = null
+      if (req.pip) {
+        req.onProgress({ stage: 'downloading-video', fraction: 0, message: 'Downloading picture-in-picture…' })
+        pipWindow = await this.fetcher.fetchWindow({
+          stream: req.pip.stream,
+          startSeconds: req.pip.startSeconds,
+          endSeconds: req.pip.endSeconds,
+          destination: join(work, `pip.${windowExtension(req.pip.stream.container)}`),
+          signal: req.signal,
+          onProgress: (p) =>
+            req.onProgress({
+              stage: 'downloading-video',
+              fraction: p.fraction,
+              message: 'Downloading picture-in-picture…',
+              bytes: p.receivedBytes
+            })
+        })
+        bytesDownloaded += pipWindow.bytes
+        cachedSegments += pipWindow.cachedSegments
+        totalSegments += pipWindow.totalSegments
+      }
+
       const primary = videoWindow ?? audioWindow
       if (!primary) throw Errors.downloadFailed('no media window was produced')
 
@@ -188,6 +224,7 @@ export class Exporter {
       const transforming = Boolean(
         videoStream && (!isIdentityTransform(req.transform) || (req.opacity !== undefined && req.opacity < 1))
       )
+      const compositingPip = Boolean(req.pip && videoStream)
       // `realAudio`, not `audioStream`: a muxed source has no separate audio
       // stream object at all, and its sound is still perfectly editable — it
       // just lives inside the same file as the picture.
@@ -197,7 +234,7 @@ export class Exporter {
       const decision = await this.decideCut(
         primary.file,
         relStart,
-        watermarking || transforming || editingAudio ? 'precise' : req.settings.cutMode,
+        watermarking || transforming || compositingPip || editingAudio ? 'precise' : req.settings.cutMode,
         req.settings.keyframeToleranceSeconds
       )
       if (watermarking) {
@@ -205,6 +242,9 @@ export class Exporter {
       }
       if (transforming) {
         notes.push('The video was re-rendered to apply its position, scale, rotation or opacity.')
+      }
+      if (compositingPip) {
+        notes.push('The video was processed to composite a second POV as an inset.')
       }
       if (req.audioEdits && req.audioEdits.length > 0) {
         notes.push(
@@ -237,6 +277,9 @@ export class Exporter {
         this.buildCutArgs({
           videoWindow,
           audioWindow,
+          pipWindow: compositingPip ? pipWindow : null,
+          pipStartSeconds: req.pip?.startSeconds,
+          pipTransform: req.pip?.transform,
           muxed: (req.streams.muxed && !req.audioOverride) || (!audioWindow && Boolean(realAudio)),
           startSeconds: req.startSeconds,
           endSeconds: req.endSeconds,
@@ -409,6 +452,10 @@ export class Exporter {
   private buildCutArgs(opts: {
     videoWindow: { file: string; windowStartSeconds: number } | null
     audioWindow: { file: string; windowStartSeconds: number } | null
+    pipWindow: { file: string; windowStartSeconds: number } | null
+    /** Where the pip range starts in the inset POV's own timeline. */
+    pipStartSeconds?: number
+    pipTransform?: TimelineTransform
     muxed: boolean
     startSeconds: number
     endSeconds: number
@@ -440,6 +487,9 @@ export class Exporter {
     const relAudio = opts.audioWindow
       ? roundMs((opts.audioStartSeconds ?? opts.startSeconds) - opts.audioWindow.windowStartSeconds)
       : 0
+    const relPip = opts.pipWindow
+      ? roundMs((opts.pipStartSeconds ?? opts.startSeconds) - opts.pipWindow.windowStartSeconds)
+      : 0
 
     /**
      * Precise mode uses two-stage seeking: a fast input seek to a short
@@ -454,7 +504,8 @@ export class Exporter {
             Math.min(
               5,
               opts.videoWindow ? relVideo : Infinity,
-              opts.audioWindow ? relAudio : Infinity
+              opts.audioWindow ? relAudio : Infinity,
+              opts.pipWindow ? relPip : Infinity
             )
           )
         : 0
@@ -493,6 +544,14 @@ export class Exporter {
       audioInput = inputIndex++
     }
 
+    // The pip inset is its own fetched window, seeked the same way the main
+    // video is — its own audio is simply never mapped anywhere below.
+    let pipInput: number | null = null
+    if (opts.pipWindow) {
+      args.push('-ss', toFfmpegTime(Math.max(0, roundMs(relPip - preroll))), '-i', opts.pipWindow.file)
+      pipInput = inputIndex++
+    }
+
     // The watermark is an extra input, looped so a still image lasts the whole
     // clip. Its filter chain is built below.
     let watermarkInput: number | null = null
@@ -506,9 +565,10 @@ export class Exporter {
     }
     args.push('-t', toFfmpegTime(effectiveDuration))
 
-    // Transform runs first — the watermark then draws onto the *repositioned*
-    // picture, so the logo stays anchored to the frame rather than moving
-    // with a clip that's been scaled or shifted.
+    // Transform runs first, then the pip inset composites onto the
+    // repositioned background, then the watermark draws on top of all of
+    // it — so the logo stays anchored to the frame and always ends up
+    // visibly on top, whatever else this segment is doing.
     const transformPlan =
       videoInput !== null && opts.frameWidth && opts.frameHeight
         ? buildTransformFilter(opts.transform, opts.opacity, {
@@ -519,14 +579,29 @@ export class Exporter {
           })
         : null
 
+    const pipPlan =
+      pipInput !== null && videoInput !== null && opts.frameWidth && opts.frameHeight
+        ? buildPipFilter(opts.pipTransform, {
+            frameWidth: opts.frameWidth,
+            frameHeight: opts.frameHeight,
+            backgroundLabel: transformPlan ? transformPlan.outputLabel : `${videoInput}:v:0`,
+            insetLabel: `${pipInput}:v:0`,
+            outputLabel: 'pip'
+          })
+        : null
+
     // The watermark's overlay runs in its own -filter_complex, chained onto
-    // the transform's output when there is one.
+    // whatever the picture already is by this point.
     const videoPlan =
       opts.watermark && videoInput !== null && watermarkInput !== null && opts.frameWidth && opts.frameHeight
         ? buildWatermarkFilter(opts.watermark, {
             frameWidth: opts.frameWidth,
             frameHeight: opts.frameHeight,
-            videoLabel: transformPlan ? transformPlan.outputLabel : `${videoInput}:v:0`,
+            videoLabel: pipPlan
+              ? pipPlan.outputLabel
+              : transformPlan
+                ? transformPlan.outputLabel
+                : `${videoInput}:v:0`,
             imageLabel: `${watermarkInput}:v`,
             outputLabel: 'wm'
           })
@@ -573,12 +648,15 @@ export class Exporter {
         )
       : null
 
-    const graphs = [transformPlan?.filterComplex, videoPlan?.filterComplex, audioPlan?.filterComplex].filter(
-      Boolean
-    )
+    const graphs = [
+      transformPlan?.filterComplex,
+      pipPlan?.filterComplex,
+      videoPlan?.filterComplex,
+      audioPlan?.filterComplex
+    ].filter(Boolean)
     if (graphs.length > 0) args.push('-filter_complex', graphs.join(';'))
 
-    const finalVideoLabel = videoPlan?.outputLabel ?? transformPlan?.outputLabel ?? null
+    const finalVideoLabel = videoPlan?.outputLabel ?? pipPlan?.outputLabel ?? transformPlan?.outputLabel ?? null
     if (finalVideoLabel) args.push('-map', `[${finalVideoLabel}]`)
     else if (videoInput !== null) args.push('-map', `${videoInput}:v:0`)
 
@@ -589,7 +667,7 @@ export class Exporter {
     // Video codec
     let videoEncoding = 'no video'
     if (videoInput !== null) {
-      if (opts.decision.mode === 'copy' && !videoPlan && !transformPlan) {
+      if (opts.decision.mode === 'copy' && !videoPlan && !transformPlan && !pipPlan) {
         args.push('-c:v', 'copy')
         videoEncoding = 'stream copy (no re-encode)'
       } else {

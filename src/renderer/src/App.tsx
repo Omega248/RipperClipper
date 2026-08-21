@@ -803,6 +803,10 @@ export default function App(): JSX.Element {
         const audioSource = seg.audioSourceId
           ? (project.sources.find((s) => s.id === seg.audioSourceId) ?? null)
           : null
+        // A pip inset whose POV no longer exists in the project just drops
+        // silently — the background segment still exports, it simply loses
+        // the inset rather than failing the whole export.
+        const pipSource = seg.pip ? project.sources.find((s) => s.id === seg.pip!.sourceId) : undefined
         withWatermark.push({
           durationSeconds: seg.durationSeconds,
           videoSource,
@@ -815,7 +819,16 @@ export default function App(): JSX.Element {
           watermark: await watermarkFor(videoSource, seg.watermarkOverride),
           transform: seg.transform,
           opacity: seg.opacity,
-          audioGain: seg.audioGain
+          audioGain: seg.audioGain,
+          pip:
+            seg.pip && pipSource
+              ? {
+                  source: pipSource,
+                  startSeconds: seg.pip.startSeconds,
+                  endSeconds: seg.pip.endSeconds,
+                  transform: seg.pip.transform
+                }
+              : undefined
         })
       }
       if (withWatermark.length === 0) {

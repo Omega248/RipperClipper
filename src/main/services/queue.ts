@@ -53,6 +53,13 @@ export interface QueueClipInput {
   opacity?: number
   /** Flat volume multiplier from the audio item supplying the sound. 1 = unchanged. */
   audioGain?: number
+  /** A second POV composited as an inset over this part's picture. */
+  pip?: {
+    stream: StreamInfo
+    startSeconds: number
+    endSeconds: number
+    transform?: TimelineTransform
+  }
 }
 
 export interface QueueTask {
@@ -534,6 +541,7 @@ export class ExportQueue extends EventEmitter {
         transform: clip.transform,
         opacity: clip.opacity,
         audioGain: clip.audioGain,
+        pip: clip.pip,
         settings: task.settings,
         outputPath: partPath,
         workDir,

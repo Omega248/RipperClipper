@@ -792,6 +792,7 @@ function registerIpc(): void {
     for (const seg of req.segments) {
       povs.set(seg.videoSource.id, seg.videoSource)
       if (seg.audioSource) povs.set(seg.audioSource.id, seg.audioSource)
+      if (seg.pip) povs.set(seg.pip.source.id, seg.pip.source)
     }
     const streamsByPov = new Map<string, SelectedStreams>()
     for (const pov of povs.values()) {
@@ -813,6 +814,19 @@ function registerIpc(): void {
           })
         }
       }
+      let pip: QueueClipInput['pip']
+      if (seg.pip) {
+        const pipStreams = streamsByPov.get(seg.pip.source.id)!
+        const stream = pipStreams.video
+        if (stream) {
+          pip = { stream, startSeconds: seg.pip.startSeconds, endSeconds: seg.pip.endSeconds, transform: seg.pip.transform }
+        } else {
+          log.warn('export', 'Pip POV has no usable video stream; exporting without the inset', {
+            source: seg.pip.source.title
+          })
+        }
+      }
+
       return {
         id: `seg-${i}`,
         name: `Segment ${i + 1}`,
@@ -825,7 +839,8 @@ function registerIpc(): void {
         watermark: seg.watermark,
         transform: seg.transform,
         opacity: seg.opacity,
-        audioGain: seg.audioGain
+        audioGain: seg.audioGain,
+        pip
       }
     })
 

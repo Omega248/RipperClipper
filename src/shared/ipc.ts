@@ -390,6 +390,13 @@ export interface TimelineExportSegment {
   transform?: TimelineTransform
   opacity?: number
   audioGain?: number
+  /** A second POV composited as an inset over this segment, resolved the same way videoSource is. */
+  pip?: {
+    source: VodSource
+    startSeconds: number
+    endSeconds: number
+    transform?: TimelineTransform
+  }
 }
 
 export interface TimelineExportRequest {

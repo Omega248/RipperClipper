@@ -1,4 +1,7 @@
 import type { TimelineTransform } from '../../shared/types.js'
+import { isIdentityTransform } from '../../shared/timeline.js'
+
+export { isIdentityTransform }
 
 /**
  * A timeline item's transform (position/scale/rotation) and opacity, as an
@@ -24,11 +27,6 @@ export interface TransformFilterPlan {
 }
 
 const IDENTITY: TimelineTransform = { x: 0, y: 0, scale: 1, rotation: 0 }
-
-export function isIdentityTransform(transform: TimelineTransform | undefined | null): boolean {
-  const t = transform ?? IDENTITY
-  return t.x === 0 && t.y === 0 && t.scale === 1 && t.rotation % 360 === 0
-}
 
 export function buildTransformFilter(
   transform: TimelineTransform | undefined | null,

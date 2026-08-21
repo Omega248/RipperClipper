@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { formatTimecode } from '@shared/time'
+import { DEFAULT_PIP_TRANSFORM, isIdentityTransform } from '@shared/timeline'
 import type { TimelineItem, TimelineTransform } from '@shared/types'
 import { useStore } from '../store.js'
 import { povLabel } from '@shared/pov'
@@ -128,8 +129,34 @@ export default function Inspector({ onGoToVideo }: { onGoToVideo: () => void }):
       {item.kind === 'video' ? (
         <>
           <section className="inspector-section">
+            <h4>Picture-in-picture</h4>
+            <Field label="This item" layout="row">
+              <Checkbox
+                checked={Boolean(item.pip)}
+                onChange={(checked) =>
+                  patchWithHistory(item.id, {
+                    pip: checked ? true : undefined,
+                    // Starting from identity (or nothing) would otherwise
+                    // composite a full-frame inset directly over the
+                    // background — turning it on jumps straight to a
+                    // sensible corner so what the sliders below show is
+                    // what actually renders.
+                    transform:
+                      checked && isIdentityTransform(item.transform) ? DEFAULT_PIP_TRANSFORM : item.transform
+                  })
+                }
+                label={
+                  item.pip
+                    ? 'Composited as an inset over whatever it overlaps'
+                    : 'Off — this item just wins outright when it overlaps another'
+                }
+              />
+            </Field>
+          </section>
+
+          <section className="inspector-section">
             <div className="inspector-section-head">
-              <h4>Transform</h4>
+              <h4>{item.pip ? 'Inset position & size' : 'Transform'}</h4>
               <IconButton
                 icon="refresh"
                 size="compact"

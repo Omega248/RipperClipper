@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeAudioItemsAt,
   activeVideoItemAt,
+  activeVideoLayersAt,
   addItem,
   addTrack,
   appendClip,
@@ -11,6 +12,7 @@ import {
   emptyTimeline,
   moveItem,
   patchTrack,
+  pipCompositionAt,
   removeTrack,
   renameTrack,
   splitItem,
@@ -296,6 +298,65 @@ describe('activeVideoItemAt', () => {
   })
 })
 
+describe('activeVideoLayersAt', () => {
+  it('returns every covering video item, bottom track first', () => {
+    const t = addTrack(emptyTimeline(), 'video')
+    const [v1, , v2] = t.tracks.map((tr) => tr.id)
+    let timeline = t
+    const low = addItem(timeline, item({ trackId: v1, timelineStartSeconds: 0, timelineEndSeconds: 10 }))
+    timeline = low.timeline
+    const high = addItem(timeline, item({ trackId: v2, timelineStartSeconds: 0, timelineEndSeconds: 10 }))
+    timeline = high.timeline
+    expect(activeVideoLayersAt(timeline, 5).map((i) => i.id)).toEqual([low.id, high.id])
+  })
+
+  it('is empty when nothing covers the instant', () => {
+    expect(activeVideoLayersAt(emptyTimeline(), 5)).toEqual([])
+  })
+})
+
+describe('pipCompositionAt', () => {
+  it('is null with nothing on screen', () => {
+    expect(pipCompositionAt(emptyTimeline(), 5)).toBeNull()
+  })
+
+  it('one layer: it is the background, no inset', () => {
+    const t = emptyTimeline()
+    const only = addItem(t, item({ trackId: t.tracks[0].id, timelineStartSeconds: 0, timelineEndSeconds: 10 }))
+    const composition = pipCompositionAt(only.timeline, 5)!
+    expect(composition.background.id).toBe(only.id)
+    expect(composition.inset).toBeNull()
+  })
+
+  it('two overlapping layers, neither marked pip: the topmost wins outright, same as before — no compositing', () => {
+    const t = addTrack(emptyTimeline(), 'video')
+    const [v1, , v2] = t.tracks.map((tr) => tr.id)
+    let timeline = t
+    timeline = addItem(timeline, item({ trackId: v1, timelineStartSeconds: 0, timelineEndSeconds: 10 })).timeline
+    const high = addItem(timeline, item({ trackId: v2, timelineStartSeconds: 0, timelineEndSeconds: 10 }))
+    timeline = high.timeline
+    const composition = pipCompositionAt(timeline, 5)!
+    expect(composition.background.id).toBe(high.id)
+    expect(composition.inset).toBeNull()
+  })
+
+  it('a pip-marked item over a plain one: the plain one is the background, the pip one is the inset', () => {
+    const t = addTrack(emptyTimeline(), 'video')
+    const [v1, , v2] = t.tracks.map((tr) => tr.id)
+    let timeline = t
+    const bg = addItem(timeline, item({ trackId: v1, timelineStartSeconds: 0, timelineEndSeconds: 10 }))
+    timeline = bg.timeline
+    const reaction = addItem(
+      timeline,
+      item({ trackId: v2, timelineStartSeconds: 0, timelineEndSeconds: 10, pip: true })
+    )
+    timeline = reaction.timeline
+    const composition = pipCompositionAt(timeline, 5)!
+    expect(composition.background.id).toBe(bg.id)
+    expect(composition.inset?.id).toBe(reaction.id)
+  })
+})
+
 describe('activeAudioItemsAt', () => {
   it('excludes muted tracks and items', () => {
     const t = addTrack(emptyTimeline(), 'audio')
@@ -540,5 +601,49 @@ describe('computeExportSegments', () => {
     expect(thirdEdits).toHaveLength(1)
     expect(thirdEdits[0].startSeconds).toBeCloseTo(0, 2)
     expect(thirdEdits[0].endSeconds).toBeCloseTo(1.999, 2)
+  })
+
+  it('a pip item over the background produces one segment with a pip window, not a split', () => {
+    const t = addTrack(emptyTimeline(), 'video')
+    const [v1, , v2] = t.tracks.map((tr) => tr.id)
+    let timeline = t
+    timeline = addItem(timeline, item({
+      trackId: v1, sourceId: 'pov_main', sourceStartSeconds: 0, sourceEndSeconds: 10,
+      timelineStartSeconds: 0, timelineEndSeconds: 10
+    })).timeline
+    timeline = addItem(timeline, item({
+      trackId: v2, sourceId: 'pov_reaction', sourceStartSeconds: 50, sourceEndSeconds: 60,
+      timelineStartSeconds: 0, timelineEndSeconds: 10, pip: true,
+      transform: { x: 0.7, y: -0.7, scale: 0.3, rotation: 0 }
+    })).timeline
+
+    const segments = computeExportSegments(timeline)
+    expect(segments).toHaveLength(1)
+    expect(segments[0].videoSourceId).toBe('pov_main')
+    expect(segments[0].pip).toBeDefined()
+    expect(segments[0].pip?.sourceId).toBe('pov_reaction')
+    expect(segments[0].pip?.startSeconds).toBeCloseTo(50, 3)
+    expect(segments[0].pip?.endSeconds).toBeCloseTo(60, 3)
+    expect(segments[0].pip?.transform).toEqual({ x: 0.7, y: -0.7, scale: 0.3, rotation: 0 })
+  })
+
+  it('a pip item only over part of the background splits into segments with and without an inset', () => {
+    const t = addTrack(emptyTimeline(), 'video')
+    const [v1, , v2] = t.tracks.map((tr) => tr.id)
+    let timeline = t
+    timeline = addItem(timeline, item({
+      trackId: v1, sourceId: 'pov_main', sourceStartSeconds: 0, sourceEndSeconds: 10,
+      timelineStartSeconds: 0, timelineEndSeconds: 10
+    })).timeline
+    timeline = addItem(timeline, item({
+      trackId: v2, sourceId: 'pov_reaction', sourceStartSeconds: 0, sourceEndSeconds: 4,
+      timelineStartSeconds: 3, timelineEndSeconds: 7, pip: true
+    })).timeline
+
+    const segments = computeExportSegments(timeline)
+    expect(segments).toHaveLength(3)
+    expect(segments[0].pip).toBeUndefined()
+    expect(segments[1].pip?.sourceId).toBe('pov_reaction')
+    expect(segments[2].pip).toBeUndefined()
   })
 })

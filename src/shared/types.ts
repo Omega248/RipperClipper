@@ -383,6 +383,14 @@ export interface TimelineItem {
   /** Hand-drawn mute/bleep/duck ranges, in the item's own local time (0 = sourceStartSeconds). */
   audioEdits?: AudioEdit[]
   note?: string
+  /**
+   * Video items only. When this item overlaps a video item on a lower
+   * track, it composites as an inset over it (using its own `transform` for
+   * position/size) instead of simply winning by track order — the one
+   * opt-in way to get two POVs on screen at once. An item without this set
+   * behaves exactly as before: topmost wins, nothing composites.
+   */
+  pip?: boolean
 }
 
 export interface TimelineTrack {
