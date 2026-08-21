@@ -180,8 +180,8 @@ describe('streamer groups', () => {
   })
 
   it('creates a group with an icon and colour', async () => {
-    const [group] = await service.createGroup('PD', '🚓', '#3b82f6')
-    expect(group.icon).toBe('🚓')
+    const [group] = await service.createGroup('PD', 'shield', '#3b82f6')
+    expect(group.icon).toBe('shield')
     expect(group.color).toBe('#3b82f6')
   })
 
@@ -190,14 +190,19 @@ describe('streamer groups', () => {
     expect(group.color).toBeUndefined()
   })
 
+  it('rejects an icon outside the fixed set rather than storing arbitrary text', async () => {
+    const [group] = await service.createGroup('Custom', '🚓', undefined)
+    expect(group.icon).toBeUndefined()
+  })
+
   it('updates icon and colour independently of name', async () => {
     const [group] = await service.createGroup('EMS')
-    const updated = await service.updateGroup(group.id, { icon: '🚑', color: '#22c55e' })
-    expect(updated[0]).toMatchObject({ name: 'EMS', icon: '🚑', color: '#22c55e' })
+    const updated = await service.updateGroup(group.id, { icon: 'medical', color: '#22c55e' })
+    expect(updated[0]).toMatchObject({ name: 'EMS', icon: 'medical', color: '#22c55e' })
   })
 
   it('clears an icon or colour by setting it to an empty string / invalid value', async () => {
-    const [group] = await service.createGroup('EMS', '🚑', '#22c55e')
+    const [group] = await service.createGroup('EMS', 'medical', '#22c55e')
     const cleared = await service.updateGroup(group.id, { icon: '', color: 'not-a-colour' })
     expect(cleared[0].icon).toBeUndefined()
     expect(cleared[0].color).toBeUndefined()

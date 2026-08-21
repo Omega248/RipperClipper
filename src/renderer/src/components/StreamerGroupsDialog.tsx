@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { SavedStreamer, StreamerGroup } from '@shared/ipc'
 import { STREAMER_GROUP_COLORS } from '@shared/streamerGroupColors'
-import { Button, Checkbox, Dialog, IconButton, Input } from '../ui/index.js'
+import { STREAMER_GROUP_ICON_NAMES, isStreamerGroupIconName } from '@shared/streamerGroupIcons'
+import { Button, Checkbox, Dialog, Icon, IconButton, Input } from '../ui/index.js'
 
 interface Props {
   groups: StreamerGroup[]
@@ -42,6 +43,61 @@ function ColorSwatches({
         />
       ))}
     </div>
+  )
+}
+
+/**
+ * A fixed set of icons, not free text — see shared/streamerGroupIcons.ts for
+ * why. "No icon" is a real, first-class choice: a name and a colour alone
+ * are already enough to tell groups apart.
+ */
+function IconPicker({
+  value,
+  onChange
+}: {
+  value: string
+  onChange: (icon: string) => void
+}): JSX.Element {
+  return (
+    <div className="group-icon-picker" role="radiogroup" aria-label="Icon">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === ''}
+        aria-label="No icon"
+        className={`group-icon-option${value === '' ? ' is-selected' : ''}`}
+        onClick={() => onChange('')}
+      >
+        <Icon name="close" />
+      </button>
+      {STREAMER_GROUP_ICON_NAMES.map((name) => (
+        <button
+          key={name}
+          type="button"
+          role="radio"
+          aria-checked={value === name}
+          aria-label={name}
+          className={`group-icon-option${value === name ? ' is-selected' : ''}`}
+          onClick={() => onChange(name)}
+        >
+          <Icon name={name} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A group's swatch, icon (if any) and name, as one row — reused for both the checkbox label and the plain list row. */
+function GroupLabel({ group }: { group: StreamerGroup }): JSX.Element {
+  return (
+    <span className="group-label">
+      <span
+        className="group-swatch group-swatch-static"
+        style={{ backgroundColor: group.color ?? 'var(--neutral-border)' }}
+      />
+      {isStreamerGroupIconName(group.icon) && <Icon name={group.icon} size={14} />}
+      {group.name}
+    </span>
   )
 }
 
@@ -109,32 +165,18 @@ export default function StreamerGroupsDialog({
             {groups.map((g) =>
               editing?.id === g.id ? (
                 <li key={g.id} className="version-history-row group-edit-row">
-                  <div className="group-edit-fields">
-                    <Input
-                      autoFocus
-                      size="compact"
-                      value={editing.name}
-                      aria-label="Group name"
-                      onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitEdit()
-                        if (e.key === 'Escape') setEditing(null)
-                      }}
-                    />
-                    <Input
-                      size="compact"
-                      className="group-icon-input"
-                      value={editing.icon}
-                      placeholder="🚓"
-                      aria-label="Group icon (emoji)"
-                      maxLength={4}
-                      onChange={(e) => setEditing({ ...editing, icon: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitEdit()
-                        if (e.key === 'Escape') setEditing(null)
-                      }}
-                    />
-                  </div>
+                  <Input
+                    autoFocus
+                    size="compact"
+                    value={editing.name}
+                    aria-label="Group name"
+                    onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitEdit()
+                      if (e.key === 'Escape') setEditing(null)
+                    }}
+                  />
+                  <IconPicker value={editing.icon} onChange={(icon) => setEditing({ ...editing, icon })} />
                   <ColorSwatches value={editing.color} onChange={(color) => setEditing({ ...editing, color })} />
                   <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
                     <IconButton icon="check" size="compact" label="Save" onClick={commitEdit} />
@@ -147,26 +189,10 @@ export default function StreamerGroupsDialog({
                     <Checkbox
                       checked={streamer.groupIds?.includes(g.id) ?? false}
                       onChange={(checked) => onToggleMembership(g.id, checked)}
-                      label={
-                        <span className="group-label">
-                          <span
-                            className="group-swatch group-swatch-static"
-                            style={{ backgroundColor: g.color ?? 'var(--neutral-border)' }}
-                          />
-                          {g.icon && <span aria-hidden="true">{g.icon}</span>}
-                          {g.name}
-                        </span>
-                      }
+                      label={<GroupLabel group={g} />}
                     />
                   ) : (
-                    <span className="group-label">
-                      <span
-                        className="group-swatch group-swatch-static"
-                        style={{ backgroundColor: g.color ?? 'var(--neutral-border)' }}
-                      />
-                      {g.icon && <span aria-hidden="true">{g.icon}</span>}
-                      {g.name}
-                    </span>
+                    <GroupLabel group={g} />
                   )}
                   <div style={{ display: 'flex', gap: 'var(--space-1)' }}>
                     <IconButton
@@ -195,28 +221,16 @@ export default function StreamerGroupsDialog({
           </ul>
         )}
 
-        <div className="group-edit-fields">
-          <Input
-            placeholder="New group name"
-            aria-label="New group name"
-            value={draft.name}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitCreate()
-            }}
-          />
-          <Input
-            className="group-icon-input"
-            placeholder="🚓"
-            aria-label="New group icon (emoji)"
-            maxLength={4}
-            value={draft.icon}
-            onChange={(e) => setDraft({ ...draft, icon: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitCreate()
-            }}
-          />
-        </div>
+        <Input
+          placeholder="New group name"
+          aria-label="New group name"
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitCreate()
+          }}
+        />
+        <IconPicker value={draft.icon} onChange={(icon) => setDraft({ ...draft, icon })} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
           <ColorSwatches value={draft.color} onChange={(color) => setDraft({ ...draft, color })} />
           <Button icon="plus" disabled={draft.name.trim() === ''} onClick={commitCreate}>

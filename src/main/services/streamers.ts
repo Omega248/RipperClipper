@@ -8,6 +8,7 @@ import { streamsCoveringEvent } from '../../shared/eventStreams.js'
 import type { WatermarkConfig } from '../../shared/watermark.js'
 import { createId } from '../../shared/clips.js'
 import { isStreamerGroupColor } from '../../shared/streamerGroupColors.js'
+import { isStreamerGroupIconName } from '../../shared/streamerGroupIcons.js'
 import { atomicWriteJson } from './projects.js'
 import type { Logger } from './logger.js'
 import type { ResolverService } from '../media/resolver.js'
@@ -178,6 +179,7 @@ export class StreamerService {
       this.groupsCache = Array.isArray(parsed)
         ? (parsed as StreamerGroup[]).filter(isGroup).map((g) => ({
             ...g,
+            icon: isStreamerGroupIconName(g.icon) ? g.icon : undefined,
             color: isStreamerGroupColor(g.color) ? g.color : undefined
           }))
         : []
@@ -196,7 +198,7 @@ export class StreamerService {
     const group: StreamerGroup = {
       id: createId('grp'),
       name: trimmed,
-      ...(icon?.trim() ? { icon: icon.trim() } : {}),
+      ...(isStreamerGroupIconName(icon) ? { icon } : {}),
       ...(isStreamerGroupColor(color) ? { color } : {})
     }
     return this.writeGroups([...current, group])
@@ -213,8 +215,8 @@ export class StreamerService {
         const next = { ...g }
         if (patch.name !== undefined && patch.name.trim() !== '') next.name = patch.name.trim()
         if (patch.icon !== undefined) {
-          if (patch.icon.trim() === '') delete next.icon
-          else next.icon = patch.icon.trim()
+          if (isStreamerGroupIconName(patch.icon)) next.icon = patch.icon
+          else delete next.icon
         }
         if (patch.color !== undefined) {
           if (isStreamerGroupColor(patch.color)) next.color = patch.color

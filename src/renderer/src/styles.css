@@ -1690,15 +1690,33 @@ table.matrix tr.dim td {
   gap: var(--space-2);
 }
 
-.group-edit-fields {
+.group-icon-picker {
   display: flex;
-  gap: var(--space-2);
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
-.group-icon-input {
-  width: 56px;
-  flex: none;
-  text-align: center;
+.group-icon-option {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-medium);
+  background: var(--surface);
+  color: var(--text-secondary);
+  padding: 0;
+  cursor: pointer;
+}
+
+.group-icon-option:hover {
+  background: var(--surface-hover);
+}
+
+.group-icon-option.is-selected {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--accent-text);
 }
 
 .streamer {

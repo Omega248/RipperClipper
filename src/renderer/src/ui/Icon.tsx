@@ -72,6 +72,14 @@ export type IconName =
   | 'window-minimize'
   | 'window-maximize'
   | 'window-restore'
+  | 'shield'
+  | 'car'
+  | 'medical'
+  | 'skull'
+  | 'crown'
+  | 'flame'
+  | 'star'
+  | 'briefcase'
 
 /** Path data only — every icon inherits the same stroke settings below. */
 const PATHS: Record<IconName, string> = {
@@ -134,7 +142,17 @@ const PATHS: Record<IconName, string> = {
   spinner: 'M12 3a9 9 0 0 1 9 9',
   'window-minimize': 'M5 12h14',
   'window-maximize': 'M5 5h14v14H5z',
-  'window-restore': 'M8 8V5h11v11h-3M5 8h11v11H5z'
+  'window-restore': 'M8 8V5h11v11h-3M5 8h11v11H5z',
+  shield: 'M12 3l7 3v5c0 5.5-3.5 8.5-7 10-3.5-1.5-7-4.5-7-10V6l7-3z',
+  car: 'M4 16l1.3-5.2A2 2 0 0 1 7.2 9.3h9.6a2 2 0 0 1 1.9 1.5L20 16M3 16h18M7 16v2.5M17 16v2.5',
+  medical: 'M10 3h4v5h5v4h-5v9h-4v-9H5V8h5V3z',
+  skull:
+    'M12 4a6 6 0 0 0-6 6v3l1.5 1.5V17h2v-1.5h1V17h3v-1.5h1V17h2v-2.5L18 13v-3a6 6 0 0 0-6-6zM9.5 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM14.5 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
+  crown: 'M4 19h16l1-10-5.5 3.5L12 6l-3.5 6.5L3 9l1 10z',
+  flame:
+    'M12 3c.5 3-2.5 4-3 6.5a3.5 3.5 0 0 0 7 0c0-1-.5-2-.5-2 1.5 1 2.5 3 2.5 5a5.5 5.5 0 1 1-11 0C7 8 12 6 12 3z',
+  star: 'M12 3l2.5 5.6L21 9.3l-4.6 4.3 1.2 6.4L12 16.9l-5.6 3.1 1.2-6.4L3 9.3l6.5-.7L12 3z',
+  briefcase: 'M4 8h16v11H4V8zM9 8V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M4 13h16'
 }
 
 interface Props {

@@ -5,6 +5,7 @@ import type { EventOverlapReply, SavedStreamer, StreamerGroup, StreamerVod } fro
 import { coverageLabel } from '@shared/eventStreams'
 import { vodsAtTime, parseLocalDateTime } from '@shared/vodSearch'
 import type { VodAtTime } from '@shared/vodSearch'
+import { isStreamerGroupIconName } from '@shared/streamerGroupIcons'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
 import StreamerGroupsDialog from './StreamerGroupsDialog.js'
@@ -13,6 +14,7 @@ import {
   Button,
   Dialog,
   EmptyState,
+  Icon,
   IconButton,
   Input,
   Notice,
@@ -33,7 +35,7 @@ function GroupChip({ group }: { group: StreamerGroup }): JSX.Element {
           : undefined
       }
     >
-      {group.icon && <span aria-hidden="true">{group.icon}</span>}
+      {isStreamerGroupIconName(group.icon) && <Icon name={group.icon} size={12} />}
       {group.name}
     </span>
   )
@@ -383,10 +385,7 @@ export default function StreamersDialog({
                 label="Filter by group"
                 options={[
                   { value: '', label: 'All groups' },
-                  ...groups.map((g) => ({
-                    value: g.id,
-                    label: [g.icon, g.name].filter(Boolean).join(' ')
-                  }))
+                  ...groups.map((g) => ({ value: g.id, label: g.name }))
                 ]}
               />
               <Button size="compact" variant="ghost" icon="settings" onClick={() => setGroupsDialog('manage')}>
