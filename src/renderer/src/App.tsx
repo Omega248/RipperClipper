@@ -394,21 +394,37 @@ export default function App(): JSX.Element {
         }
       }
 
-      // Only a real batch earns a summary — a lone export already has its own
-      // clear toast above, and a second one would just be noise.
-      if (activeBefore && !activeAfter && batchTally.current.total > 1) {
+      if (activeBefore && !activeAfter) {
         const { total, failed } = batchTally.current
         const succeeded = total - failed
-        state.toast({
-          kind: failed === 0 ? 'success' : succeeded === 0 ? 'error' : 'warning',
-          title: 'Export batch finished',
-          message:
-            failed === 0
-              ? `All ${total} clips exported.`
-              : succeeded === 0
-                ? `All ${total} clips failed.`
-                : `${succeeded} of ${total} clips exported, ${failed} failed.`
-        })
+        const summary =
+          failed === 0
+            ? `All ${total} clip${total === 1 ? '' : 's'} exported.`
+            : succeeded === 0
+              ? `All ${total} clip${total === 1 ? '' : 's'} failed.`
+              : `${succeeded} of ${total} clips exported, ${failed} failed.`
+
+        // Only a real batch earns a toast of its own — a lone export already
+        // has its own clear toast above, and a second one would just be noise.
+        if (total > 1) {
+          state.toast({
+            kind: failed === 0 ? 'success' : succeeded === 0 ? 'error' : 'warning',
+            title: 'Export batch finished',
+            message: summary
+          })
+        }
+
+        // A native OS notification too, but only when nobody's actually
+        // watching the in-app toast — the whole point is being told once the
+        // window's minimized or in the background for a long batch.
+        if (total > 0 && !document.hasFocus() && Notification.permission !== 'denied') {
+          void Notification.requestPermission().then((permission) => {
+            if (permission === 'granted') {
+              new Notification('Ripper Clipper', { body: summary, silent: failed === 0 })
+            }
+          })
+        }
+
         batchTally.current = { total: 0, failed: 0 }
       }
     })

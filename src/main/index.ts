@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, shell, Tray } from 'electron'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -74,6 +74,7 @@ if (__CHANNEL__ !== 'stable') {
 
 let mainWindow: BrowserWindow | null = null
 let localServer: LocalServer | null = null
+let tray: Tray | null = null
 
 const userData = app.getPath('userData')
 const logsDir = join(userData, 'logs')
@@ -361,6 +362,39 @@ async function createWindow(): Promise<void> {
   } catch {
     await mainWindow.loadURL(localServer!.loopbackUrl)
   }
+}
+
+/**
+ * The tray icon. Purely additive — it never changes what closing or
+ * minimizing the window does, it just gives a way back to the window (and
+ * to quitting) when it's out of sight, which matters for a long export
+ * batch running in the background.
+ */
+function createTray(): void {
+  const icon = nativeImage.createFromPath(iconPath()).resize({ width: 16, height: 16 })
+  tray = new Tray(icon)
+  tray.setToolTip('Ripper Clipper')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: 'Show Ripper Clipper',
+        click: () => {
+          if (!mainWindow) return
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() }
+    ])
+  )
+  tray.on('click', () => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
 }
 
 // ------------------------------------------------------------------ IPC ----
@@ -843,6 +877,7 @@ if (!singleInstance) {
 
     registerIpc()
     await createWindow()
+    createTray()
 
     // After the window exists, so the user can see it happening.
     void autoInstallMissing().catch((err) => log.error('deps', 'Automatic setup failed', err))
