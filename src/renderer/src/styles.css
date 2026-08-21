@@ -1653,6 +1653,36 @@ table.matrix tr.dim td {
   gap: var(--space-1);
 }
 
+.group-import-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.group-import-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--neutral-border);
+  border-radius: var(--radius-pill);
+  background: var(--neutral-subtle);
+  color: var(--neutral-text);
+  font: var(--type-caption);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: filter var(--motion-fast) var(--motion-ease);
+}
+
+.group-import-btn:hover {
+  filter: brightness(1.15);
+}
+
+.group-import-btn:focus-visible {
+  box-shadow: var(--focus-ring-shadow);
+}
+
 .group-label {
   display: inline-flex;
   align-items: center;

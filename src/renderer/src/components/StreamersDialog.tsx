@@ -276,6 +276,37 @@ export default function StreamersDialog({
       .filter((g): g is StreamerGroup => Boolean(g))
       .map((g) => <GroupChip key={g.id} group={g} />)
 
+  /** Buttons to bulk-import every not-yet-loaded VOD for one group, colour-matched to it. */
+  const groupImportButtons = (entries: Array<{ streamerId: string; url: string }>): JSX.Element[] => {
+    const byGroup = new Map<string, { group: StreamerGroup; urls: string[] }>()
+    for (const entry of entries) {
+      if (loaded.has(entry.url) || added.has(entry.url)) continue
+      for (const id of streamers.find((s) => s.id === entry.streamerId)?.groupIds ?? []) {
+        const group = groups.find((g) => g.id === id)
+        if (!group) continue
+        const bucket = byGroup.get(id) ?? { group, urls: [] }
+        bucket.urls.push(entry.url)
+        byGroup.set(id, bucket)
+      }
+    }
+    return [...byGroup.values()].map(({ group, urls }) => (
+      <button
+        key={group.id}
+        type="button"
+        className="group-import-btn"
+        style={
+          group.color
+            ? { borderColor: group.color, backgroundColor: `${group.color}22`, color: group.color }
+            : undefined
+        }
+        onClick={() => urls.forEach((url) => importOne(url))}
+      >
+        {isStreamerGroupIconName(group.icon) && <Icon name={group.icon} size={12} />}
+        Import {group.name} ({urls.length})
+      </button>
+    ))
+  }
+
   const sortedAtTime =
     sortMode === 'time' || !atTime
       ? atTime
@@ -293,6 +324,13 @@ export default function StreamersDialog({
             groupSortKey(a.streamerId).localeCompare(groupSortKey(b.streamerId)) ||
             a.coverage.offsetSeconds - b.coverage.offsetSeconds
         )
+
+  const overlapGroupButtons = groupImportButtons(
+    (overlap?.streams ?? []).map((s) => ({ streamerId: s.streamerId, url: s.vod.url }))
+  )
+  const atTimeGroupButtons = groupImportButtons(
+    (atTime ?? []).map((h) => ({ streamerId: h.streamer.id, url: h.vod.url }))
+  )
 
   /** One row shape for a VOD, wherever it came from. */
   const vodRow = (
@@ -477,6 +515,10 @@ export default function StreamersDialog({
 
               {overlapLoading && <Spinner label="Asking each saved channel…" />}
 
+              {!overlapLoading && overlapGroupButtons.length > 0 && (
+                <div className="group-import-row">{overlapGroupButtons}</div>
+              )}
+
               {!overlapLoading && overlap && overlap.streams.length === 0 && (
                 <p className="hint">
                   None of your saved streamers has a broadcast covering this clip's moment.
@@ -563,6 +605,9 @@ export default function StreamersDialog({
                 {new Date(parseLocalDateTime(when)!).toLocaleString()}. Loading one seeks straight to
                 that moment once its timing is known.
               </p>
+              {atTimeGroupButtons.length > 0 && (
+                <div className="group-import-row">{atTimeGroupButtons}</div>
+              )}
               {sortedAtTime!.map((hit) =>
                 vodRow(
                   `${hit.streamer.id}-${hit.vod.url}`,
