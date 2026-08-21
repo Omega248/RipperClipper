@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { applyTemplate, buildFolderSegments, sanitizeFilename } from '@shared/filenames'
+import { formatBytes } from '@shared/errors'
 import { povLabel } from '@shared/pov'
 import { planExport } from '@shared/povMapping'
 import { formatDuration } from '@shared/time'
-import type { ClipSegment } from '@shared/types'
+import type { ClipSegment, DiskSpaceInfo } from '@shared/types'
 import { useStore } from '../store.js'
 import QueuePanel from './QueuePanel.js'
 import QualityPanel from './QualityPanel.js'
@@ -31,6 +32,22 @@ export default function ExportPage({
   const [chosen, setChosen] = useState<Set<string>>(new Set())
 
   const outputDirectory = project?.outputDirectory ?? settings?.outputDirectory ?? ''
+
+  const [diskSpace, setDiskSpace] = useState<DiskSpaceInfo | null>(null)
+  useEffect(() => {
+    if (!outputDirectory) return
+    let cancelled = false
+    void window.api.diskSpace(outputDirectory).then((info) => {
+      if (!cancelled) setDiskSpace(info)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [outputDirectory])
+  // Below this, a batch of exports risks running out mid-way rather than
+  // finishing — worth a warning before it starts, not a failure partway in.
+  const LOW_SPACE_BYTES = 5 * 1024 * 1024 * 1024
+  const lowSpace = diskSpace !== null && diskSpace.freeBytes < LOW_SPACE_BYTES
 
   const rows = useMemo(() => {
     if (!project) return []
@@ -103,6 +120,7 @@ export default function ExportPage({
           <>
             <span className="mono">{outputDirectory}</span>
             <span>{project.exportSettings.container.toUpperCase()}</span>
+            {diskSpace && <span>{formatBytes(diskSpace.freeBytes)} free</span>}
             <span>
               Copied without re-encoding wherever the source allows it. A clip with a watermark is
               processed instead, which takes longer.
@@ -201,6 +219,14 @@ export default function ExportPage({
               .flatMap((r) => r.warnings)
               .slice(0, 4)
               .join(' ')}
+          </Notice>
+        )}
+
+        {lowSpace && diskSpace && (
+          <Notice tone="warning" title="Running low on disk space">
+            Only {formatBytes(diskSpace.freeBytes)} free at {outputDirectory}. A large batch could
+            run out partway through — free up space, or change the output folder in Settings →
+            Downloads, before exporting a lot at once.
           </Notice>
         )}
       </section>

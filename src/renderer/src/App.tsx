@@ -140,7 +140,7 @@ export default function App(): JSX.Element {
   )
 
 
-  useShortcuts()
+  useShortcuts(() => setShowFind(true))
   // One place decides what theme the whole application is in, and it repaints
   // everything at once because every colour comes from one variable block.
   useTheme(store.settings?.ui.theme)
@@ -221,18 +221,20 @@ export default function App(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [env, settings, jobs, streamers] = await Promise.all([
+        const [env, settings, jobs, streamers, recentProjects] = await Promise.all([
           window.api.env(),
           window.api.getSettings(),
           window.api.listJobs(),
           // The streamer library is loaded up front because watermark defaults
           // resolve through it — a POV has to know whose logo it inherits.
-          window.api.listStreamers().catch(() => [])
+          window.api.listStreamers().catch(() => []),
+          window.api.recentProjects().catch(() => [])
         ])
         store.setEnv(env)
         store.setSettings(settings)
         store.setJobs(jobs)
         store.setStreamers(streamers)
+        store.setRecentProjects(recentProjects)
 
         const project = await window.api.newProject('Untitled project')
         project.exportSettings = settings.export
@@ -326,9 +328,14 @@ export default function App(): JSX.Element {
   }, [store.activeSourceId, store.project?.sources.length])
 
   // Job updates -> clip status, and completion notices.
+  const batchTally = useRef({ total: 0, failed: 0 })
   useEffect(() => {
     const off = window.api.onJobs((jobs) => {
       const previous = useStore.getState().jobs
+      const isSettled = (stage: JobStage): boolean =>
+        stage === 'complete' || stage === 'failed' || stage === 'cancelled'
+      const activeBefore = previous.some((j) => !isSettled(j.progress.stage))
+      const activeAfter = jobs.some((j) => !isSettled(j.progress.stage))
       useStore.setState({ jobs })
       const state = useStore.getState()
       if (!state.project) return
@@ -363,10 +370,15 @@ export default function App(): JSX.Element {
       })
       useStore.setState({ project: { ...state.project, clips: nextClips } })
 
+      // A new batch starting from idle begins a fresh tally; one already in
+      // flight keeps accumulating across however many onJobs calls it takes.
+      if (!activeBefore && activeAfter) batchTally.current = { total: 0, failed: 0 }
+
       for (const job of jobs) {
         const before = previous.find((p) => p.id === job.id)
         if (before?.progress.stage === job.progress.stage) continue
         if (job.progress.stage === 'complete') {
+          batchTally.current.total += 1
           state.toast({
             kind: job.verification?.ok === false ? 'warning' : 'success',
             title: job.verification?.ok === false ? 'Exported with warnings' : 'Export complete',
@@ -376,8 +388,28 @@ export default function App(): JSX.Element {
                 : `${job.clipName} → ${job.outputPath ?? ''}`
           })
         } else if (job.progress.stage === 'failed' && job.error) {
+          batchTally.current.total += 1
+          batchTally.current.failed += 1
           state.toast({ kind: 'error', title: job.error.title, message: job.error.message })
         }
+      }
+
+      // Only a real batch earns a summary — a lone export already has its own
+      // clear toast above, and a second one would just be noise.
+      if (activeBefore && !activeAfter && batchTally.current.total > 1) {
+        const { total, failed } = batchTally.current
+        const succeeded = total - failed
+        state.toast({
+          kind: failed === 0 ? 'success' : succeeded === 0 ? 'error' : 'warning',
+          title: 'Export batch finished',
+          message:
+            failed === 0
+              ? `All ${total} clips exported.`
+              : succeeded === 0
+                ? `All ${total} clips failed.`
+                : `${succeeded} of ${total} clips exported, ${failed} failed.`
+        })
+        batchTally.current = { total: 0, failed: 0 }
       }
     })
     return off
@@ -716,6 +748,7 @@ export default function App(): JSX.Element {
       if (!result) return
       useStore.setState({ project: result.project, projectPath: result.path, dirty: false })
       state.toast({ kind: 'success', title: 'Project saved', message: result.path })
+      void window.api.recentProjects().then(store.setRecentProjects)
     } catch (err) {
       if (message(err).includes('cancelled')) return
       state.toast({ kind: 'error', title: title(err, 'Save failed'), message: message(err) })
@@ -763,8 +796,27 @@ export default function App(): JSX.Element {
         title: 'Project opened',
         message: `${result.project.clips.length} clip${result.project.clips.length === 1 ? '' : 's'} restored.`
       })
+      void window.api.recentProjects().then(store.setRecentProjects)
     } catch (err) {
       state.toast({ kind: 'error', title: title(err, 'Open failed'), message: message(err) })
+    }
+  }
+
+  const openRecentProject = async (path: string): Promise<void> => {
+    const state = useStore.getState()
+    try {
+      const result = await window.api.openProjectPath(path)
+      store.setProject(result.project, result.path)
+      state.toast({
+        kind: 'success',
+        title: 'Project opened',
+        message: `${result.project.clips.length} clip${result.project.clips.length === 1 ? '' : 's'} restored.`
+      })
+      void window.api.recentProjects().then(store.setRecentProjects)
+    } catch (err) {
+      state.toast({ kind: 'error', title: title(err, 'Could not open that project'), message: message(err) })
+      // The file may have moved or been deleted since it was last opened.
+      void window.api.recentProjects().then(store.setRecentProjects)
     }
   }
 
@@ -841,6 +893,12 @@ export default function App(): JSX.Element {
           items={[
             { id: 'new', label: 'New project', icon: 'new', onSelect: startNewProject },
             { id: 'open', label: 'Open project…', icon: 'open', onSelect: () => void openProject() },
+            ...store.recentProjects.slice(0, 6).map((path, i) => ({
+              id: `recent-${path}`,
+              label: projectFileName(path),
+              separatorBefore: i === 0,
+              onSelect: () => void openRecentProject(path)
+            })),
             {
               id: 'save',
               label: 'Save',
@@ -1410,6 +1468,12 @@ export default function App(): JSX.Element {
       <Toasts />
     </div>
   )
+}
+
+/** A saved project's own name for the Project menu's recent list — no path, no extension. */
+function projectFileName(path: string): string {
+  const base = path.split(/[\\/]/).pop() ?? path
+  return base.replace(/\.cookieclip$/i, '')
 }
 
 function clipStatusFor(stage: JobStage): ClipStatus {

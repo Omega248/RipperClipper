@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { DEFAULT_SHORTCUTS } from '@shared/defaults'
 import { useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
@@ -22,8 +22,17 @@ function isTypingTarget(target: EventTarget | null): boolean {
 /**
  * Global editing shortcuts. They never fire while the user is typing into a
  * field, so renaming a clip cannot accidentally delete it.
+ *
+ * `onFindInPovs` is a callback rather than a store action because opening
+ * that dialog is App-local UI state, the same as every other dialog's
+ * open/close flag.
  */
-export function useShortcuts(): void {
+export function useShortcuts(onFindInPovs: () => void): void {
+  // A ref, not a dependency: an inline arrow prop would otherwise re-attach
+  // the window listener on every render that passes a fresh closure.
+  const onFindInPovsRef = useRef(onFindInPovs)
+  onFindInPovsRef.current = onFindInPovs
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (isTypingTarget(e.target)) return
@@ -100,6 +109,11 @@ export function useShortcuts(): void {
       if (match('addMarker')) {
         e.preventDefault()
         state.addMarker()
+        return
+      }
+      if (match('findInPovs')) {
+        e.preventDefault()
+        onFindInPovsRef.current()
         return
       }
       if (match('undo')) {

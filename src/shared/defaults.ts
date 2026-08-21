@@ -29,6 +29,7 @@ export const DEFAULT_SHORTCUTS: Record<string, string> = {
   playPauseAlt: 'KeyK',
   nextClip: 'KeyL',
   addMarker: 'KeyM',
+  findInPovs: 'KeyF',
   undo: 'Ctrl+KeyZ',
   redo: 'Ctrl+Shift+KeyZ',
   loopSelection: 'KeyP',

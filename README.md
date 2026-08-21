@@ -289,13 +289,13 @@ They live in the transport bar under the player, and again in the Clips panel wh
 | `Delete` | delete the selected clip |
 | `J` / `L` | previous / next clip |
 | `M` | add a marker at the playhead |
+| `F` | find this moment in every loaded POV |
 | `P` | loop the selected range |
 | `=` / `-` | zoom the timeline |
 | `Ctrl + Z` / `Ctrl + Shift + Z` | undo / redo |
 
 All bindings are editable in **Settings → Keyboard**. Shortcuts never fire while you are typing in
-a field. "Find in all POVs" — jump every loaded POV to the same real-world instant — is a toolbar
-button rather than a shortcut.
+a field.
 
 ### Filenames
 

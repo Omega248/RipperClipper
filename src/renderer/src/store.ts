@@ -89,6 +89,8 @@ interface State {
   env: EnvInfo | null
   settings: AppSettings | null
   updateStatus: UpdateStatus
+  /** Paths of recently saved/opened projects, newest first. */
+  recentProjects: string[]
 
   // selection & editing
   activeSourceId: string | null
@@ -134,6 +136,7 @@ interface Actions {
   setEnv: (env: EnvInfo) => void
   setSettings: (settings: AppSettings) => void
   setUpdateStatus: (status: UpdateStatus) => void
+  setRecentProjects: (paths: string[]) => void
 
   setProject: (project: ProjectFile, path: string | null) => void
   markClean: (project?: ProjectFile) => void
@@ -241,6 +244,7 @@ const emptyState: State = {
   env: null,
   settings: null,
   updateStatus: { state: 'idle' },
+  recentProjects: [],
   activeSourceId: null,
   selectedClipId: null,
   inPoint: null,
@@ -273,6 +277,7 @@ export const useStore = create<Store>((set, get) => ({
   setEnv: (env) => set({ env }),
   setSettings: (settings) => set({ settings }),
   setUpdateStatus: (updateStatus) => set({ updateStatus }),
+  setRecentProjects: (recentProjects) => set({ recentProjects }),
 
   setProject: (project, path) =>
     set({
