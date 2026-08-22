@@ -54,7 +54,14 @@ const CATEGORIES: Array<{ id: Category; label: string; icon: IconName }> = [
   { id: 'diagnostics', label: 'Diagnostics', icon: 'help' }
 ]
 
-export default function SettingsDialog({ onClose }: Props): JSX.Element {
+/**
+ * The settings themselves, with no chrome of their own.
+ *
+ * Shared so the same controls can be a dialog (reachable from anywhere) and
+ * a destination on the rail, without the two drifting apart — which is what
+ * would happen the moment they were two copies.
+ */
+export function SettingsBody(): JSX.Element {
   const settings = useStore((s) => s.settings)
   const env = useStore((s) => s.env)
   const setSettings = useStore((s) => s.setSettings)
@@ -82,16 +89,6 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
   }
 
   return (
-    <Dialog
-      title="Settings"
-      size="large"
-      onClose={onClose}
-      footer={
-        <Button variant="primary" onClick={onClose}>
-          Done
-        </Button>
-      }
-    >
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings categories">
           {CATEGORIES.map((c) => (
@@ -464,6 +461,23 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
           )}
         </div>
       </div>
+  )
+}
+
+/** Settings as a modal, for reaching them without leaving what you were doing. */
+export default function SettingsDialog({ onClose }: Props): JSX.Element {
+  return (
+    <Dialog
+      title="Settings"
+      size="large"
+      onClose={onClose}
+      footer={
+        <Button variant="primary" onClick={onClose}>
+          Done
+        </Button>
+      }
+    >
+      <SettingsBody />
     </Dialog>
   )
 }

@@ -34,6 +34,12 @@ import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
 import EventSearch from './components/EventSearch.js'
+import AppRail from './components/AppRail.js'
+import HomePage from './components/HomePage.js'
+import StreamersPage from './components/StreamersPage.js'
+import VodsPage from './components/VodsPage.js'
+import ClipsPage from './components/ClipsPage.js'
+import SettingsPage from './components/SettingsPage.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -81,6 +87,8 @@ export default function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('clips')
   const page = useStore((s) => s.page)
   const setPage = useStore((s) => s.setPage)
+  const route = useStore((s) => s.route)
+  const setRoute = useStore((s) => s.setRoute)
   const [showAll, setShowAll] = useState(false)
   const [layout, setLayout] = useState<GridLayout>('auto')
   const [url, setUrl] = useState('')
@@ -1030,7 +1038,9 @@ export default function App(): JSX.Element {
   })
 
   return (
-    <div className="app">
+    <div className="app-shell">
+      <AppRail />
+      <div className="app">
       {/*
         * The shell: identity, project commands, undo, the three workspaces, and
         * help. It does not change between pages, so the editor never has to
@@ -1312,14 +1322,16 @@ export default function App(): JSX.Element {
         )}
       </div>
 
+      {route === 'workspace' && (
       <PovBar
         onAddPov={() => urlRef.current?.focus()}
         onDiscoverEvent={() => setShowDiscovery(true)}
         onFindInPovs={() => setShowFind(true)}
         onManualSync={() => setShowWaveform('pov')}
       />
+      )}
 
-      {EditorPage && page === 'editor' && (
+      {route === 'workspace' && EditorPage && page === 'editor' && (
         <Suspense fallback={null}>
           <EditorPage
             onExport={() => setSequenceExportPrompt(store.project?.name ?? 'Sequence')}
@@ -1327,12 +1339,12 @@ export default function App(): JSX.Element {
           />
         </Suspense>
       )}
-      {page === 'properties' && (
+      {route === 'workspace' && page === 'properties' && (
         <div className="page">
           <PropertiesPage />
         </div>
       )}
-      {page === 'export' && (
+      {(route === 'export' || (route === 'workspace' && page === 'export')) && (
         <div className="page">
           <ExportPage
             onExport={(targets) => void exportClips(targets)}
@@ -1343,7 +1355,7 @@ export default function App(): JSX.Element {
 
       <div
         className={`main${showAll ? ' all-povs' : ''}`}
-        hidden={page !== 'video'}
+        hidden={route !== 'workspace' || page !== 'video'}
         style={
           {
             ...(sidePanel.value !== undefined && { '--side-width': `${sidePanel.value}px` }),
@@ -1585,6 +1597,29 @@ export default function App(): JSX.Element {
         </div>
       </div>
 
+      {route === 'home' && (
+        <HomePage
+          onOpenProject={() => void openProject()}
+          onNewProject={startNewProject}
+          onFindVod={() => setRoute('vods')}
+        />
+      )}
+      {route === 'streamers' && <StreamersPage />}
+      {route === 'vods' && <VodsPage onLoadVod={loadVod} />}
+      {route === 'clips' && <ClipsPage />}
+      {route === 'projects' && (
+        <HomePage
+          onOpenProject={() => void openProject()}
+          onNewProject={startNewProject}
+          onFindVod={() => setRoute('vods')}
+        />
+      )}
+      {route === 'settings' && (
+        <div className="page">
+          <SettingsPage />
+        </div>
+      )}
+
       <QueuePanel />
 
       {showGuide && <QuickGuide onClose={() => setShowGuide(false)} />}
@@ -1733,6 +1768,7 @@ export default function App(): JSX.Element {
         />
       )}
       <Toasts />
+      </div>
     </div>
   )
 }

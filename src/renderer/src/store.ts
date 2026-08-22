@@ -76,6 +76,29 @@ import type { EnvInfo, InstallProgress, ToastEvent, UpdateStatus } from '@shared
 /** The three workspaces inside a clip. The multi-track editor lives inside 'video', as a timeline mode. */
 export type WorkspacePage = 'video' | 'editor' | 'properties' | 'export'
 
+/**
+ * Where the app is, at the top level.
+ *
+ * This sits *above* `page`, which keeps its existing meaning as the tab
+ * inside the workspace. Splitting them is what lets the rail be permanent
+ * chrome without the workspace losing its own place when you leave and come
+ * back to it.
+ */
+export type AppRoute =
+  | 'home'
+  | 'projects'
+  | 'streamers'
+  | 'vods'
+  | 'workspace'
+  | 'clips'
+  | 'export'
+  | 'settings'
+
+/** Group filter sentinel: no group at all, as distinct from "any group". */
+export const UNGROUPED = 'ungrouped'
+/** Collection filter sentinel: filed nowhere, as distinct from "any collection". */
+export const LOOSE = 'loose'
+
 export interface Toast extends ToastEvent {
   id: string
   /** A clickable follow-up ("Undo") — renderer-only, so it never crosses the IPC boundary the base ToastEvent does. */
@@ -139,6 +162,18 @@ interface State {
   // navigation
   /** Which workspace is showing. One page, one job. */
   page: WorkspacePage
+  /** Which top-level destination the rail is on. */
+  route: AppRoute
+  /**
+   * Icon-only rail. Derived from window width, but the editor can override
+   * it — a deliberate choice must survive a resize that would undo it.
+   */
+  railCollapsed: boolean
+  railCollapsedByUser: boolean | null
+  /** Group id, null = every group, UNGROUPED = those in none. */
+  streamerGroupFilter: string | null
+  /** Collection id, null = every clip, LOOSE = those filed nowhere. */
+  collectionFilter: string | null
 
   // jobs & ui
   jobs: ExportJob[]
@@ -261,6 +296,12 @@ interface Actions {
   zoomBy: (factor: number, anchorSeconds?: number) => void
 
   setPage: (page: WorkspacePage) => void
+  setRoute: (route: AppRoute) => void
+  /** Width-derived collapse. Ignored once the editor has chosen for themselves. */
+  setRailCollapsedByWidth: (collapsed: boolean) => void
+  toggleRail: () => void
+  setStreamerGroupFilter: (groupId: string | null) => void
+  setCollectionFilter: (collectionId: string | null) => void
   setJobs: (jobs: ExportJob[]) => void
   setToolProgress: (progress: InstallProgress) => void
   toast: (toast: ToastEvent & { action?: Toast['action'] }) => void
@@ -299,6 +340,11 @@ const emptyState: State = {
   viewStart: 0,
   viewSpan: 600,
   page: 'video',
+  route: 'home',
+  railCollapsed: false,
+  railCollapsedByUser: null,
+  streamerGroupFilter: null,
+  collectionFilter: null,
   jobs: [],
   toasts: [],
   busy: null,
@@ -1184,6 +1230,19 @@ export const useStore = create<Store>((set, get) => ({
     }),
 
   setPage: (page) => set({ page }),
+  setRoute: (route) => set({ route }),
+
+  setRailCollapsedByWidth: (collapsed) =>
+    set((s) => ({
+      // A deliberate choice outranks the window: resizing must not undo it.
+      railCollapsed: s.railCollapsedByUser ?? collapsed
+    })),
+
+  toggleRail: () =>
+    set((s) => ({ railCollapsed: !s.railCollapsed, railCollapsedByUser: !s.railCollapsed })),
+
+  setStreamerGroupFilter: (groupId) => set({ streamerGroupFilter: groupId }),
+  setCollectionFilter: (collectionId) => set({ collectionFilter: collectionId }),
 
   setJobs: (jobs) => set({ jobs }),
 
