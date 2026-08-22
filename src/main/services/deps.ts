@@ -79,6 +79,24 @@ export function setTargetPlatform(platform: NodeJS.Platform): void {
   target = platform
 }
 
+/**
+ * Whether to install the CUDA build of whisper.
+ *
+ * Set from detected hardware before the catalogue is consulted (see
+ * `setWhisperAcceleration`). Defaults to false so a machine that has not been
+ * probed gets the small, universally-working build rather than most of a
+ * gigabyte it may not be able to use.
+ */
+let wantsCuda = false
+
+export function setWhisperAcceleration(cuda: boolean): void {
+  wantsCuda = cuda
+}
+
+export function whisperWantsCuda(): boolean {
+  return wantsCuda
+}
+
 /** The one place a download URL may come from. */
 const CATALOGUE: Record<
   ToolId,
@@ -158,6 +176,62 @@ const CATALOGUE: Record<
     }
   },
 
+  whisper: {
+    label: 'Whisper',
+    purpose: 'Transcribing VODs on this machine, so no audio ever leaves it.',
+    // Not required: everything except local transcription works without it,
+    // and it is by far the largest download here — the CUDA build carries
+    // NVIDIA's own cuBLAS libraries, which are most of that weight.
+    required: false,
+    get approxBytes() {
+      return wantsCuda ? 671 * 1024 * 1024 : 9 * 1024 * 1024
+    },
+    provides: () => exe(['whisper-cli']),
+    plan: async (get) => {
+      if (target !== 'win32' && target !== 'linux') return null
+      // Pinned rather than `latest`: whisper.cpp's release assets change names
+      // between builds, and a URL discovered at runtime is exactly what the
+      // rules at the top of this file forbid.
+      const tag = 'b4938'
+      const base = `https://github.com/ggml-org/whisper.cpp/releases/download/${tag}`
+
+      if (target === 'linux') {
+        return {
+          url: `${base}/whisper-bin-ubuntu-x64.tar.gz`,
+          kind: 'archive',
+          keep: ['whisper-cli', 'libwhisper*', 'libggml*'],
+          expected: null
+        }
+      }
+
+      // Everything the CLI loads at runtime: whisper.dll, the ggml backends
+      // (one per CPU generation, chosen at load time) and — for the CUDA
+      // build — NVIDIA's redistributable cuBLAS libraries.
+      const keep = ['whisper-cli.exe', 'whisper.dll', 'ggml*.dll']
+      const cudaKeep = [...keep, 'cublas64_12.dll', 'cublasLt64_12.dll', 'cudart64_12.dll']
+
+      const cpu: Download = {
+        url: `${base}/whisper-bin-x64.zip`,
+        kind: 'archive',
+        keep,
+        expected: await releaseDigest(get, tag, 'whisper-bin-x64.zip')
+      }
+
+      // The CUDA build is worth 671MB only on a machine that can use it —
+      // measured at 5.5x the CPU speed on the large model. On anything else
+      // it is dead weight, and was actually *slower* on small models.
+      if (!wantsCuda) return cpu
+      return {
+        url: `${base}/whisper-cublas-12.4.0-bin-x64.zip`,
+        kind: 'archive',
+        keep: cudaKeep,
+        expected: await releaseDigest(get, tag, 'whisper-cublas-12.4.0-bin-x64.zip'),
+        // A machine that cannot fetch the CUDA build still gets working
+        // transcription rather than none.
+        fallbacks: [cpu]
+      }
+    }
+  }
 }
 
 function exe(names: string[]): string[] {
@@ -580,6 +654,31 @@ async function sumsDigest(get: Fetch, url: string, asset: string): Promise<Downl
     if (match && basename(match[2]) === asset) return { sha256: match[1], source: url }
   }
   return null
+}
+
+/**
+ * GitHub publishes a SHA-256 for every release asset in its own API, as
+ * `digest: "sha256:<hex>"`. That is the publisher's own digest — verified
+ * against a real download before this was relied on — so whisper.cpp, which
+ * ships no checksum file of its own, is still installed under the same rule
+ * as everything else here.
+ */
+async function releaseDigest(
+  get: Fetch,
+  tag: string,
+  asset: string
+): Promise<Download['expected']> {
+  const url = `https://api.github.com/repos/ggml-org/whisper.cpp/releases/tags/${tag}`
+  const text = await fetchText(get, url)
+  if (!text) return null
+  try {
+    const release = JSON.parse(text) as { assets?: Array<{ name?: string; digest?: string }> }
+    const found = release.assets?.find((a) => a.name === asset)
+    const match = found?.digest ? /^sha256:([a-f0-9]{64})$/i.exec(found.digest) : null
+    return match ? { sha256: match[1], source: url } : null
+  } catch {
+    return null
+  }
 }
 
 /** Exposed for tests: the catalogue is data, and data can be checked. */

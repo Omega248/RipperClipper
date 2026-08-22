@@ -20,7 +20,7 @@ import type { Logger } from './logger.js'
  */
 
 /** Areas the editor is allowed to clear. Everything else is report-only. */
-const CLEARABLE = new Set(['temp', 'media-cache', 'thumbnails', 'waveforms', 'scenes', 'previews'])
+const CLEARABLE = new Set(['temp', 'media-cache', 'thumbnails', 'waveforms', 'scenes', 'previews', 'models'])
 
 export interface StorageAreaSpec {
   id: string

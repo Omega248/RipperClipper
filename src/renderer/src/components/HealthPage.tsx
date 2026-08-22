@@ -7,6 +7,7 @@ import type { EventOverlapReply, StorageReport } from '@shared/ipc'
 import { coverageLabel } from '@shared/eventStreams'
 import { useStore } from '../store.js'
 import { povLabel } from './PovBar.js'
+import TranscribePanel from './TranscribePanel.js'
 import { message, title } from './QualityPanel.js'
 import {
   Badge,
@@ -164,6 +165,8 @@ export default function HealthPage({
         </ul>
         {project.sources.length === 0 && <p className="hint">No POVs loaded yet.</p>}
       </Section>
+      <TranscribePanel />
+
 
       <Section
         title="What did I miss?"

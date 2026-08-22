@@ -3733,3 +3733,28 @@ button.health-row:hover {
   font: inherit;
   text-align: left;
 }
+
+/* ---- local transcription ---- */
+
+.transcribe-controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 10px 0 4px;
+}
+
+.transcribe-list .health-row {
+  grid-template-columns: minmax(0, 1fr) auto minmax(140px, 220px) auto;
+}
+
+.transcribe-progress {
+  display: grid;
+  gap: 3px;
+  min-width: 140px;
+}
+
+.transcribe-progress .mono {
+  font-size: 10px;
+  color: var(--text-dim);
+}
