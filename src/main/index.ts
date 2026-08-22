@@ -24,11 +24,6 @@ import { AdapterRegistry } from './platforms/registry.js'
 import { SourceService } from './services/sources.js'
 import { StreamerService } from './services/streamers.js'
 import { DiscoveryService } from './services/discovery.js'
-import { TranscriptService } from './services/transcripts.js'
-import { WhisperModelService } from './services/whisperModels.js'
-import { TranscribeService } from './media/transcribe.js'
-import { setWhisperAcceleration } from './services/deps.js'
-import { StorageService } from './services/storage.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
 import { UpdateService } from './services/updater.js'
@@ -59,7 +54,6 @@ import type {
   TimelineExportRequest
 } from '../shared/ipc.js'
 import type { AppSettings, PlatformId, ProjectFile, VodSource } from '../shared/types.js'
-import type { WhisperModelId } from '../shared/transcription.js'
 import { startLocalServer, setLocalFileResolver, setWatermarkDir } from './localServer.js'
 import type { LocalServer } from './localServer.js'
 
@@ -70,7 +64,7 @@ const __dirname_ = dirname(fileURLToPath(import.meta.url))
  * defaults to a folder named after `app.name` — which Electron reads from
  * package.json — so renaming that field would have silently pointed every
  * existing install at an empty new folder: projects, saved streamers,
- * installed tools (ffmpeg, yt-dlp, whisper), cached watermarks, all of it,
+ * installed tools (ffmpeg, yt-dlp), cached watermarks, all of it,
  * apparently gone. Pinning the name keeps the on-disk folder exactly where
  * it already is; nothing about the rename touches user data.
  */
@@ -122,81 +116,6 @@ const registry = new AdapterRegistry()
 const sources = new SourceService(log, registry, resolver)
 const streamers = new StreamerService(log, resolver, stateDir)
 const discovery = new DiscoveryService(log, streamers, resolver)
-const whisperModels = new WhisperModelService(log, join(userData, 'models'))
-/**
- * Storage areas, resolved lazily so they follow the settings the editor has
- * actually chosen (cache and temp are both configurable) rather than the
- * defaults captured at startup. Projects and exports are listed so the total
- * is honest, but never marked clearable — they are the only things here that
- * cannot be rebuilt.
- */
-const storage = new StorageService(log, () => [
-  {
-    id: 'temp',
-    label: 'Temporary working files',
-    consequence: 'Nothing — these are the scratch files of finished or abandoned exports.',
-    path: tempRoot,
-    clearable: true
-  },
-  {
-    id: 'media-cache',
-    label: 'Downloaded media segments',
-    consequence: 'Clips you re-export will download their segments again.',
-    path: cache.dir,
-    clearable: true
-  },
-  {
-    id: 'previews',
-    label: 'Playable previews',
-    consequence: 'Ranges made playable for sources the player cannot decode are rebuilt on demand.',
-    path: join(userData, 'cache', 'previews'),
-    clearable: true
-  },
-  {
-    id: 'thumbnails',
-    label: 'Filmstrips and thumbnails',
-    consequence: 'Timeline filmstrips and clip thumbnails are regenerated as you scroll.',
-    path: thumbCache.dir,
-    clearable: true
-  },
-  {
-    id: 'waveforms',
-    label: 'Waveforms',
-    consequence: 'Audio waveforms are recomputed when a clip is next opened.',
-    path: waveCache.dir,
-    clearable: true
-  },
-  {
-    id: 'scenes',
-    label: 'Scene detection',
-    consequence: 'Detected cuts are found again the next time you snap a mark.',
-    path: sceneCache.dir,
-    clearable: true
-  },
-  {
-    id: 'models',
-    label: 'Speech models',
-    consequence: 'Local transcription needs one; clearing means downloading it again.',
-    path: whisperModels.directory,
-    clearable: true
-  },
-  {
-    id: 'transcripts',
-    label: 'Transcripts',
-    // Not clearable: an hours-long transcription is work, not a cache, and
-    // nothing can regenerate it except doing it all again.
-    consequence: 'Cannot be cleared here — remove a transcript from its POV instead.',
-    path: join(userData, 'transcripts'),
-    clearable: false
-  },
-  {
-    id: 'projects',
-    label: 'Projects and their backups',
-    consequence: 'Cannot be cleared here — these are your own files.',
-    path: defaultProjectsDir,
-    clearable: false
-  }
-])
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
@@ -208,17 +127,6 @@ const queue = new ExportQueue(log, exporter, join(tempRoot, 'jobs'))
 const peaks = new AudioPeaksService(log, ffmpeg, fetcher)
 const scenes = new SceneDetectionService(log, ffmpeg, fetcher)
 const thumbs = new ThumbnailService(log, ffmpeg, fetcher)
-const transcribe = new TranscribeService(log, ffmpeg, fetcher)
-// Transcripts live outside the cache: a six-hour transcription is not
-// something to reclaim automatically when the disk gets tight.
-const transcripts = new TranscriptService(
-  log,
-  resolver,
-  join(userData, 'transcripts'),
-  transcribe,
-  whisperModels,
-  tempRoot
-)
 // Filmstrips and waveforms survive a restart, keyed by source + range, so
 // the Editor never re-runs ffmpeg for a clip it has already drawn once.
 const thumbCache = new CacheManager(log, join(userData, 'cache', 'thumbnails'), 300 * 1024 * 1024)
@@ -276,18 +184,6 @@ async function detectEnvironment(): Promise<EnvInfo> {
     }),
     resolver.detect(s.advanced.ytDlpPath, bin)
   ])
-
-  /*
-   * Which whisper build to offer, decided from hardware rather than guessed.
-   *
-   * FFmpeg's encoder probe is already a real test of this machine's NVIDIA
-   * stack — `h264_nvenc` being usable means a working driver and a supported
-   * card — so it doubles as the CUDA signal and costs nothing extra. Measured
-   * on an RTX 5070 Ti: 5.5x the CPU speed on the large model. Without that
-   * signal the CPU build is installed instead, which is 9MB rather than
-   * 671MB and, on small models, was actually the faster of the two.
-   */
-  setWhisperAcceleration(ffmpegInfo.hwEncoders.some((e) => e.includes('nvenc')))
 
   return {
     ffmpeg: ffmpegInfo,
@@ -871,47 +767,8 @@ function registerIpc(): void {
   )
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
   handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
-  handle(IPC.transcriptsFor, (sources: VodSource[]) => transcripts.forSources(sources))
-  handle(IPC.whisperModels, () => whisperModels.status())
-  handle(IPC.whisperModelInstall, (id: WhisperModelId) =>
-    whisperModels.install(id, (progress) => mainWindow?.webContents.send(IPC.evtDeps, progress))
-  )
-  handle(IPC.whisperModelRemove, (id: WhisperModelId) => whisperModels.remove(id))
 
-  /**
-   * A whole-VOD transcription. Long-running by nature — hours of audio — so
-   * progress is pushed as an event and the promise settles only at the end.
-   */
-  handle(
-    IPC.transcribeStart,
-    async (req: {
-      source: VodSource
-      model: WhisperModelId
-      language: string
-      useVad: boolean
-    }) => {
-      // Formats are needed to pick the audio-only stream, and a POV loaded
-      // before this feature existed will not have been probed yet.
-      const source = req.source.formatsInspected
-        ? req.source
-        : {
-            ...req.source,
-            formats: await sources.inspectFormats(req.source),
-            formatsInspected: true
-          }
-      return transcripts.transcribeSource(source, {
-        model: req.model,
-        language: req.language,
-        useVad: req.useVad,
-        onProgress: (progress) => mainWindow?.webContents.send(IPC.transcribeProgress, progress)
-      })
-    }
-  )
-  handle(IPC.transcribeCancel, (sourceId: string) => transcripts.cancel(sourceId))
-  handle(IPC.transcriptForget, (sourceId: string) => transcripts.forget(sourceId))
 
-  handle(IPC.storageReport, () => storage.report())
-  handle(IPC.storageClear, (areaId: string) => storage.clear(areaId))
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))
   handle(IPC.streamersSetFavorite, (id: string, favorite: boolean) => streamers.setFavorite(id, favorite))
   handle(IPC.streamersRestore, (streamer: SavedStreamer) => streamers.restore(streamer))

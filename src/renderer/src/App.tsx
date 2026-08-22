@@ -33,9 +33,7 @@ import WatermarkEditor from './components/WatermarkEditor.js'
 import WatermarkOverlay from './components/WatermarkOverlay.js'
 import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
-import EventPage from './components/EventPage.js'
 import EventSearch from './components/EventSearch.js'
-import HealthPage from './components/HealthPage.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
@@ -874,6 +872,29 @@ export default function App(): JSX.Element {
     }
   }
 
+  /**
+   * Write the project out as one portable file: the clips, sync, edits and
+   * watermarks, with the VODs referenced by URL rather than copied.
+   */
+  const exportPackage = async (): Promise<void> => {
+    const state = useStore.getState()
+    if (!state.project) return
+    try {
+      const result = await window.api.packageExport({
+        project: state.project,
+        options: { includeExportPaths: true }
+      })
+      if (!result) return // cancelled
+      state.toast({
+        kind: 'success',
+        title: 'Package exported',
+        message: `${result.clips} clip${result.clips === 1 ? '' : 's'} and ${result.povs} POV${result.povs === 1 ? '' : 's'}. The VODs are referenced, not copied.`
+      })
+    } catch (err) {
+      state.toast({ kind: 'error', title: title(err, 'Could not export package'), message: message(err) })
+    }
+  }
+
   const saveProject = async (as: boolean): Promise<void> => {
     const state = useStore.getState()
     if (!state.project) return
@@ -1061,6 +1082,15 @@ export default function App(): JSX.Element {
               onSelect: () => void saveProject(true)
             },
             {
+              // Its only entry point used to be the Event page; kept here so
+              // removing that page did not quietly remove packaging with it.
+              id: 'package',
+              label: 'Export package…',
+              icon: 'download',
+              disabled: !store.project,
+              onSelect: () => void exportPackage()
+            },
+            {
               id: 'recover',
               label: 'Recover autosave',
               icon: 'refresh',
@@ -1107,10 +1137,8 @@ export default function App(): JSX.Element {
           {(
             [
               ['video', 'Video'],
-              ['event', 'Event'],
               ...(EditorPage ? ([['editor', 'Editor']] as const) : []),
               ['properties', 'Properties'],
-              ['health', 'Health'],
               ['export', 'Export']
             ] as const
           ).map(([id, label]) => (
@@ -1293,8 +1321,6 @@ export default function App(): JSX.Element {
           />
         </Suspense>
       )}
-      {page === 'event' && <EventPage onLoadVod={loadVod} />}
-      {page === 'health' && <HealthPage onLoadVod={loadVod} />}
       {page === 'properties' && (
         <div className="page">
           <PropertiesPage />

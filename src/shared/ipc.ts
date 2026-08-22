@@ -1,8 +1,6 @@
 import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './watermark.js'
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
-import type { Transcript } from './transcript.js'
-import type { TranscribeProgress, WhisperModelId } from './transcription.js'
 import type { ProjectPackage } from './packaging.js'
 import type {
   AppSettings,
@@ -82,7 +80,7 @@ export interface FilmstripReply {
 }
 
 /** External programs Ripper Clipper can install for itself. */
-export type ToolId = 'ffmpeg' | 'ytdlp' | 'whisper'
+export type ToolId = 'ffmpeg' | 'ytdlp'
 
 export interface ToolStatus {
   id: ToolId
@@ -245,34 +243,6 @@ export interface EventDiscoveryReply {
   notes: string[]
 }
 
-/** A speech model as the Setup panel sees it. */
-export interface WhisperModelStatus {
-  id: WhisperModelId
-  label: string
-  purpose: string
-  approxBytes: number
-  installed: boolean
-  sizeBytes: number
-  path: string | null
-}
-
-/** One measurable area of disk (§17). */
-export interface StorageArea {
-  id: string
-  label: string
-  /** What is actually lost by clearing it — never just "cache". */
-  consequence: string
-  path: string
-  sizeBytes: number
-  /** False for anything that cannot be rebuilt: projects, exports. */
-  clearable: boolean
-}
-
-export interface StorageReport {
-  areas: StorageArea[]
-  totalBytes: number
-}
-
 /** One past broadcast in the streamer picker. */
 export interface StreamerVod {
   url: string
@@ -321,16 +291,6 @@ export const IPC = {
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   discoverEvent: 'discovery:event',
-  transcriptsFor: 'transcripts:for-sources',
-  storageReport: 'storage:report',
-  storageClear: 'storage:clear',
-  transcribeStart: 'transcribe:start',
-  transcribeCancel: 'transcribe:cancel',
-  transcribeProgress: 'transcribe:progress',
-  transcriptForget: 'transcribe:forget',
-  whisperModels: 'whisper:models',
-  whisperModelInstall: 'whisper:model-install',
-  whisperModelRemove: 'whisper:model-remove',
   packageExport: 'package:export',
   packageImport: 'package:import',
   streamersSetGroups: 'streamers:set-groups',
@@ -590,35 +550,6 @@ export interface RendererApi {
    * it could not sweep — see main/services/discovery.ts.
    */
   discoverEvent(req: EventDiscoveryRequest): Promise<EventDiscoveryReply>
-  /**
-   * Transcripts for these POVs, fetched on first use and cached. POVs whose
-   * platform publishes no captions are simply absent from the reply — see
-   * main/services/transcripts.ts for why that is a fact, not a failure.
-   */
-  transcriptsFor(sources: VodSource[]): Promise<Transcript[]>
-  /** Disk used per area (§17). */
-  storageReport(): Promise<StorageReport>
-  /** Empties one clearable area. Protected areas are refused in the main process. */
-  storageClear(areaId: string): Promise<StorageReport>
-  /**
-   * Transcribe a POV locally with whisper.cpp. Long-running: progress arrives
-   * on `onTranscribeProgress`, and the promise resolves with the transcript.
-   */
-  transcribeStart(req: {
-    source: VodSource
-    model: WhisperModelId
-    language: string
-    useVad: boolean
-  }): Promise<Transcript>
-  /** Stops an in-flight transcription. Whatever was done is discarded. */
-  transcribeCancel(sourceId: string): Promise<boolean>
-  onTranscribeProgress(handler: (progress: TranscribeProgress) => void): () => void
-  /** Deletes a stored transcript so it can be made again. */
-  transcriptForget(sourceId: string): Promise<void>
-  /** Speech models: what is downloaded, and how big. */
-  whisperModelStatus(): Promise<WhisperModelStatus[]>
-  whisperModelInstall(id: WhisperModelId): Promise<WhisperModelStatus[]>
-  whisperModelRemove(id: WhisperModelId): Promise<WhisperModelStatus[]>
   /** Writes a portable package (§20). Null when the editor cancels the save dialog. */
   packageExport(req: {
     project: ProjectFile

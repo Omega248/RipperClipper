@@ -89,33 +89,6 @@ describe('searching the event', () => {
     expect(searchEvent({ project: p }, '')).toEqual([])
   })
 
-  it('ranks a clip name above a transcript line containing the same word', () => {
-    const results = searchEvent(
-      {
-        project: p,
-        transcript: [
-          { sourceId: 'pov_a', startSeconds: 5, endSeconds: 7, text: 'police', eventTimeSeconds: 105 }
-        ]
-      },
-      'police'
-    )
-    // A word buried in speech is a real match but rarely the one meant.
-    expect(results[0].kind).not.toBe('transcript')
-  })
-
-  it('caps each kind so a chatty transcript cannot bury the clips', () => {
-    const many = Array.from({ length: 50 }, (_, i) => ({
-      sourceId: 'pov_a',
-      startSeconds: i,
-      endSeconds: i + 1,
-      text: 'police again',
-      eventTimeSeconds: 100 + i
-    }))
-    const results = searchEvent({ project: p, transcript: many }, 'police', 5)
-    expect(results.filter((r) => r.kind === 'transcript')).toHaveLength(5)
-    expect(results.some((r) => r.kind === 'clip')).toBe(true)
-  })
-
   it('carries the real-world time so a result can be jumped to', () => {
     const moment = searchEvent({ project: p }, 'police arrive').find((r) => r.kind === 'moment')
     expect(moment?.eventTimeSeconds).toBe(150)

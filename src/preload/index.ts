@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc.js'
 import type { InstallProgress, RendererApi, ToastEvent, ToolId, UpdateStatus } from '../shared/ipc.js'
 import type { ExportJob, SerializedAppError } from '../shared/types.js'
-import type { TranscribeProgress } from '../shared/transcription.js'
 
 /**
  * The only surface the renderer can reach. No filesystem, child-process or
@@ -85,20 +84,6 @@ const api: RendererApi = {
   streamerVods: (id) => invoke(IPC.streamersVods, id),
   setStreamerWatermark: (id, watermark) => invoke(IPC.streamersWatermark, id, watermark),
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
-  transcriptsFor: (sources) => invoke(IPC.transcriptsFor, sources),
-  storageReport: () => invoke(IPC.storageReport),
-  transcribeStart: (req) => invoke(IPC.transcribeStart, req),
-  transcribeCancel: (sourceId) => invoke(IPC.transcribeCancel, sourceId),
-  onTranscribeProgress: (cb) => {
-    const listener = (_e: unknown, progress: TranscribeProgress): void => cb(progress)
-    ipcRenderer.on(IPC.transcribeProgress, listener)
-    return () => ipcRenderer.removeListener(IPC.transcribeProgress, listener)
-  },
-  transcriptForget: (sourceId) => invoke(IPC.transcriptForget, sourceId),
-  whisperModelStatus: () => invoke(IPC.whisperModels),
-  whisperModelInstall: (id) => invoke(IPC.whisperModelInstall, id),
-  whisperModelRemove: (id) => invoke(IPC.whisperModelRemove, id),
-  storageClear: (areaId) => invoke(IPC.storageClear, areaId),
   packageExport: (req) => invoke(IPC.packageExport, req),
   packageImport: () => invoke(IPC.packageImport),
   discoverEvent: (req) => invoke(IPC.discoverEvent, req),

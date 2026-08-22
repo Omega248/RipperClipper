@@ -1,5 +1,3 @@
-import { readFile, readdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { Errors, serializeError } from '../../shared/errors.js'
 import type { MediaProtocol, ResolverInfo, StreamInfo } from '../../shared/types.js'
 import { run, runChecked } from '../services/process.js'
@@ -131,66 +129,6 @@ export class ResolverService {
       return JSON.parse(result.stdout) as RawInfo
     } catch (err) {
       throw Errors.resolverFailed(`unparseable JSON from yt-dlp: ${String(err)}`)
-    }
-  }
-
-  /**
-   * A VOD's captions as WebVTT, or null when it publishes none.
-   *
-   * Auto-captions are accepted as readily as authored ones: for a live
-   * broadcast an automatic transcript is the *only* transcript, and an
-   * approximate record of what was said is exactly what searching dialogue
-   * needs. `--skip-download` means nothing but the caption track is fetched.
-   *
-   * Returns null rather than throwing for the ordinary case of "this platform
-   * has no captions" — Twitch and Kick never do — because that is not a
-   * failure, and a caller sweeping every POV must not be derailed by it.
-   */
-  async captions(
-    url: string,
-    opts: { signal?: AbortSignal; language?: string; outputDir: string }
-  ): Promise<string | null> {
-    const bin = this.require()
-    const language = opts.language ?? 'en'
-    const stem = join(opts.outputDir, 'captions')
-    const args = [
-      '--write-subs',
-      '--write-auto-subs',
-      '--sub-langs',
-      // The bare tag plus any regional variant: YouTube publishes "en-orig"
-      // and "en-US" as often as a plain "en".
-      `${language}.*,${language}`,
-      '--sub-format',
-      'vtt',
-      '--skip-download',
-      '--no-warnings',
-      '--no-playlist',
-      '--no-progress',
-      '--ignore-config',
-      '-o',
-      `${stem}.%(ext)s`,
-      '--',
-      url
-    ]
-
-    const result = await run(bin, args, { signal: opts.signal, idleTimeoutMs: 120_000 })
-    if (result.aborted) throw Errors.cancelled()
-
-    // yt-dlp names the file by the language it actually found, which may be a
-    // regional variant of what was asked for, so the directory is scanned
-    // rather than a filename being assumed.
-    let names: string[]
-    try {
-      names = await readdir(opts.outputDir)
-    } catch {
-      return null
-    }
-    const vtt = names.find((n) => n.endsWith('.vtt'))
-    if (!vtt) return null
-    try {
-      return await readFile(join(opts.outputDir, vtt), 'utf8')
-    } catch {
-      return null
     }
   }
 

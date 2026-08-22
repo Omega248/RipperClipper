@@ -74,7 +74,7 @@ import type { WatermarkConfig } from '@shared/watermark'
 import type { EnvInfo, InstallProgress, ToastEvent, UpdateStatus } from '@shared/ipc'
 
 /** The three workspaces inside a clip. The multi-track editor lives inside 'video', as a timeline mode. */
-export type WorkspacePage = 'video' | 'event' | 'editor' | 'properties' | 'health' | 'export'
+export type WorkspacePage = 'video' | 'editor' | 'properties' | 'export'
 
 export interface Toast extends ToastEvent {
   id: string

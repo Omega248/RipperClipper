@@ -1,24 +1,23 @@
 /**
  * One search box over the whole event (§10).
  *
- * Everything the editor can name — clips, POVs, streamers, collections,
- * moments, transcript lines — is searchable from one place, because "find the
+ * Everything the editor can name — clips, POVs, streamers, collections and
+ * moments — is searchable from one place, because "find the
  * bank thing" should not require first deciding whether the bank thing is a
  * clip, a collection or something someone said.
  *
  * Matching is forgiving on purpose. An exact substring always wins, but a
  * query whose words all appear somewhere still matches, and a short query
- * still matches a prefix — so "pol chase" finds "Police Chase" and a typo'd
+ * still matches a prefix — so "pol chase" finds "Police Chase" and a typo’d
  * half-word does not silently return nothing. It is deliberately *not* a
  * fuzzy edit-distance match: those return confident nonsense for short
  * queries, which is worse than an honest empty result.
  */
 
 import type { ClipSegment, EventInfo, ProjectFile, VodSource } from './types.js'
-import type { TranscriptHit } from './transcript.js'
 import { workflowOf } from './collections.js'
 
-export type SearchKind = 'clip' | 'pov' | 'collection' | 'moment' | 'transcript'
+export type SearchKind = 'clip' | 'pov' | 'collection' | 'moment'
 
 export interface SearchResult {
   kind: SearchKind
@@ -31,7 +30,7 @@ export interface SearchResult {
   score: number
   /** Real-world epoch seconds, when this result has a place on the event clock. */
   eventTimeSeconds?: number
-  /** For transcript results: the POV the line was spoken in. */
+  /** The POV a result belongs to, when it has one. */
   sourceId?: string
 }
 
@@ -47,7 +46,7 @@ function normalise(value: string): string {
  * How well `text` answers `query`, 0 (no match) to 1 (exact).
  *
  * Scores rather than a boolean so a query matching a clip's name outranks the
- * same query matching a word buried in a transcript line — both are real
+ * same query matching a word buried in a longer title — both are real
  * matches, but one is far more likely to be what was meant.
  */
 export function matchScore(text: string, query: string): number {
@@ -89,8 +88,6 @@ function bestScore(query: string, ...texts: Array<string | undefined | null>): n
 
 export interface SearchInput {
   project: ProjectFile
-  /** Transcript lines already loaded, if any — see shared/transcript.ts. */
-  transcript?: TranscriptHit[]
   /** How a POV should be named in results. Supplied by the caller so this stays UI-free. */
   povName?: (source: VodSource) => string
 }
@@ -98,9 +95,8 @@ export interface SearchInput {
 /**
  * Search everything in one pass.
  *
- * Results are capped per kind rather than globally, so a transcript with
- * thousands of matching lines can never crowd out the one clip that was
- * actually being looked for.
+ * Results are capped per kind rather than globally, so one noisy kind can
+ * never crowd out the one clip that was actually being looked for.
  */
 export function searchEvent(input: SearchInput, query: string, limitPerKind = 8): SearchResult[] {
   const trimmed = query.trim()
@@ -166,20 +162,6 @@ export function searchEvent(input: SearchInput, query: string, limitPerKind = 8)
       subtitle: 'Moment',
       score: bestScore(trimmed, moment.name, moment.note),
       eventTimeSeconds: moment.timeSeconds
-    })
-  }
-
-  for (const hit of input.transcript ?? []) {
-    push({
-      kind: 'transcript',
-      id: `${hit.sourceId}:${hit.startSeconds}`,
-      title: hit.text,
-      subtitle: 'Said on camera',
-      // Transcript lines are scored a touch below everything else: a word
-      // buried in speech is a real match but rarely the one meant.
-      score: bestScore(trimmed, hit.text) * 0.85,
-      eventTimeSeconds: hit.eventTimeSeconds ?? undefined,
-      sourceId: hit.sourceId
     })
   }
 
