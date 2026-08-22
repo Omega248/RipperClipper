@@ -111,6 +111,8 @@ const api: RendererApi = {
   linkStreamerPerson: (idA, idB) => invoke(IPC.streamersLinkPerson, idA, idB),
   unlinkStreamerPerson: (id) => invoke(IPC.streamersUnlinkPerson, id),
   streamerVodQuality: (urls) => invoke(IPC.streamersVodQuality, urls),
+  refreshStreamerProfile: (id, force) => invoke(IPC.streamersRefreshProfile, id, force),
+  refreshStreamerProfiles: () => invoke(IPC.streamersRefreshProfiles),
 
   listStreamerGroups: () => invoke(IPC.streamerGroupsList),
   createStreamerGroup: (name, icon, color) => invoke(IPC.streamerGroupsCreate, name, icon, color),

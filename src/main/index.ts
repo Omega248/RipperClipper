@@ -936,6 +936,10 @@ function registerIpc(): void {
   handle(IPC.streamersLinkPerson, (idA: string, idB: string) => streamers.linkPerson(idA, idB))
   handle(IPC.streamersUnlinkPerson, (id: string) => streamers.unlinkPerson(id))
   handle(IPC.streamersVodQuality, (urls: string[]) => streamers.probeQuality(urls))
+  handle(IPC.streamersRefreshProfile, (id: string, force?: boolean) =>
+    streamers.refreshProfile(id, force)
+  )
+  handle(IPC.streamersRefreshProfiles, () => streamers.refreshStaleProfiles())
 
   handle(IPC.streamerGroupsList, () => streamers.listGroups())
   handle(IPC.streamerGroupsCreate, (name: string, icon?: string, color?: string) =>

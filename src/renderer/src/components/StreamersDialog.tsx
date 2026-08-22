@@ -9,6 +9,7 @@ import { isStreamerGroupIconName } from '@shared/streamerGroupIcons'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
 import StreamerGroupsDialog from './StreamerGroupsDialog.js'
+import StreamerAvatar from './StreamerAvatar.js'
 import {
   Badge,
   Button,
@@ -37,6 +38,17 @@ function timeAgo(ms: number): string {
 }
 
 /** A group's own colour and icon, badge-shaped — Badge itself only knows the fixed status tones. */
+/** 1_101_849 → "1.1M". Follower counts are scale, not arithmetic. */
+function compactCount(value: number): string {
+  if (value < 1000) return String(value)
+  if (value < 1_000_000) {
+    const k = value / 1000
+    return `${k < 10 ? k.toFixed(1) : Math.round(k)}K`
+  }
+  const m = value / 1_000_000
+  return `${m < 10 ? m.toFixed(1) : Math.round(m)}M`
+}
+
 function GroupChip({ group }: { group: StreamerGroup }): JSX.Element {
   return (
     <span
@@ -145,6 +157,16 @@ export default function StreamersDialog({
           (b.lastUsedAt ?? b.addedAt).localeCompare(a.lastUsedAt ?? a.addedAt)
         )[0]
         if (recent) void loadVods(recent.id)
+
+        // Names and pictures fill themselves in behind the list, so it is
+        // usable immediately and simply gets better a moment later. Stale
+        // ones only — a profile is refreshed about once a week, not on
+        // every open — and a failure is silent, since a missing picture is
+        // decoration rather than a problem worth interrupting anyone for.
+        void window.api
+          .refreshStreamerProfiles()
+          .then(setStreamers)
+          .catch(() => undefined)
       } catch (err) {
         setListError(`${title(err, 'Could not read your streamers')}: ${message(err)}`)
       }
@@ -670,72 +692,109 @@ export default function StreamersDialog({
                 className={`streamer${selected === streamer.id ? ' active' : ''}`}
               >
                 <button className="streamer-pick" onClick={() => void loadVods(streamer.id)}>
-                  <span className="streamer-name">{streamer.displayName}</span>
-                  <span className="streamer-meta">
-                    <span className="tag">{streamer.platform}</span>
-                    {streamer.lastUsedAt && (
-                      <span>used {new Date(streamer.lastUsedAt).toLocaleDateString()}</span>
-                    )}
-                    {(streamer.groupIds ?? []).map((id) => {
-                      const group = groups.find((g) => g.id === id)
-                      return group ? <GroupChip key={id} group={group} /> : null
-                    })}
-                    {linkedWith.map((other) => (
-                      <span key={other.id} className="ui-badge person-link-chip">
-                        <Icon name="link" size={12} />
-                        same as {other.displayName}
+                  <StreamerAvatar
+                    name={streamer.displayName}
+                    platform={streamer.platform}
+                    url={streamer.avatarUrl}
+                  />
+                  <span className="streamer-identity">
+                    <span className="streamer-name-row">
+                      <span className="streamer-name ellipsis">{streamer.displayName}</span>
+                      {streamer.favorite && (
+                        <Icon name="star" size={12} className="streamer-pinned" />
+                      )}
+                    </span>
+                    <span className="streamer-sub ellipsis">
+                      <span className={`streamer-platform is-${streamer.platform}`}>
+                        {streamer.platform}
                       </span>
-                    ))}
-                    {/* §13 — what this channel has actually been worked on,
-                        which is what makes the library a profile rather than
-                        a list of names. */}
-                    {(streamer.participation?.length ?? 0) > 0 && (
-                      <span
-                        title={streamer
-                          .participation!.map((p) => p.eventName || p.projectName)
-                          .join(', ')}
-                      >
-                        {streamer.participation!.length} event
-                        {streamer.participation!.length === 1 ? '' : 's'}
+                      {/* The handle is only worth showing when it is not
+                          simply the display name in lower case — otherwise it
+                          is the same word twice. */}
+                      {streamer.handle.toLowerCase() !== streamer.displayName.toLowerCase() && (
+                        <span className="streamer-handle">@{streamer.handle}</span>
+                      )}
+                      {typeof streamer.followers === 'number' && (
+                        <span>{compactCount(streamer.followers)} followers</span>
+                      )}
+                    </span>
+                    {(streamer.groupIds?.length ||
+                      linkedWith.length > 0 ||
+                      streamer.participation?.length) && (
+                      <span className="streamer-chips">
+                        {(streamer.groupIds ?? []).map((id) => {
+                          const group = groups.find((g) => g.id === id)
+                          return group ? <GroupChip key={id} group={group} /> : null
+                        })}
+                        {linkedWith.map((other) => (
+                          <span key={other.id} className="ui-badge person-link-chip">
+                            <Icon name="link" size={11} />
+                            {other.displayName}
+                          </span>
+                        ))}
+                        {/* What this channel has actually been worked on is
+                            what makes the library a profile rather than a
+                            list of names. */}
+                        {(streamer.participation?.length ?? 0) > 0 && (
+                          <span
+                            className="streamer-events"
+                            title={streamer
+                              .participation!.map((p) => p.eventName || p.projectName)
+                              .join(', ')}
+                          >
+                            {streamer.participation!.length} event
+                            {streamer.participation!.length === 1 ? '' : 's'}
+                          </span>
+                        )}
                       </span>
                     )}
                   </span>
                 </button>
-                <IconButton
-                  icon="star"
-                  size="compact"
-                  selected={streamer.favorite}
-                  label={streamer.favorite ? `Unpin ${streamer.displayName}` : `Pin ${streamer.displayName} to the top`}
-                  onClick={() => void toggleFavorite(streamer)}
-                />
-                <IconButton
-                  icon="copy"
-                  size="compact"
-                  label={`Copy ${streamer.displayName}'s channel link`}
-                  onClick={() => copyChannelLink(streamer)}
-                />
-                <IconButton
-                  icon="link"
-                  size="compact"
-                  label={
-                    linkedWith.length > 0
-                      ? `Manage same-person links for ${streamer.displayName}`
-                      : `Link ${streamer.displayName} to another platform as the same person`
-                  }
-                  onClick={() => setLinkPickerFor((prev) => (prev === streamer.id ? null : streamer.id))}
-                />
-                <IconButton
-                  icon="users"
-                  size="compact"
-                  label={`Edit groups for ${streamer.displayName}`}
-                  onClick={() => setGroupsDialog(streamer)}
-                />
-                <IconButton
-                  icon="trash"
-                  size="compact"
-                  label={`Remove ${streamer.displayName}`}
-                  onClick={() => void remove(streamer)}
-                />
+
+                {/* Five always-visible icons per row was most of what made
+                    this list feel cluttered; they appear on hover or focus
+                    instead, and stay reachable by keyboard either way. */}
+                <span className="streamer-actions">
+                  <IconButton
+                    icon="star"
+                    size="compact"
+                    selected={streamer.favorite}
+                    label={
+                      streamer.favorite
+                        ? `Unpin ${streamer.displayName}`
+                        : `Pin ${streamer.displayName} to the top`
+                    }
+                    onClick={() => void toggleFavorite(streamer)}
+                  />
+                  <IconButton
+                    icon="copy"
+                    size="compact"
+                    label={`Copy ${streamer.displayName}'s channel link`}
+                    onClick={() => copyChannelLink(streamer)}
+                  />
+                  <IconButton
+                    icon="link"
+                    size="compact"
+                    label={
+                      linkedWith.length > 0
+                        ? `Manage same-person links for ${streamer.displayName}`
+                        : `Link ${streamer.displayName} to another platform as the same person`
+                    }
+                    onClick={() => setLinkPickerFor((prev) => (prev === streamer.id ? null : streamer.id))}
+                  />
+                  <IconButton
+                    icon="users"
+                    size="compact"
+                    label={`Edit groups for ${streamer.displayName}`}
+                    onClick={() => setGroupsDialog(streamer)}
+                  />
+                  <IconButton
+                    icon="trash"
+                    size="compact"
+                    label={`Remove ${streamer.displayName}`}
+                    onClick={() => void remove(streamer)}
+                  />
+                </span>
                 {linkPickerFor === streamer.id && (
                   <div className="link-picker">
                     {linkedWith.map((other) => (

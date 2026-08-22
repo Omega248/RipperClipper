@@ -19,6 +19,7 @@ import { atomicWriteJson } from './projects.js'
 import type { Logger } from './logger.js'
 import type { ResolverService } from '../media/resolver.js'
 import { ConcurrencyLimiter } from './limiter.js'
+import { fetchProfile, profileIsStale } from './streamerProfile.js'
 
 /**
  * The streamer library: channels the editor works with regularly, and their
@@ -158,6 +159,8 @@ export class StreamerService {
   private groupsCache: StreamerGroup[] | null = null
   /** Bounds concurrent yt-dlp full resolves — used for date enrichment and quality probing alike. */
   private readonly resolveLimiter = new ConcurrencyLimiter(4)
+  /** Profile lookups hit three different platforms; keep it gentle. */
+  private readonly profileLimiter = new ConcurrencyLimiter(3)
 
   constructor(
     private readonly log: Logger,
@@ -497,6 +500,60 @@ export class StreamerService {
       })),
       unreachable
     }
+  }
+
+  /**
+   * Fill in a channel's real name, picture and size.
+   *
+   * Fails soft on purpose: a profile is decoration, so a channel whose
+   * platform will not answer keeps its handle and stays perfectly usable.
+   * `profileFetchedAt` is written either way, so an unreachable channel is
+   * not retried on every render.
+   */
+  async refreshProfile(id: string, force = false): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    const streamer = current.find((s) => s.id === id)
+    if (!streamer) return current
+    if (!force && !profileIsStale(streamer.profileFetchedAt)) return current
+
+    const profile = await this.profileLimiter.run(() =>
+      fetchProfile(streamer.platform, streamer.handle, this.resolver)
+    )
+    const fetchedAt = new Date().toISOString()
+
+    return this.write(
+      current.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              profileFetchedAt: fetchedAt,
+              ...(profile
+                ? {
+                    displayName: profile.displayName,
+                    avatarUrl: profile.avatarUrl ?? s.avatarUrl,
+                    followers: profile.followers ?? s.followers
+                  }
+                : {})
+            }
+          : s
+      )
+    )
+  }
+
+  /**
+   * Bring every stale profile up to date, oldest first.
+   *
+   * Bounded and quiet: this runs when the library is opened, so it must not
+   * stampede three platforms at once or complain when one of them is down.
+   */
+  async refreshStaleProfiles(): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    const stale = current.filter((s) => profileIsStale(s.profileFetchedAt))
+    if (stale.length === 0) return current
+    for (const streamer of stale) {
+      await this.refreshProfile(streamer.id).catch(() => undefined)
+    }
+    return this.list()
   }
 
   async touch(id: string): Promise<SavedStreamer[]> {

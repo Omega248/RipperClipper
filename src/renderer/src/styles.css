@@ -1857,20 +1857,54 @@ table.matrix tr.dim td {
   color: var(--accent-text);
 }
 
+/* ---- streamer cards ----
+   One row per channel, led by the face rather than the slug: on a list of ten
+   POVs a picture is recognised far faster than "kkrackd". The row is a card so
+   the selected one can be stated with a border and a lit edge rather than only
+   a background tint, which was easy to miss. */
+
 .streamer {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
+  border: 1px solid transparent;
   border-radius: var(--radius-medium);
+  transition:
+    background var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease);
+}
+
+.streamer:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-subtle);
+}
+
+.streamer.active {
+  background: var(--surface-selected);
+  border-color: var(--accent);
+}
+
+/* A lit left edge, so the selected channel stays obvious once the list is
+   scrolled and the tint is the only other cue. */
+.streamer.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
 }
 
 .streamer-pick {
-  display: grid;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex: 1;
-  gap: 1px;
-  padding: var(--space-2) var(--space-3);
+  min-width: 0;
+  padding: 8px 10px;
   border: 0;
   border-radius: var(--radius-medium);
   background: transparent;
@@ -1879,27 +1913,125 @@ table.matrix tr.dim td {
   cursor: pointer;
 }
 
-.streamer-pick:hover {
-  background: var(--surface-hover);
+.streamer-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  user-select: none;
 }
 
-.streamer.active .streamer-pick {
-  background: var(--surface-selected);
-  color: var(--text-primary);
+.streamer-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.streamer-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.streamer-name-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
 }
 
 .streamer-name {
   color: var(--text-primary);
   font: var(--type-label);
+  font-weight: 600;
 }
 
-.streamer-meta {
+.streamer-pinned {
+  color: var(--warning, #d9a441);
+  flex: none;
+}
+
+.streamer-sub {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1);
+  gap: 6px;
+  min-width: 0;
   color: var(--text-tertiary);
   font: var(--type-caption);
+}
+
+/* The platform reads as a word in its own brand colour rather than another
+   grey pill — it is the single most useful thing to spot down the list. */
+.streamer-platform {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.streamer-platform.is-twitch {
+  color: #a970ff;
+}
+
+.streamer-platform.is-kick {
+  color: #53fc18;
+}
+
+.streamer-platform.is-youtube {
+  color: #ff4d6a;
+}
+
+.streamer-handle {
+  opacity: 0.85;
+}
+
+.streamer-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.streamer-events {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+/* Five permanently-visible icon buttons per row were most of what made this
+   list feel busy. They fade in on hover; keyboard focus brings them back, so
+   they are never actually unreachable. */
+.streamer-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 4px;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.streamer:hover .streamer-actions,
+.streamer:focus-within .streamer-actions,
+.streamer.active .streamer-actions {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streamer,
+  .streamer-actions {
+    transition: none;
+  }
 }
 
 .streamer-vods {
@@ -2299,13 +2431,15 @@ canvas.wave.draggable {
 
 .streamers-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  /* The list needs room for a face, a name and a platform on one line;
+     at 300px those wrapped and the column looked permanently cramped. */
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
   gap: var(--space-5);
-  min-height: 420px;
+  min-height: 460px;
 }
 
 .streamers-layout .streamer-list {
-  gap: var(--space-2);
+  gap: 3px;
 }
 
 .add-streamer {

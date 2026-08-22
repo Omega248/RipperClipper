@@ -157,6 +157,18 @@ export interface SavedStreamer {
   /** Kept at the top of the streamer list regardless of last-used date. */
   favorite?: boolean
   /**
+   * The channel's own picture, straight from the platform's CDN.
+   *
+   * Stored as a URL rather than copied: these are small, public, built to be
+   * hotlinked, and a stale one costs nothing worse than a broken image — far
+   * cheaper than keeping a mirror of every avatar in sync.
+   */
+  avatarUrl?: string
+  /** Follower count when the platform reported one. Indicative, not live. */
+  followers?: number
+  /** When the profile above was last fetched, so it can be refreshed on age. */
+  profileFetchedAt?: string
+  /**
    * Events this channel has supplied a POV for (§13). Recorded when a POV of
    * theirs is loaded, so the library answers "who have I actually worked
    * with, and on what" rather than just listing channels. Capped and
@@ -324,6 +336,8 @@ export const IPC = {
   streamersLinkPerson: 'streamers:link-person',
   streamersUnlinkPerson: 'streamers:unlink-person',
   streamersVodQuality: 'streamers:vod-quality',
+  streamersRefreshProfile: 'streamers:refresh-profile',
+  streamersRefreshProfiles: 'streamers:refresh-profiles',
 
   // streamer groups
   streamerGroupsList: 'streamer-groups:list',
@@ -640,6 +654,10 @@ export interface RendererApi {
   unlinkStreamerPerson(id: string): Promise<SavedStreamer[]>
   /** Best resolution available for each VOD URL, null where it could not be determined. */
   streamerVodQuality(urls: string[]): Promise<Record<string, number | null>>
+  /** Fetch one channel's real name, picture and size from its platform. */
+  refreshStreamerProfile(id: string, force?: boolean): Promise<SavedStreamer[]>
+  /** Bring every profile older than a week up to date. Quiet and bounded. */
+  refreshStreamerProfiles(): Promise<SavedStreamer[]>
 
   listStreamerGroups(): Promise<StreamerGroup[]>
   createStreamerGroup(name: string, icon?: string, color?: string): Promise<StreamerGroup[]>
