@@ -3758,3 +3758,111 @@ button.health-row:hover {
   font-size: 10px;
   color: var(--text-dim);
 }
+
+/* ---- start from a link ---- */
+
+.discovery-link {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.discovery-link-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.discovery-link-row .ui-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- censor review ---- */
+
+.censor-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.censor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.censor-running {
+  display: grid;
+  gap: 4px;
+}
+
+.censor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+
+.censor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+}
+
+/* A handled word recedes but stays visible — it is still adjustable, and
+   hiding it would make the list look like it lost something. */
+.censor-row.is-handled {
+  border-color: var(--accent);
+  opacity: 0.8;
+}
+
+.censor-row-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.censor-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.censor-row-context {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.censor-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.censor-nudge {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  margin-right: 2px;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.censor-nudge .mono {
+  font-size: 10px;
+  color: var(--text-dim);
+  min-width: 38px;
+  text-align: center;
+}

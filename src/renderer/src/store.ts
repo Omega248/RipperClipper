@@ -22,7 +22,7 @@ import {
 } from '@shared/povMapping'
 import type { SyncAnchor } from '@shared/sync'
 import { DEFAULT_EXPORT_SETTINGS } from '@shared/defaults'
-import { prefetchClipMedia } from './media/prefetch.js'
+import { analyseClipPovs, prefetchClipMedia } from './media/prefetch.js'
 import {
   addItem as addTimelineItem,
   addMarker as addTimelineMarker,
@@ -553,6 +553,7 @@ export const useStore = create<Store>((set, get) => ({
         dirty: true
       })
       prefetchClipMedia(created, s.project.sources)
+    analyseClipPovs(created, s.project.sources)
       return created.id
     } catch (err) {
       s.toast({
@@ -1136,6 +1137,7 @@ export const useStore = create<Store>((set, get) => ({
         dirty: true
       })
       prefetchClipMedia(created, s.project.sources)
+    analyseClipPovs(created, s.project.sources)
     } catch (err) {
       s.toast({
         kind: 'error',

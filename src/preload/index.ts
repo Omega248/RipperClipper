@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc.js'
 import type { InstallProgress, RendererApi, ToastEvent, ToolId, UpdateStatus } from '../shared/ipc.js'
 import type { ExportJob, SerializedAppError } from '../shared/types.js'
+import type { AnalysisProgress } from '../shared/transcription.js'
 
 /**
  * The only surface the renderer can reach. No filesystem, child-process or
@@ -64,6 +65,7 @@ const api: RendererApi = {
   sceneChanges: (req) => invoke(IPC.sceneChanges, req),
   filmstrip: (req) => invoke(IPC.filmstrip, req),
   importWatermarkImage: () => invoke(IPC.watermarkImport),
+  addWatermarkPng: (dataUrl, name) => invoke(IPC.watermarkAddPng, dataUrl, name),
   listWatermarkImages: () => invoke(IPC.watermarkList),
   removeWatermarkImage: (id: string) => invoke(IPC.watermarkRemove, id),
 
@@ -86,6 +88,22 @@ const api: RendererApi = {
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
   packageExport: (req) => invoke(IPC.packageExport, req),
   packageImport: () => invoke(IPC.packageImport),
+  clipAnalyse: (req) => invoke(IPC.clipAnalyse, req),
+  clipAnalysisCancel: (clipId) => invoke(IPC.clipAnalysisCancel, clipId),
+  onClipAnalysisProgress: (cb: (progress: AnalysisProgress) => void) => {
+    const listener = (_e: unknown, progress: AnalysisProgress): void => cb(progress)
+    ipcRenderer.on(IPC.clipAnalysisProgress, listener)
+    return () => ipcRenderer.removeListener(IPC.clipAnalysisProgress, listener)
+  },
+  clipHits: (req) => invoke(IPC.clipHits, req),
+  clipTranscript: (clipId, sourceId) => invoke(IPC.clipTranscript, clipId, sourceId),
+  clipAnalysisForget: (clipId, sourceIds) => invoke(IPC.clipAnalysisForget, clipId, sourceIds),
+  censorReady: () => invoke(IPC.censorReady),
+  whisperModelStatus: () => invoke(IPC.whisperModels),
+  whisperModelInstall: (id) => invoke(IPC.whisperModelInstall, id),
+  whisperModelRemove: (id) => invoke(IPC.whisperModelRemove, id),
+  resolveMoment: (url) => invoke(IPC.resolveMoment, url),
+  archiveRange: (req) => invoke(IPC.archiveRange, req),
   discoverEvent: (req) => invoke(IPC.discoverEvent, req),
   setStreamerGroups: (id, groupIds) => invoke(IPC.streamersSetGroups, id, groupIds),
   setStreamerFavorite: (id, favorite) => invoke(IPC.streamersSetFavorite, id, favorite),

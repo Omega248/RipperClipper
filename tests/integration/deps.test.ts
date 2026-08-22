@@ -195,7 +195,9 @@ describe.runIf(process.platform === 'linux')('installing from an archive', () =>
 describe('what the app needs', () => {
   it('knows every tool, what it is for and whether this platform can have it', async () => {
     const status = await new ToolInstaller(log, dir, localFetch).status()
-    expect(status.map((t) => t.id).sort()).toEqual(['ffmpeg', 'ytdlp'])
+    expect(status.map((t) => t.id).sort()).toEqual(['ffmpeg', 'whisper', 'ytdlp'])
+    // Whisper is optional: everything except the censor suggestions works
+    // without it, and it is the only one the app can run entirely without.
     expect(status.filter((t) => t.required).map((t) => t.id).sort()).toEqual(['ffmpeg', 'ytdlp'])
     for (const tool of status) {
       expect(tool.purpose.length).toBeGreaterThan(10)

@@ -17,7 +17,8 @@ import { Button, Checkbox, Notice, ProgressBar, Spinner, StatusBadge } from '../
 /** What each component is *for*, in the editor's terms. */
 const PURPOSE: Record<ToolId, { name: string; what: string }> = {
   ffmpeg: { name: 'Video engine', what: 'Cuts and writes the finished files' },
-  ytdlp: { name: 'VOD reader', what: 'Turns a link into something playable' }
+  ytdlp: { name: 'VOD reader', what: 'Turns a link into something playable' },
+  whisper: { name: 'Speech engine', what: 'Reads clips aloud to find swearing — optional' }
 }
 
 export default function SetupPanel(): JSX.Element {

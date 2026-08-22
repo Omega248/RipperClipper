@@ -6,6 +6,7 @@ import type { CacheStats } from '@shared/ipc'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
 import SetupPanel from './SetupPanel.js'
+import SpeechModels from './SpeechModels.js'
 import {
   Button,
   Checkbox,
@@ -320,7 +321,12 @@ export default function SettingsDialog({ onClose }: Props): JSX.Element {
             </section>
           )}
 
-          {category === 'setup' && <SetupPanel />}
+          {category === 'setup' && (
+            <>
+              <SetupPanel />
+              <SpeechModels />
+            </>
+          )}
 
           {category === 'diagnostics' && (
             <section className="panel-section">

@@ -4,6 +4,7 @@ import type { DiscoveredStream, DiscoverySort } from '@shared/discovery'
 import type { EventDiscoveryReply } from '@shared/ipc'
 import type { PlatformId } from '@shared/types'
 import { parseLocalDateTime } from '@shared/vodSearch'
+import { atRisk, estimateExpiry } from '@shared/expiry'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
 import {
@@ -35,6 +36,13 @@ import {
  * there, which is worse than admitting the gap.
  */
 
+/** A datetime-local input value for an epoch-seconds instant, in local time. */
+function toLocalInput(seconds: number): string {
+  const d = new Date(seconds * 1000)
+  const pad = (n: number): string => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 /** Default event length when the editor gives a start but no end. */
 const DEFAULT_WINDOW_MINUTES = 30
 
@@ -52,6 +60,9 @@ export default function EventDiscovery({
   const [endText, setEndText] = useState('')
   const [name, setName] = useState('')
   const [includeSearch, setIncludeSearch] = useState(true)
+  const [linkText, setLinkText] = useState('')
+  const [resolvingLink, setResolvingLink] = useState(false)
+  const [archiving, setArchiving] = useState<string | null>(null)
 
   const [running, setRunning] = useState(false)
   const [reply, setReply] = useState<EventDiscoveryReply | null>(null)
@@ -70,6 +81,67 @@ export default function EventDiscovery({
       sort
     )
   }, [reply, platform, minCoverage, search, sort])
+
+  /**
+   * Turn a clip or timestamped VOD link into the event window.
+   *
+   * This is the fast way in: you almost never know the wall-clock time a
+   * scene happened, but you usually have somebody's clip of it, and that
+   * link already carries the answer.
+   */
+  const resolveLink = async (): Promise<void> => {
+    if (linkText.trim() === '') return
+    setResolvingLink(true)
+    try {
+      const result = await window.api.resolveMoment(linkText.trim())
+      if (result.momentSeconds === null) {
+        toast({ kind: 'error', title: 'Could not place that link', message: result.note })
+        return
+      }
+      // Centre a window on the moment rather than starting at it: a scene
+      // builds up before the part somebody chose to clip.
+      setStartText(toLocalInput(result.momentSeconds - 5 * 60))
+      setEndText(toLocalInput(result.momentSeconds + 10 * 60))
+      toast({ kind: 'success', title: 'Found the moment', message: result.note })
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not read that link'), message: message(err) })
+    } finally {
+      setResolvingLink(false)
+    }
+  }
+
+  /**
+   * Keep a POV's scene range on disk before the platform deletes it.
+   *
+   * The POV is not added to the project: archiving is about not losing the
+   * footage, which is a separate decision from committing to use it.
+   */
+  const archive = async (stream: DiscoveredStream): Promise<void> => {
+    const startMs = parseLocalDateTime(startText)
+    if (startMs === null || !stream.vod.publishedAt) return
+    const started = Date.parse(stream.vod.publishedAt) / 1000
+    const from = Math.max(0, startMs / 1000 - started)
+    const endMs = parseLocalDateTime(endText)
+    const to = endMs !== null ? endMs / 1000 - started : from + DEFAULT_WINDOW_MINUTES * 60
+    setArchiving(stream.vod.url)
+    try {
+      const source = await window.api.resolveSource(stream.vod.url)
+      const result = await window.api.archiveRange({
+        source,
+        startSeconds: from,
+        endSeconds: Math.max(from + 10, to)
+      })
+      toast({
+        kind: 'success',
+        title: `Kept ${stream.streamerName}`,
+        message: `${(result.bytes / 1e6).toFixed(0)}MB saved locally. It stays even if the VOD is deleted.`
+      })
+    } catch (err) {
+      toast({ kind: 'error', title: title(err, 'Could not archive it'), message: message(err) })
+    } finally {
+      setArchiving(null)
+    }
+  }
 
   const run = async (): Promise<void> => {
     const startMs = parseLocalDateTime(startText)
@@ -179,6 +251,32 @@ export default function EventDiscovery({
         </>
       }
     >
+      <div className="discovery-link">
+        <Field
+          label="Start from a link"
+          hint="Paste a clip, highlight or timestamped VOD link and the time fills itself in."
+        >
+          <div className="discovery-link-row">
+            <Input
+              value={linkText}
+              placeholder="https://clips.twitch.tv/... or a VOD link with ?t="
+              onChange={(e) => setLinkText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void resolveLink()
+              }}
+            />
+            <Button
+              icon="target"
+              loading={resolvingLink}
+              disabled={linkText.trim() === ''}
+              onClick={() => void resolveLink()}
+            >
+              Find the moment
+            </Button>
+          </div>
+        </Field>
+      </div>
+
       <div className="discovery-query">
         <Field label="Event start">
           <Input
@@ -301,6 +399,8 @@ export default function EventDiscovery({
                     checked={selected.has(stream.vod.url)}
                     busy={loading === stream.vod.url}
                     onToggle={() => toggle(stream.vod.url)}
+                    onArchive={() => void archive(stream)}
+                    archiving={archiving === stream.vod.url}
                   />
                 ))}
               </ul>
@@ -317,16 +417,23 @@ function DiscoveryRow({
   stream,
   checked,
   busy,
-  onToggle
+  onToggle,
+  onArchive,
+  archiving
 }: {
   stream: DiscoveredStream
   checked: boolean
   busy: boolean
   onToggle: () => void
+  onArchive: () => void
+  archiving: boolean
 }): JSX.Element {
   const alreadyLoaded = stream.source === 'loaded'
   const pct = Math.round(stream.coverage.fraction * 100)
   const started = stream.vod.publishedAt ? new Date(stream.vod.publishedAt) : null
+  // Twitch drops VODs after a fortnight, so what is about to vanish is the
+  // most useful thing on the row after coverage itself.
+  const expiry = estimateExpiry(stream.platform, stream.vod.publishedAt)
 
   return (
     <li className={`discovery-row${alreadyLoaded ? ' is-loaded' : ''}`}>
@@ -342,6 +449,11 @@ function DiscoveryRow({
           <Badge>{stream.platform}</Badge>
           {alreadyLoaded && <Badge tone="success">Already loaded</Badge>}
           {!stream.coverage.certain && <Badge tone="warning">Length unknown</Badge>}
+          {/* What is about to vanish is the most useful thing on this row
+              after coverage: Twitch drops VODs after a fortnight. */}
+          {atRisk(expiry) && (
+            <Badge tone={expiry.urgency === 'gone' ? 'danger' : 'warning'}>{expiry.label}</Badge>
+          )}
         </div>
         <div className="discovery-row-title ellipsis" title={stream.vod.title}>
           {stream.vod.title}
@@ -357,11 +469,19 @@ function DiscoveryRow({
           </div>
         )}
       </div>
-      <div className="discovery-row-coverage" aria-hidden="true">
-        <div className="discovery-coverage-bar">
+      <div className="discovery-row-coverage">
+        <div className="discovery-coverage-bar" aria-hidden="true">
           <span style={{ width: `${pct}%` }} />
         </div>
         <span className="mono">{pct}%</span>
+        <Button
+          size="compact"
+          loading={archiving}
+          title={`Fetch and keep this range on disk now. ${expiry.note}`}
+          onClick={onArchive}
+        >
+          Keep
+        </Button>
       </div>
     </li>
   )

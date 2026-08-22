@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, shell, Tray } from 'electron'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname } from 'node:path'
@@ -24,6 +24,11 @@ import { AdapterRegistry } from './platforms/registry.js'
 import { SourceService } from './services/sources.js'
 import { StreamerService } from './services/streamers.js'
 import { DiscoveryService } from './services/discovery.js'
+import { WhisperModelService } from './services/whisperModels.js'
+import { ClipAnalysisService } from './media/clipAnalysis.js'
+import { CensorService } from './services/censor.js'
+import { parseClipLink, momentOf } from '../shared/clipLink.js'
+import { windowExtension } from './media/exporter.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
 import { UpdateService } from './services/updater.js'
@@ -54,6 +59,7 @@ import type {
   TimelineExportRequest
 } from '../shared/ipc.js'
 import type { AppSettings, PlatformId, ProjectFile, VodSource } from '../shared/types.js'
+import type { WhisperModelId } from '../shared/transcription.js'
 import { startLocalServer, setLocalFileResolver, setWatermarkDir } from './localServer.js'
 import type { LocalServer } from './localServer.js'
 
@@ -116,6 +122,7 @@ const registry = new AdapterRegistry()
 const sources = new SourceService(log, registry, resolver)
 const streamers = new StreamerService(log, resolver, stateDir)
 const discovery = new DiscoveryService(log, streamers, resolver)
+const whisperModels = new WhisperModelService(log, join(userData, 'models'))
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
@@ -127,6 +134,19 @@ const queue = new ExportQueue(log, exporter, join(tempRoot, 'jobs'))
 const peaks = new AudioPeaksService(log, ffmpeg, fetcher)
 const scenes = new SceneDetectionService(log, ffmpeg, fetcher)
 const thumbs = new ThumbnailService(log, ffmpeg, fetcher)
+const clipAnalysis = new ClipAnalysisService(log, ffmpeg, fetcher)
+/*
+ * Readings live outside the media cache: a transcript is cheap to store and
+ * expensive to make, so it must never be reclaimed when the disk gets tight.
+ */
+const censor = new CensorService(
+  log,
+  clipAnalysis,
+  whisperModels,
+  join(userData, 'readings'),
+  tempRoot,
+  (progress) => mainWindow?.webContents.send(IPC.clipAnalysisProgress, progress)
+)
 // Filmstrips and waveforms survive a restart, keyed by source + range, so
 // the Editor never re-runs ffmpeg for a clip it has already drawn once.
 const thumbCache = new CacheManager(log, join(userData, 'cache', 'thumbnails'), 300 * 1024 * 1024)
@@ -767,6 +787,147 @@ function registerIpc(): void {
   )
   handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
   handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
+
+  handle(IPC.censorReady, () => censor.ready())
+  handle(IPC.whisperModels, () => whisperModels.status())
+  handle(IPC.whisperModelInstall, (id: WhisperModelId) =>
+    whisperModels.install(id, (progress) => mainWindow?.webContents.send(IPC.evtDeps, progress))
+  )
+  handle(IPC.whisperModelRemove, (id: WhisperModelId) => whisperModels.remove(id))
+
+  /**
+   * Read one POV of a clip. Started automatically by the renderer whenever a
+   * clip gains a POV, so it has to be cheap to call repeatedly and quiet when
+   * it cannot run — background work has no business raising errors at anyone.
+   */
+  handle(
+    IPC.clipAnalyse,
+    async (req: { clipId: string; source: VodSource; startSeconds: number; endSeconds: number }) => {
+      const model = await whisperModels.bestInstalled()
+      if (!model) return false
+      // Formats are needed to pick the audio stream, and a POV loaded before
+      // this existed will not have been probed yet.
+      const source = req.source.formatsInspected
+        ? req.source
+        : {
+            ...req.source,
+            formats: await sources.inspectFormats(req.source),
+            formatsInspected: true
+          }
+      const result = await censor.analyseOne(
+        req.clipId,
+        source,
+        req.startSeconds,
+        req.endSeconds,
+        model
+      )
+      return result !== null
+    }
+  )
+  handle(IPC.clipAnalysisCancel, (clipId: string) => censor.cancel(clipId))
+  handle(IPC.clipHits, (req: { clipId: string; sourceIds: string[]; words?: string[] }) =>
+    censor.hitsFor(req.clipId, req.sourceIds, req.words)
+  )
+  handle(IPC.clipTranscript, (clipId: string, sourceId: string) =>
+    censor.transcriptFor(clipId, sourceId)
+  )
+  handle(IPC.clipAnalysisForget, (clipId: string, sourceIds: string[]) =>
+    censor.forget(clipId, sourceIds)
+  )
+
+  /**
+   * Turn a shared link into the real-world instant it points at.
+   *
+   * A clip names its parent broadcast and when it was taken; a VOD link
+   * carries its offset in the URL. Anything that cannot be placed on the
+   * clock comes back with a null moment and a reason, never a guess — a
+   * wrong time would quietly seed the search with the wrong POVs.
+   */
+  handle(IPC.resolveMoment, async (url: string) => {
+    const link = parseClipLink(url)
+    if (!link) {
+      return {
+        momentSeconds: null,
+        source: null,
+        offsetSeconds: null,
+        note: 'That is not a clip or VOD link this app recognises.'
+      }
+    }
+
+    const raw = await resolver.resolve(link.url)
+    const startedAt =
+      typeof raw.timestamp === 'number'
+        ? new Date(raw.timestamp * 1000).toISOString()
+        : typeof raw.release_timestamp === 'number'
+          ? new Date(raw.release_timestamp * 1000).toISOString()
+          : null
+
+    if (link.kind === 'clip') {
+      // A clip's own timestamp IS the moment — it was cut from the broadcast
+      // at that instant, so there is no offset arithmetic to do.
+      const at = startedAt ? Date.parse(startedAt) / 1000 : null
+      return {
+        momentSeconds: at,
+        source: null,
+        offsetSeconds: null,
+        note: at
+          ? 'Found the moment this clip was taken from.'
+          : 'That clip did not report when it was taken.'
+      }
+    }
+
+    const source = await sources.resolve(link.url).catch(() => null)
+    const offset = link.offsetSeconds ?? null
+    const moment = momentOf(startedAt ?? source?.createdAt ?? null, offset)
+    return {
+      momentSeconds: moment,
+      source,
+      offsetSeconds: offset,
+      note: moment
+        ? 'Found the moment this link points at.'
+        : offset === null
+          ? 'That link has no timestamp in it — add one, or paste a clip link.'
+          : 'That broadcast did not report when it started.'
+    }
+  })
+
+  /**
+   * Keep a POV's range on disk before the platform deletes it.
+   *
+   * Twitch drops VODs after a couple of weeks, so for an older scene this is
+   * the difference between editing later and losing the footage entirely.
+   */
+  handle(
+    IPC.archiveRange,
+    async (req: { source: VodSource; startSeconds: number; endSeconds: number }) => {
+      const source = req.source.formatsInspected
+        ? req.source
+        : {
+            ...req.source,
+            formats: await sources.inspectFormats(req.source),
+            formatsInspected: true
+          }
+      const streams = selectStreams(source.formats ?? [], settings.current.export.quality)
+      const stream = streams.video ?? streams.audio
+      if (!stream) {
+        throw Errors.qualityUnavailable('any stream', 'nothing downloadable for this POV')
+      }
+
+      const dir = join(userData, 'archive')
+      await mkdir(dir, { recursive: true })
+      const name = `${source.id}-${Math.round(req.startSeconds)}-${Math.round(req.endSeconds)}`
+      const window = await fetcher.fetchWindow({
+        stream,
+        startSeconds: req.startSeconds,
+        endSeconds: req.endSeconds,
+        destination: join(dir, `${name}.${windowExtension(stream.container)}`),
+        onProgress: () => undefined
+      })
+      const info = await stat(window.file)
+      log.info('archive', 'Kept a range locally', { sourceId: source.id, bytes: info.size })
+      return { path: window.file, bytes: info.size }
+    }
+  )
 
 
   handle(IPC.streamersSetGroups, (id: string, groupIds: string[]) => streamers.setGroups(id, groupIds))

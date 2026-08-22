@@ -157,6 +157,47 @@ const CATALOGUE: Record<
       }
     }
   },
+
+  whisper: {
+    label: 'Whisper',
+    purpose: 'Reading out loud what was said in a clip, so swearing can be found.',
+    /*
+     * Optional: everything except the censor suggestions works without it.
+     *
+     * This is the plain CPU build — 9MB. Only clip *ranges* are ever
+     * transcribed, which is seconds of work, so the 671MB CUDA runtime would
+     * buy nothing: its setup cost alone exceeds the whole job.
+     */
+    required: false,
+    approxBytes: 9 * 1024 * 1024,
+    provides: () => exe(['whisper-cli']),
+    plan: async (get) => {
+      if (target !== 'win32' && target !== 'linux') return null
+      // Pinned rather than `latest`: whisper.cpp's asset names change between
+      // builds, and a URL discovered at runtime is what the rules above forbid.
+      const tag = 'b4938'
+      const base = `https://github.com/ggml-org/whisper.cpp/releases/download/${tag}`
+
+      if (target === 'linux') {
+        return {
+          url: `${base}/whisper-bin-ubuntu-x64.tar.gz`,
+          kind: 'archive',
+          keep: ['whisper-cli', 'libwhisper*', 'libggml*'],
+          expected: null
+        }
+      }
+
+      const asset = 'whisper-bin-x64.zip'
+      return {
+        url: `${base}/${asset}`,
+        kind: 'archive',
+        // whisper.dll plus the ggml backends — one per CPU generation, picked
+        // by the runtime itself at load time.
+        keep: ['whisper-cli.exe', 'whisper.dll', 'ggml*.dll'],
+        expected: await releaseDigest(get, tag, asset)
+      }
+    }
+  }
 }
 
 function exe(names: string[]): string[] {
@@ -579,6 +620,27 @@ async function sumsDigest(get: Fetch, url: string, asset: string): Promise<Downl
     if (match && basename(match[2]) === asset) return { sha256: match[1], source: url }
   }
   return null
+}
+
+/**
+ * GitHub publishes a SHA-256 for every release asset in its own API, as
+ * `digest: "sha256:<hex>"`. That is the publisher's own digest — checked
+ * against a real download before this was relied on — so whisper.cpp, which
+ * ships no checksum file of its own, still installs under the same
+ * verify-or-fail rule as everything else here.
+ */
+async function releaseDigest(get: Fetch, tag: string, asset: string): Promise<Download['expected']> {
+  const url = `https://api.github.com/repos/ggml-org/whisper.cpp/releases/tags/${tag}`
+  const text = await fetchText(get, url)
+  if (!text) return null
+  try {
+    const release = JSON.parse(text) as { assets?: Array<{ name?: string; digest?: string }> }
+    const found = release.assets?.find((a) => a.name === asset)
+    const match = found?.digest ? /^sha256:([a-f0-9]{64})$/i.exec(found.digest) : null
+    return match ? { sha256: match[1], source: url } : null
+  } catch {
+    return null
+  }
 }
 
 /** Exposed for tests: the catalogue is data, and data can be checked. */

@@ -40,6 +40,7 @@ import { playerBus } from './player/controller.js'
 import { usePlayerViewport } from './player/usePlayerViewport.js'
 import { useShortcuts } from './hooks/useShortcuts.js'
 import { usePanelSize } from './usePanelSize.js'
+import { ensureNameBadge } from './media/ensureNameBadge.js'
 import {
   Button,
   ConfirmDialog,
@@ -586,6 +587,11 @@ export default function App(): JSX.Element {
         return
       }
       store.addSource(resolved)
+      // A multi-POV export has to say whose angle each file is, and the app
+      // already knows the answer — so the badge is drawn rather than asked
+      // for. Only when this POV has no watermark of its own: an editor who
+      // set a real logo must never have it replaced by a generated one.
+      void ensureNameBadge(resolved)
       store.toast({
         kind: 'success',
         title: 'VOD loaded',

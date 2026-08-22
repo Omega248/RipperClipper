@@ -5,6 +5,7 @@ import { useActiveClips, useActiveSource, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
 import PovMatrix from './PovMatrix.js'
 import ClipThumbnails from './ClipThumbnails.js'
+import CensorPanel from './CensorPanel.js'
 import { sortedCollections, unusedPovIds, workflowOf } from '@shared/collections'
 import { CLIP_WORKFLOW_LABEL, CLIP_WORKFLOW_ORDER } from '@shared/types'
 import type { ClipWorkflowState } from '@shared/types'
@@ -232,6 +233,9 @@ export default function Properties(): JSX.Element {
             {/* §9 + §8 in one object: what the moment looks like from every
                 angle that has it, with the ones actually used marked. */}
             <ClipThumbnails clip={clip} />
+
+            {/* Read automatically in the background; this is the review. */}
+            <CensorPanel clip={clip} />
 
             {unusedPovIds(clip).length > 0 && (
               <Notice tone="info">

@@ -36,6 +36,30 @@ const inFlight = new Set<string>()
  * just means the Editor computes it lazily later, the same as before this
  * existed.
  */
+/**
+ * Reads every POV's cut of a clip in the background, so the censor list is
+ * already populated by the time anyone opens it.
+ *
+ * Fire-and-forget and deliberately silent: this was never asked for, so a
+ * POV that cannot be read must not interrupt anyone. The main process
+ * skips POVs already read and returns false when no model is installed,
+ * which is why this is safe to call on every clip change.
+ */
+export function analyseClipPovs(clip: ClipSegment, sources: VodSource[]): void {
+  for (const source of sources) {
+    const range = clipRangeInPov(clip, source)
+    if (range.coverage === 'none' || range.coverage === 'unknown') continue
+    void window.api
+      .clipAnalyse({
+        clipId: clip.id,
+        source,
+        startSeconds: range.localStart,
+        endSeconds: range.localEnd
+      })
+      .catch(() => undefined)
+  }
+}
+
 export function prefetchClipMedia(clip: ClipSegment, sources: VodSource[]): void {
   for (const source of sources) {
     const range = clipRangeInPov(clip, source)

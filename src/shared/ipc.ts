@@ -2,6 +2,8 @@ import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './water
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
 import type { ProjectPackage } from './packaging.js'
+import type { AnalysisProgress, ClipTranscript, WhisperModelId } from './transcription.js'
+import type { ProfanityHit } from './profanity.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
@@ -80,7 +82,7 @@ export interface FilmstripReply {
 }
 
 /** External programs Ripper Clipper can install for itself. */
-export type ToolId = 'ffmpeg' | 'ytdlp'
+export type ToolId = 'ffmpeg' | 'ytdlp' | 'whisper'
 
 export interface ToolStatus {
   id: ToolId
@@ -243,6 +245,17 @@ export interface EventDiscoveryReply {
   notes: string[]
 }
 
+/** A speech model as the Setup panel sees it. */
+export interface WhisperModelStatus {
+  id: WhisperModelId
+  label: string
+  purpose: string
+  approxBytes: number
+  installed: boolean
+  sizeBytes: number
+  path: string | null
+}
+
 /** One past broadcast in the streamer picker. */
 export interface StreamerVod {
   url: string
@@ -291,6 +304,18 @@ export const IPC = {
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   discoverEvent: 'discovery:event',
+  clipAnalyse: 'censor:analyse',
+  clipAnalysisCancel: 'censor:cancel',
+  clipAnalysisProgress: 'censor:progress',
+  clipHits: 'censor:hits',
+  clipTranscript: 'censor:transcript',
+  clipAnalysisForget: 'censor:forget',
+  censorReady: 'censor:ready',
+  whisperModels: 'whisper:models',
+  whisperModelInstall: 'whisper:model-install',
+  whisperModelRemove: 'whisper:model-remove',
+  resolveMoment: 'scene:resolve-moment',
+  archiveRange: 'scene:archive-range',
   packageExport: 'package:export',
   packageImport: 'package:import',
   streamersSetGroups: 'streamers:set-groups',
@@ -318,6 +343,7 @@ export const IPC = {
 
   // watermarks
   watermarkImport: 'watermark:import',
+  watermarkAddPng: 'watermark:add-png',
   watermarkList: 'watermark:list',
   watermarkRemove: 'watermark:remove',
 
@@ -525,6 +551,8 @@ export interface RendererApi {
 
   /** Copy an image into the app's watermark library. */
   importWatermarkImage(): Promise<WatermarkImage | null>
+  /** Store a PNG the renderer drew — used for the automatic POV name badges. */
+  addWatermarkPng(dataUrl: string, name: string): Promise<WatermarkImage>
   listWatermarkImages(): Promise<WatermarkImage[]>
   removeWatermarkImage(id: string): Promise<WatermarkImage[]>
 
@@ -550,6 +578,46 @@ export interface RendererApi {
    * it could not sweep — see main/services/discovery.ts.
    */
   discoverEvent(req: EventDiscoveryRequest): Promise<EventDiscoveryReply>
+
+  /**
+   * Read one POV's cut of a clip in the background. Resolves when that POV
+   * is done; progress for every POV arrives on `onClipAnalysisProgress`.
+   */
+  clipAnalyse(req: {
+    clipId: string
+    source: VodSource
+    startSeconds: number
+    endSeconds: number
+  }): Promise<boolean>
+  clipAnalysisCancel(clipId: string): Promise<void>
+  onClipAnalysisProgress(handler: (progress: AnalysisProgress) => void): () => void
+  /** Censor suggestions for a clip. The word list is applied fresh on every call. */
+  clipHits(req: { clipId: string; sourceIds: string[]; words?: string[] }): Promise<ProfanityHit[]>
+  clipTranscript(clipId: string, sourceId: string): Promise<ClipTranscript | null>
+  clipAnalysisForget(clipId: string, sourceIds: string[]): Promise<void>
+  /** Whether local reading is possible at all, and why not when it is not. */
+  censorReady(): Promise<{ available: boolean; reason: string | null }>
+
+  whisperModelStatus(): Promise<WhisperModelStatus[]>
+  whisperModelInstall(id: WhisperModelId): Promise<WhisperModelStatus[]>
+  whisperModelRemove(id: WhisperModelId): Promise<WhisperModelStatus[]>
+
+  /**
+   * Turn a shared clip/VOD link into the real-world instant it points at.
+   * `momentSeconds` is null when the platform did not say enough to place it.
+   */
+  resolveMoment(url: string): Promise<{
+    momentSeconds: number | null
+    source: VodSource | null
+    offsetSeconds: number | null
+    note: string
+  }>
+  /** Fetch and keep a POV's range locally, before the platform deletes it. */
+  archiveRange(req: {
+    source: VodSource
+    startSeconds: number
+    endSeconds: number
+  }): Promise<{ path: string; bytes: number }>
   /** Writes a portable package (§20). Null when the editor cancels the save dialog. */
   packageExport(req: {
     project: ProjectFile

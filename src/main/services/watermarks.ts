@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import { createId } from '../../shared/clips.js'
 import { Errors } from '../../shared/errors.js'
@@ -47,6 +47,38 @@ export class WatermarkLibrary {
 
   find(id: string): WatermarkImage | null {
     return this.items.find((i) => i.id === id) ?? null
+  }
+
+  /**
+   * Add a PNG the renderer drew, rather than a file the editor picked.
+   *
+   * This is how the automatic name badges are made: the renderer is Chromium,
+   * so it can rasterise text far better than anything available here, and the
+   * result then flows through exactly the same library, positioning and
+   * export path as an imported logo. Nothing downstream knows the difference.
+   */
+  async addPng(dataUrl: string, name: string): Promise<WatermarkImage> {
+    const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim())
+    if (!match) throw Errors.invalidRange('That is not a PNG this app can store.')
+
+    await mkdir(this.directory, { recursive: true })
+    const id = createId('wm')
+    const destination = join(this.directory, `${id}.png`)
+    await writeFile(destination, Buffer.from(match[1], 'base64'))
+
+    const size = await imageSize(destination)
+    const image: WatermarkImage = {
+      id,
+      name,
+      path: destination,
+      width: size?.width ?? 0,
+      height: size?.height ?? 0,
+      addedAt: new Date().toISOString()
+    }
+    this.items = [...this.items, image]
+    await this.persist()
+    this.log.info('watermark', 'Generated a name badge', { id, name, ...size })
+    return image
   }
 
   /** Copy a file the editor picked into the library. */
