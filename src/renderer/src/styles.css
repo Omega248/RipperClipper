@@ -4836,3 +4836,55 @@ button.health-row:hover {
     display: none;
   }
 }
+
+/* ==== markers lane ==== */
+
+.timeline-canvas-wrap {
+  position: relative;
+}
+
+/* Sits over the canvas rather than beside it, so a flag lines up with its own
+   diamond exactly. Pointer events are off on the lane itself — dragging the
+   timeline must still work through the gaps between flags. */
+.markers-lane {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 24px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.marker-flag {
+  position: absolute;
+  top: 0;
+  transform: translateX(-3px);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 19px;
+  max-width: 150px;
+  padding: 0 7px 0 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 10.5px;
+  cursor: pointer;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.marker-flag:hover {
+  filter: brightness(1.25);
+}
+
+.marker-pin {
+  width: 3px;
+  height: 11px;
+  border-radius: 1px;
+  flex: none;
+}
+
+.marker-label {
+  min-width: 0;
+}

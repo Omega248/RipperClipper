@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatDuration, formatTimecode, roundMs } from '@shared/time'
 import type { ClipSegment, Marker } from '@shared/types'
 import { useActiveClips, useActiveMarkers, useStore } from '../store.js'
+import MarkersLane from './MarkersLane.js'
 import { playerBus } from '../player/controller.js'
 import { Button, IconButton } from '../ui/index.js'
 
@@ -432,6 +433,14 @@ export default function Timeline(): JSX.Element {
         </Button>
       </div>
       <div className="timeline-canvas-wrap" ref={wrapRef}>
+        {/* Labelled flags over the canvas, sharing its view window so the two
+            can never disagree about where a moment is. */}
+        <MarkersLane
+          markers={markers}
+          viewStart={viewStart}
+          viewSpan={viewSpan}
+          onSeek={seekTo}
+        />
         <canvas
           ref={canvasRef}
           role="slider"
