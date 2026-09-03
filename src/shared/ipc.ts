@@ -3,7 +3,6 @@ import type { EditingProject } from './editingProject.js'
 import type { EditorCapabilities, EditorId } from './editorCapabilities.js'
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
-import type { ProjectPackage } from './packaging.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
@@ -785,7 +784,16 @@ export interface RendererApi {
     options: { clipIds?: string[]; includeExportPaths?: boolean; note?: string }
   }): Promise<{ path: string; clips: number; povs: number } | null>
   /** Reads a package. Null when cancelled; throws when the file is not a package. */
-  packageImport(): Promise<ProjectPackage | null>
+  /**
+   * Open a package. The project comes back validated and migrated exactly as
+   * a project file would, so the renderer can open it directly.
+   */
+  packageImport(): Promise<{
+    project: ProjectFile
+    createdAt: string
+    createdBy: string
+    note?: string
+  } | null>
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>

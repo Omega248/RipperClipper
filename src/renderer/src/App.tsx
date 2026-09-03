@@ -1291,6 +1291,42 @@ export default function App(): JSX.Element {
     }
   }
 
+  /**
+   * Open a package somebody sent.
+   *
+   * The other half of `exportPackage`, and it was missing: the IPC handler,
+   * the preload binding and `readPackage` all existed and were tested, but
+   * nothing in the interface called them. The entry point had been on the
+   * Event page, and when that page was removed only the export was moved to
+   * this menu — so the app could write a `.ripperpack` it could not open.
+   *
+   * It arrives as a project with no path of its own, which is the honest
+   * state: it is unsaved work until the person chooses where it lives.
+   */
+  const importPackage = async (): Promise<void> => {
+    const state = useStore.getState()
+    try {
+      const result = await window.api.packageImport()
+      if (!result) return // cancelled
+      store.setProject(result.project, null)
+      state.toast({
+        kind: 'success',
+        title: 'Package opened',
+        message: `${result.project.clips.length} clip${
+          result.project.clips.length === 1 ? '' : 's'
+        } and ${result.project.sources.length} POV${
+          result.project.sources.length === 1 ? '' : 's'
+        }. The VODs are referenced by URL — save the project to keep it.`
+      })
+    } catch (err) {
+      state.toast({
+        kind: 'error',
+        title: title(err, 'Could not open that package'),
+        message: message(err)
+      })
+    }
+  }
+
   const saveProject = async (as: boolean): Promise<void> => {
     const state = useStore.getState()
     if (!state.project) return
@@ -1465,6 +1501,14 @@ export default function App(): JSX.Element {
       icon: 'download',
       disabled: !store.project,
       onSelect: () => void exportPackage()
+    },
+    {
+      // The other half. Moving the export here left this behind, so a
+      // package could be written and never opened again.
+      id: 'package-open',
+      label: 'Open package…',
+      icon: 'folder',
+      onSelect: () => void importPackage()
     },
     {
       id: 'recover',

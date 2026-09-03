@@ -7,7 +7,7 @@ import { dirname, resolve, sep } from 'node:path'
 import { Logger } from './services/logger.js'
 import { SettingsStore } from './services/settings.js'
 import { CacheManager } from './services/cache.js'
-import { ProjectStore, PROJECT_EXTENSION, atomicWriteJson } from './services/projects.js'
+import { ProjectStore, PROJECT_EXTENSION, atomicWriteJson, normalizeProject } from './services/projects.js'
 import { PACKAGE_EXTENSION, buildPackage, readPackage } from '../shared/packaging.js'
 import type { PackageOptions } from '../shared/packaging.js'
 import type { EditingProject } from '../shared/editingProject.js'
@@ -1030,7 +1030,36 @@ function registerIpc(): void {
     }
     // readPackage refuses anything that is not actually a package, so an
     // unrelated JSON file can never arrive as an empty project.
-    return readPackage(parsed)
+    const pkg = readPackage(parsed)
+    /*
+     * Then the same validation a project file gets.
+     *
+     * `readPackage` is deliberately strict about the envelope and forgiving
+     * about the contents, so that a package written by an older build still
+     * opens. But forgiving had become unchecked: `clips` and `sources` were
+     * cast straight through, while the identical data arriving as a
+     * `.cookieclip` goes through `normalizeProject`, which drops what cannot
+     * work, fills what is merely missing, and migrates old schemas. A package
+     * is the *less* trustworthy of the two — it came from somebody else's
+     * machine — so it was the one entry point without the checks.
+     *
+     * Normalising here also gives the renderer a real ProjectFile rather than
+     * the package's narrower project shape, which is what it needs to open it.
+     */
+    const project = normalizeProject(
+      { ...pkg.project, name: pkg.project.name },
+      result.filePaths[0]
+    )
+    log.info('packaging', 'Imported a package', {
+      clips: project.clips.length,
+      povs: project.sources.length,
+      // What validation actually threw away, so a package that arrives
+      // half-empty is diagnosable rather than mysterious.
+      droppedClips: pkg.project.clips.length - project.clips.length,
+      droppedPovs: pkg.project.sources.length - project.sources.length,
+      createdBy: pkg.createdBy
+    })
+    return { project, createdAt: pkg.createdAt, createdBy: pkg.createdBy, note: pkg.note }
   })
 
   handle(IPC.projectOpen, async () => {
