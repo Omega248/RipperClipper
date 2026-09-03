@@ -136,10 +136,24 @@ export async function startLocalServer(
           res.writeHead(404, { 'content-type': 'text/plain' }).end('Not found')
           return
         }
-        // Range support, so the player can scrub inside the preview.
+        /*
+         * Range support, so the player can scrub inside the preview.
+         *
+         * Clamped to the file, because the numbers come off the wire: an end
+         * past EOF made `content-length` promise more bytes than the read
+         * stream could ever produce, and the response then sat open until the
+         * client gave up rather than finishing. A start past EOF, or a
+         * malformed pair that parses to NaN, did the same in the other
+         * direction.
+         */
         const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
-        const start = range && range[1] ? Number(range[1]) : 0
-        const end = range && range[2] ? Number(range[2]) : info.size - 1
+        const last = Math.max(0, info.size - 1)
+        const asNumber = (raw: string | undefined, fallback: number): number => {
+          const value = raw ? Number(raw) : fallback
+          return Number.isFinite(value) ? Math.min(Math.max(0, value), last) : fallback
+        }
+        const start = asNumber(range?.[1], 0)
+        const end = Math.max(start, asNumber(range?.[2], last))
         const headers = {
           'content-type': 'video/mp4',
           'accept-ranges': 'bytes',

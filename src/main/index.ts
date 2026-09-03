@@ -124,6 +124,11 @@ function toWindow(channel: string, ...args: unknown[]): void {
 /** Set once the renderer has confirmed it's fine to lose whatever isn't saved. */
 let allowClose = false
 let localServer: LocalServer | null = null
+/**
+ * The startup tool detection, so `envInfo` can wait for it instead of
+ * answering from an empty cache. Null until the app is ready.
+ */
+let startupDetection: Promise<unknown> | null = null
 let tray: Tray | null = null
 
 const userData = app.getPath('userData')
@@ -720,7 +725,13 @@ async function createWindow(): Promise<void> {
     }
   })
 
-  mainWindow.on('ready-to-show', () => mainWindow?.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+    // The one number that says whether the app starts quickly on a given
+    // machine. Everything before it is main-process work; anything slow
+    // after it is the renderer.
+    log.info('app', 'Window ready', { ms: Math.round(performance.now()) })
+  })
 
   // Every close path — the titlebar button, Alt+F4, the taskbar — ends up
   // here. The renderer gets one chance to check for unsaved work before the
@@ -922,7 +933,12 @@ async function withAudioPovStreams(req: EnqueueRequest): Promise<QueueClipInput[
 }
 
 function registerIpc(): void {
-  handle(IPC.envInfo, () => ({
+  handle(IPC.envInfo, async () => {
+    // See startupDetection: the first caller may arrive before the tool
+    // versions are known, and a wrong answer would show a setup prompt for
+    // tools that are installed.
+    await startupDetection
+    return {
     ffmpeg: ffmpeg.current(),
     resolver: resolver.current(),
     platform: process.platform,
@@ -930,7 +946,8 @@ function registerIpc(): void {
     defaultOutputDirectory: settings.current.outputDirectory,
     mediaProxyBase: localServer?.loopbackUrl ?? '',
     mediaProxyToken: mediaProxyToken()
-  }))
+    }
+  })
   handle(IPC.envRefresh, () => detectEnvironment(true))
 
   handle(IPC.settingsGet, () => settings.current)
@@ -1826,7 +1843,27 @@ if (!singleInstance) {
     await cache.prune()
     await thumbCache.ensure()
     await waveCache.ensure()
-    await detectEnvironment(true)
+
+    /*
+     * Detect the tools *beside* the window, not before it.
+     *
+     * `detectEnvironment(true)` spawns ffmpeg, ffprobe and yt-dlp to read
+     * their versions, and yt-dlp is a PyInstaller bundle that takes about
+     * 1.7s to answer on its own — measured on the development machine at
+     * roughly 3-4.5s for the set, every launch, with the window not yet
+     * created. That is dead time: nothing about drawing the window or loading
+     * the renderer bundle depends on knowing which ffmpeg is installed.
+     *
+     * Started here and awaited by `envInfo` instead, so it overlaps the two
+     * slowest parts of startup — creating the window and parsing the
+     * renderer — and the answer is normally ready before anything asks. It is
+     * still awaited rather than raced, so the interface never sees a
+     * momentary "FFmpeg is missing" for tools that are in fact installed.
+     */
+    startupDetection = detectEnvironment(true).catch((err) => {
+      log.error('deps', 'Startup tool detection failed', err)
+      return null
+    })
 
     registerIpc()
     await createWindow()

@@ -639,8 +639,26 @@ export default function App(): JSX.Element {
          * `.catch(() => …)` per call rather than one try around the lot: a
          * missing streamer library must not stop settings from loading.
          */
-        const [env, settings, jobs, streamers, recentProjects, liveNow, groups] = await Promise.all([
-          window.api.env(),
+        /*
+         * The tool versions are fetched alongside, not within.
+         *
+         * `env()` waits for the startup detection — three processes, and
+         * yt-dlp alone takes well over a second to say its own version — so
+         * having it in this batch held back six local file reads that were
+         * already finished. The shell would be on screen with an empty
+         * roster, an empty recents list and no jobs until the slowest
+         * external program answered.
+         *
+         * `store.env` is null until it lands, and everything that reads it
+         * already guards on that: an unknown environment shows nothing rather
+         * than claiming the tools are missing.
+         */
+        void window.api
+          .env()
+          .then(store.setEnv)
+          .catch(() => undefined)
+
+        const [settings, jobs, streamers, recentProjects, liveNow, groups] = await Promise.all([
           window.api.getSettings(),
           window.api.listJobs(),
           // The streamer library is loaded up front because watermark defaults
@@ -652,7 +670,6 @@ export default function App(): JSX.Element {
           window.api.streamersLiveCached().catch(() => ({})),
           window.api.listStreamerGroups().catch(() => [])
         ])
-        store.setEnv(env)
         store.setSettings(settings)
         store.setJobs(jobs)
         store.setStreamers(streamers)
