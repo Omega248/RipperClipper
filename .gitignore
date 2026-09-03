@@ -17,3 +17,11 @@ resources/bin/*
 
 # Transfer/archive scratch — not source.
 .xfer/
+
+# Quarantine for files pending deletion — never source.
+_to_delete/
+
+# Agent/editor tooling installed alongside the project, not project source.
+.agents/
+.claude/
+.viz/

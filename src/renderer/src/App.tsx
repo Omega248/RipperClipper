@@ -1,9 +1,16 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { formatTimecode } from '@shared/time'
+import { projectNameFromSource, suggestedProjectName } from '@shared/projectNames'
 import type { ClipSegment, ClipStatus, JobStage, VodSource } from '@shared/types'
 import { resolveWatermark, streamerFor } from '@shared/watermark'
 import type { ResolvedWatermark, WatermarkConfig } from '@shared/watermark'
-import type { EnqueueRequest, EventOverlapReply, TimelineExportSegment } from '@shared/ipc'
+import type {
+  EnqueueRequest,
+  EventOverlapReply,
+  RecoveryInfo,
+  TimelineExportSegment
+} from '@shared/ipc'
 import { planExport } from '@shared/povMapping'
 import { computeExportSegments } from '@shared/timeline'
 import { crossCheckByAudio, hasAudioAnchor, strongestSyncedSibling } from './sync/audioCrossCheck.js'
@@ -18,6 +25,7 @@ import MarkerPanel from './components/MarkerPanel.js'
 import MediaLibrary from './components/MediaLibrary.js'
 import PropertiesPage from './components/PropertiesPage.js'
 import ExportPage from './components/ExportPage.js'
+import AnglePicker from './components/AnglePicker.js'
 import PovGrid from './components/PovGrid.js'
 import type { GridLayout } from './components/PovGrid.js'
 import QueuePanel from './components/QueuePanel.js'
@@ -25,6 +33,8 @@ import { message, title } from './components/QualityPanel.js'
 import SettingsDialog from './components/SettingsDialog.js'
 import QuickGuide from './components/QuickGuide.js'
 import StreamersDialog from './components/StreamersDialog.js'
+import FindPovsDialog from './components/FindPovsDialog.js'
+import EditorExportWizard from './components/EditorExportWizard.js'
 import VersionHistoryDialog from './components/VersionHistoryDialog.js'
 import FindInPovs from './components/FindInPovs.js'
 import WaveformSync from './components/WaveformSync.js'
@@ -35,31 +45,35 @@ import EventStreams from './components/EventStreams.js'
 import EventDiscovery from './components/EventDiscovery.js'
 import EventSearch from './components/EventSearch.js'
 import AppRail from './components/AppRail.js'
+import AppHeader, { AppStatusBar } from './components/AppHeader.js'
 import HomePage from './components/HomePage.js'
+import BacklogPage from './components/BacklogPage.js'
+import ReviewRunStrip from './components/ReviewRunStrip.js'
 import StreamersPage from './components/StreamersPage.js'
 import VodsPage from './components/VodsPage.js'
 import ClipsPage from './components/ClipsPage.js'
 import SettingsPage from './components/SettingsPage.js'
 import Toasts from './components/Toasts.js'
 import CommandPalette from './components/CommandPalette.js'
+import type { PaletteItem } from './components/CommandPalette.js'
 import { playerBus } from './player/controller.js'
 import { usePlayerViewport } from './player/usePlayerViewport.js'
 import { useShortcuts } from './hooks/useShortcuts.js'
 import { usePanelSize } from './usePanelSize.js'
 import { ensureNameBadge } from './media/ensureNameBadge.js'
+import { oneAnglePerStreamer, personKey } from '@shared/povPriority'
 import {
   Button,
   ConfirmDialog,
   Dialog,
-  IconButton,
   Input,
-  Menu,
   Notice,
   PromptDialog,
   Resizer,
   Select,
   useTheme
 } from './ui/index.js'
+import type { MenuItem } from './ui/index.js'
 
 type Tab = 'clips' | 'library' | 'edit' | 'markers'
 
@@ -81,9 +95,72 @@ const SETUP_NAME: Record<string, string> = {
 }
 
 export default function App(): JSX.Element {
-  const store = useStore()
+  /*
+   * Only the fields the shell actually reads.
+   *
+   * `useStore()` with no selector returns the whole state object, so this
+   * subscribed to every write in the app — including `currentTime`, which
+   * lands several times a second while anything is playing. Nothing here is
+   * memoised, so that re-rendered the rail, every POV tile, the transport,
+   * the clip list and the timeline on every tick. Naming the fields, compared
+   * shallowly, means a re-render only when one of them actually changes.
+   */
+  const store = useStore(
+    useShallow((s) => ({
+      activeSourceId: s.activeSourceId,
+      addSource: s.addSource,
+      clipNamePromptOpen: s.clipNamePromptOpen,
+      closeClipNamePrompt: s.closeClipNamePrompt,
+      createClip: s.createClip,
+      env: s.env,
+      patchSettings: s.patchSettings,
+      project: s.project,
+      projectPath: s.projectPath,
+      recentProjects: s.recentProjects,
+      requestCreateClip: s.requestCreateClip,
+      selectClip: s.selectClip,
+      selectedClipId: s.selectedClipId,
+      sequenceIndex: s.sequenceIndex,
+      setActiveSource: s.setActiveSource,
+      setEnv: s.setEnv,
+      setJobs: s.setJobs,
+      setProject: s.setProject,
+      setRecentProjects: s.setRecentProjects,
+      setRoute: s.setRoute,
+      setSequenceIndex: s.setSequenceIndex,
+      setSettings: s.setSettings,
+      setStreamers: s.setStreamers,
+      settings: s.settings,
+      streamers: s.streamers,
+      toast: s.toast,
+      toolProgress: s.toolProgress,
+      updateStatus: s.updateStatus
+    }))
+  )
   const clips = useActiveClips()
   const source = useActiveSource()
+
+  /**
+   * The coach strip teaches once, not once per event. Keyed on a persisted
+   * fact rather than on the open event having no clips — the latter is true
+   * again every time a new event is started, forever.
+   *
+   * Recorded here rather than at the two `addClip` call sites in the store so
+   * a third one cannot forget to.
+   */
+  const hasMadeAClip = store.settings?.ui.hasMadeAClip ?? true
+  useEffect(() => {
+    if (hasMadeAClip || clips.length === 0) return
+    const settings = store.settings
+    if (!settings) return
+    void window.api
+      .updateSettings({ ui: { ...settings.ui, hasMadeAClip: true } })
+      .then(store.setSettings)
+      .catch(() => undefined)
+    // Fires once, on the transition. Re-running for every other settings edit
+    // would be pointless work.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasMadeAClip, clips.length])
   const [tab, setTab] = useState<Tab>('clips')
   const page = useStore((s) => s.page)
   const setPage = useStore((s) => s.setPage)
@@ -91,6 +168,21 @@ export default function App(): JSX.Element {
   const setRoute = useStore((s) => s.setRoute)
   const [showAll, setShowAll] = useState(false)
   const [layout, setLayout] = useState<GridLayout>('auto')
+  const [showAnglePicker, setShowAnglePicker] = useState(false)
+  /*
+   * An autosave found at startup.
+   *
+   * A dialog rather than a toast. Toasts dismiss themselves after six seconds
+   * unless they are errors, and this one was telling people their unsaved work
+   * still existed, that they had to go and find File → Recover themselves, and
+   * that the copy would be overwritten by the next autosave. Step away while
+   * the app starts and the only notice that the work survived a crash was gone
+   * — and then overwritten. Recovering work is a decision, so it gets a
+   * decision's UI and waits for an answer.
+   */
+  const [recovery, setRecovery] = useState<RecoveryInfo | null>(null)
+  /** Angles actually on the wall, for the picker's button. */
+  const shownAngles = (store.project?.sources ?? []).filter((s) => s.hiddenInWall !== true).length
   const [url, setUrl] = useState('')
   const [showSettings, setShowSettings] = useState(false)
   const [showGuide, setShowGuide] = useState(false)
@@ -103,6 +195,16 @@ export default function App(): JSX.Element {
   const [showWaveform, setShowWaveform] = useState<'pov' | 'clip' | null>(null)
   const [loading, setLoading] = useState(false)
   const [combinePrompt, setCombinePrompt] = useState<string | null>(null)
+  /** The suggested name, while the new-project dialog is open. Null = closed. */
+  /** The clip whose other POVs are being looked for, if any. */
+  const [findPovsFor, setFindPovsFor] = useState<{
+    name: string
+    startSeconds: number
+    endSeconds: number
+  } | null>(null)
+  /** The clip being handed to an editing application, if any. */
+  const [sendToEditor, setSendToEditor] = useState<string | null>(null)
+  const [newProjectPrompt, setNewProjectPrompt] = useState<string | null>(null)
   const [sequenceExportPrompt, setSequenceExportPrompt] = useState<string | null>(null)
   const [confirmNewProject, setConfirmNewProject] = useState(false)
   const [showWatermark, setShowWatermark] = useState(false)
@@ -142,9 +244,7 @@ export default function App(): JSX.Element {
   const patchUiSettings = useCallback(
     (patch: Partial<NonNullable<typeof store.settings>['ui']>) => {
       if (!store.settings) return
-      void window.api
-        .updateSettings({ ui: { ...store.settings.ui, ...patch } })
-        .then((next) => store.setSettings(next))
+      void store.patchSettings({ ui: { ...store.settings.ui, ...patch } })
     },
     [store.settings, store]
   )
@@ -164,9 +264,13 @@ export default function App(): JSX.Element {
 
   const timelineStrip = usePanelSize({
     persisted: store.settings?.ui.timelineHeight,
-    cssDefault: 240,
-    min: 140,
-    max: 640,
+    // The timeline is where the work happens, and it was sized like a
+    // footnote: a ruler, a 14px clip bar and no room for the filmstrip. The
+    // floor is what a usable strip actually costs — ruler, frames, a clips
+    // lane whose edges can be grabbed, and the markers row.
+    cssDefault: 340,
+    min: 260,
+    max: 720,
     viewportFraction: 0.6,
     axis: 'height',
     onCommit: (px) => patchUiSettings({ timelineHeight: Math.round(px) })
@@ -177,7 +281,14 @@ export default function App(): JSX.Element {
   )
 
 
-  useShortcuts(() => setShowFind(true), () => setShowCommandPalette(true))
+  // exportEveryPov is defined further down this component, so the shortcut
+  // reads it through a ref rather than capturing it before it exists.
+  const exportEveryPovRef = useRef<(() => Promise<void>) | null>(null)
+  useShortcuts(
+    () => setShowFind(true),
+    () => setShowCommandPalette(true),
+    () => void exportEveryPovRef.current?.()
+  )
   // One place decides what theme the whole application is in, and it repaints
   // everything at once because every colour comes from one variable block.
   useTheme(store.settings?.ui.theme)
@@ -185,10 +296,106 @@ export default function App(): JSX.Element {
   // There is no OS titlebar to report this, so the maximize/restore icon has
   // to ask directly and then listen for changes it did not cause itself
   // (double-clicking the drag region, Aero Snap, a window-manager shortcut).
+  /**
+   * Live state is pushed, never polled: a buffer strip on screen must not be
+   * the reason a timer exists. Registered once for the app's lifetime.
+   */
+  useEffect(() => {
+    const setLive = useStore.getState().setLive
+    void window.api.liveStates().then(setLive).catch(() => undefined)
+    return window.api.onLive(setLive)
+  }, [])
+
   useEffect(() => {
     void window.api.isWindowMaximized().then(setWindowMaximized)
     return window.api.onWindowMaximized(setWindowMaximized)
   }, [])
+
+  /*
+   * Hold media for every live POV in the open event, and for nothing else.
+   *
+   * Written as a reconciliation rather than as calls at the point a POV is
+   * added, because there are several ways a source arrives (pasted link,
+   * discovery, opening a project that already had one) and exactly one rule:
+   * what is being held should match what is in the event. Closing a project,
+   * removing a POV and swapping events then need no code of their own — the
+   * set changes and the difference is applied.
+   *
+   * `liveWatch` is idempotent in the main process, and the ref means a slow
+   * first call is not started twice by a re-render.
+   */
+  /*
+   * Native playback: start the decoder, and keep it told which angles exist.
+   *
+   * Both halves are deliberately conditional on the setting. A frame server
+   * that was never started binds no ports and spawns no ffmpeg, so an install
+   * using the browser player pays nothing at all for this existing.
+   */
+  /*
+   * Keep asking the platform how long each broadcast is now.
+   *
+   * A recording that is still being written has a length that is a floor, not
+   * a limit, and both facts — the length and whether it is still going — are
+   * only true for a moment. A project saved an hour ago holds neither, which is
+   * why reopening a wall of live angles showed "Not recording at this moment"
+   * on every tile but the focused one, and why the timeline stopped where each
+   * broadcast was when it was added.
+   *
+   * Every source is asked once when the project opens — that is what heals a
+   * saved project, whose angles were resolved before any of this existed — and
+   * after that only the ones still on air are asked again. A project of
+   * finished VODs settles into asking nothing at all.
+   */
+  const sourceKey = (store.project?.sources ?? []).map((s) => s.id).join('\u0000')
+  useEffect(() => {
+    let stopped = false
+    const ask = async (first: boolean): Promise<void> => {
+      const list = useStore.getState().project?.sources ?? []
+      for (const source of list) {
+        if (stopped) return
+        // After the first sweep, only the ones that said they were still going.
+        if (!first && source.stillRecording !== true) continue
+        const status = await window.api.liveStatus(source).catch(() => null)
+        if (status && !stopped) useStore.getState().setSourceLiveStatus(source.id, status)
+      }
+    }
+    void ask(true)
+    const timer = setInterval(() => void ask(false), 60_000)
+    return () => {
+      stopped = true
+      clearInterval(timer)
+    }
+  }, [sourceKey])
+
+  const watchedLive = useRef(new Set<string>())
+  const liveSources = (store.project?.sources ?? []).filter((s) => s.isLive)
+  const liveKey = liveSources.map((s) => s.id).join('\u0000')
+  useEffect(() => {
+    const wanted = new Set(liveSources.map((s) => s.id))
+
+    for (const source of liveSources) {
+      if (watchedLive.current.has(source.id)) continue
+      watchedLive.current.add(source.id)
+      void window.api.liveWatch(source).catch((err) => {
+        watchedLive.current.delete(source.id)
+        useStore.getState().toast({
+          kind: 'error',
+          title: title(err, `Could not follow ${source.creator}'s broadcast`),
+          message: message(err)
+        })
+      })
+    }
+
+    for (const id of [...watchedLive.current]) {
+      if (wanted.has(id)) continue
+      watchedLive.current.delete(id)
+      void window.api.liveUnwatch(id).catch(() => undefined)
+    }
+    // Deliberately keyed on the ids alone: a live source's own object changes
+    // on every state push, and re-running this on each of those would be a
+    // watch/unwatch cycle several times a second.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey])
 
   // The window doesn't actually close on its own — see main/index.ts's
   // `close` handler — so whatever triggered it (titlebar button, Alt+F4,
@@ -200,44 +407,123 @@ export default function App(): JSX.Element {
     })
   }, [])
 
-  const commandPaletteItems = [
-    ...clips.map((clip) => ({
-      id: `clip-${clip.id}`,
-      label: `Clip: ${clip.name}`,
-      icon: 'scissors' as const,
-      onSelect: () => {
-        setPage('video')
-        setTab('clips')
-        store.selectClip(clip.id)
-        playerBus.seek(clip.startSeconds)
-      }
-    })),
-    { id: 'new-clip', label: 'New clip…', icon: 'plus' as const, onSelect: () => store.requestCreateClip() },
+  /**
+   * The switcher's second line. Answers "how much is in this project" from
+   * data the project already carries — no new state, no new IPC.
+   */
+  const projectMeta = useMemo(() => {
+    const p = store.project
+    if (!p) return 'Nothing open'
+    const start = p.event?.startSeconds
+    const date =
+      typeof start === 'number'
+        ? new Date(start * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+        : null
+    const povs = `${p.sources.length} POV${p.sources.length === 1 ? '' : 's'}`
+    const clipCount = `${p.clips.length} clip${p.clips.length === 1 ? '' : 's'}`
+    return [date, povs, clipCount].filter(Boolean).join(' · ')
+  }, [store.project])
+
+  /**
+   * The palette is the app's global find, so it is grouped by what a result
+   * *is*, and actions come first: the fastest thing to reach should be the
+   * thing you meant to do, not the first clip that happens to match.
+   *
+   * A heading is attached to the first item of each run. Filtering drops
+   * items, so headings are re-attached after filtering in `CommandPalette`
+   * rather than baked in here — otherwise a group whose first item is filtered
+   * out loses its title.
+   */
+  const commandPaletteItems: PaletteItem[] = [
     {
+      group: 'Actions',
+      id: 'new-clip',
+      label: 'New clip…',
+      icon: 'plus' as const,
+      onSelect: () => store.requestCreateClip()
+    },
+    {
+      group: 'Actions',
       id: 'find-in-povs',
       label: 'Find in all POVs',
       icon: 'search' as const,
       onSelect: () => setShowFind(true)
     },
     {
-      id: 'open-streamers',
-      label: 'Open Streamers',
-      icon: 'users' as const,
-      onSelect: () => setShowStreamers(true)
+      group: 'Actions',
+      id: 'search-event',
+      label: 'Search in this event',
+      icon: 'search' as const,
+      disabled: !store.project,
+      onSelect: () => setShowSearch(true)
     },
     {
-      id: 'open-settings',
-      label: 'Open Settings',
-      icon: 'settings' as const,
-      onSelect: () => setShowSettings(true)
-    },
-    {
+      group: 'Actions',
       id: 'version-history',
       label: 'Version history',
       icon: 'clock' as const,
       onSelect: () => setShowVersionHistory(true)
     },
-    { id: 'quick-guide', label: 'Quick guide', icon: 'help' as const, onSelect: () => setShowGuide(true) }
+    {
+      group: 'Actions',
+      id: 'quick-guide',
+      label: 'Quick guide',
+      icon: 'help' as const,
+      onSelect: () => setShowGuide(true)
+    },
+
+    // Navigation mirrors the rail, so every destination is reachable from the
+    // keyboard without learning a second vocabulary for the same places.
+    ...([
+      ['home', 'Backlog', 'target'],
+      ['projects', 'Events', 'folder'],
+      ['streamers', 'Streamers', 'users'],
+      ['vods', 'VODs', 'monitor'],
+      ['workspace', 'Watch', 'play'],
+      ['clips', 'Clips', 'scissors'],
+      ['export', 'Export', 'download'],
+      ['settings', 'Settings', 'settings']
+    ] as const).map(([route, label, icon]) => ({
+      group: 'Go to',
+      id: `route-${route}`,
+      label,
+      icon,
+      onSelect: () => store.setRoute(route)
+    })),
+
+    ...clips.map((clip) => ({
+      group: 'Clips',
+      id: `clip-${clip.id}`,
+      label: clip.name,
+      icon: 'scissors' as const,
+      onSelect: () => {
+        store.setRoute('workspace')
+        setPage('video')
+        setTab('clips')
+        store.selectClip(clip.id)
+        playerBus.seek(clip.startSeconds)
+      }
+    })),
+
+    ...store.streamers.map((s) => ({
+      group: 'Streamers',
+      id: `streamer-${s.id}`,
+      label: s.displayName || s.handle,
+      icon: 'users' as const,
+      onSelect: () => store.setRoute('streamers')
+    })),
+
+    ...(store.project?.sources ?? []).map((source) => ({
+      group: 'VODs',
+      id: `vod-${source.id}`,
+      label: source.title || source.url,
+      icon: 'monitor' as const,
+      onSelect: () => {
+        store.setRoute('workspace')
+        setPage('video')
+        store.setActiveSource(source.id)
+      }
+    }))
   ]
 
   const selectedClip =
@@ -279,10 +565,25 @@ export default function App(): JSX.Element {
   }, [overlapClip?.id, overlapEventStart, overlapEventEnd, store.project?.sources.length])
 
   /** Overlapping streamers not already loaded as a POV — the badge counts these. */
-  const overlapAvailableCount = useMemo(
-    () => eventOverlap?.streams.filter((s) => s.availability === 'available').length ?? 0,
-    [eventOverlap]
-  )
+  /*
+   * People, not broadcasts.
+   *
+   * Somebody on Twitch, Kick and YouTube covers the moment three times, and a
+   * badge reading "(11)" for what turns out to be five people is a badge that
+   * lies. The panel behind it offers one angle each, so the count has to be
+   * the same thing it will show.
+   */
+  const overlapAvailableCount = useMemo(() => {
+    const available = (eventOverlap?.streams ?? []).filter((s) => s.availability === 'available')
+    const personOf = new Map(
+      store.streamers.filter((s) => s.personId).map((s) => [s.id, s.personId as string])
+    )
+    return oneAnglePerStreamer(available, {
+      key: (s) => personKey(s, (id) => personOf.get(id)),
+      platform: (s) => s.platform,
+      better: (a, b) => b.coverage.fraction - a.coverage.fraction
+    }).length
+  }, [eventOverlap, store.streamers])
 
   /** How many files "Download every POV" would actually produce. */
   const povExportCount = useMemo(() => {
@@ -308,25 +609,48 @@ export default function App(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const [env, settings, jobs, streamers, recentProjects] = await Promise.all([
+        /*
+         * Everything the first screen needs, in one round of calls.
+         *
+         * The app opens on the Backlog, and the Backlog wants the streamer
+         * library and who is on air — both of which were being fetched by the
+         * page itself on mount, so the Live now band appeared a beat after
+         * arriving and the roster's badges rearranged themselves a second
+         * after you looked at them. All of this is already on disk; asking
+         * for it here costs one startup round-trip and makes every page that
+         * uses it draw complete on its first paint.
+         *
+         * `.catch(() => …)` per call rather than one try around the lot: a
+         * missing streamer library must not stop settings from loading.
+         */
+        const [env, settings, jobs, streamers, recentProjects, liveNow, groups] = await Promise.all([
           window.api.env(),
           window.api.getSettings(),
           window.api.listJobs(),
           // The streamer library is loaded up front because watermark defaults
           // resolve through it — a POV has to know whose logo it inherits.
           window.api.listStreamers().catch(() => []),
-          window.api.recentProjects().catch(() => [])
+          window.api.recentProjects().catch(() => []),
+          // The saved snapshot, not a live check: it is a file read, and the
+          // pages that show it re-check for real once they are open.
+          window.api.streamersLiveCached().catch(() => ({})),
+          window.api.listStreamerGroups().catch(() => [])
         ])
         store.setEnv(env)
         store.setSettings(settings)
         store.setJobs(jobs)
         store.setStreamers(streamers)
         store.setRecentProjects(recentProjects)
+        // Not on the `store` selection above — this is startup, not render.
+        useStore.getState().setLiveNow(liveNow)
+        useStore.getState().setStreamerGroups(groups)
 
-        const project = await window.api.newProject('Untitled project')
-        project.exportSettings = settings.exportPresets.find((p) => p.isDefault)?.settings ?? settings.export
-        project.outputDirectory = settings.outputDirectory
-        store.setProject(project, null)
+        // Audit 07: nothing is opened here. The launch sequence used to call
+        // newProject('Untitled project') before anything else, so the app was
+        // never honestly in the "nothing open" state — and that empty project
+        // flowed into the switcher pill, the rail counts and the Home copy,
+        // while startNewProject had to guard against discarding it. A project
+        // is created by the first thing that needs one; see ensureProject.
 
         // A .cookieclip passed on the command line (double-clicked in Explorer).
         const startupPath = await window.api.startupProjectPath()
@@ -335,16 +659,8 @@ export default function App(): JSX.Element {
           store.setProject(opened.project, opened.path)
         }
 
-        const recovery = await window.api.checkRecovery()
-        if (recovery.available && recovery.path) {
-          store.toast({
-            kind: 'warning',
-            title: 'Recovered project available',
-            message: `An autosave of "${recovery.projectName ?? 'a project'}" from ${
-              recovery.savedAt ? new Date(recovery.savedAt).toLocaleString() : 'an earlier session'
-            } was found. Open it from File → Recover, or it will be replaced by the next autosave.`
-          })
-        }
+        const found = await window.api.checkRecovery()
+        if (found.available && found.path) setRecovery(found)
       } catch (err) {
         store.toast({ kind: 'error', title: title(err, 'Startup problem'), message: message(err) })
       }
@@ -567,6 +883,36 @@ export default function App(): JSX.Element {
 
   // --------------------------------------------------------------- actions --
   /** One path for every way a VOD enters the project: paste, or streamer pick. */
+  /**
+   * A project, created only if this is the first thing that needs one.
+   *
+   * Pairs with audit 07: the app opens on the Backlog with nothing open, and
+   * pasting a link is one of the two things that genuinely requires a project
+   * to exist (entering a review run is the other). Creating it here rather
+   * than at launch is what makes "nothing open" a real state instead of one
+   * the app pretends it can never be in.
+   */
+  const ensureProject = async (namedAfter?: {
+    creator?: string | null
+    title?: string | null
+    createdAt?: string | null
+  }): Promise<void> => {
+    const state = useStore.getState()
+    if (state.project) return
+    // Named after the VOD going into it rather than "Untitled project": this
+    // path is how most projects actually get created (paste a link), so it is
+    // the one that produced a recent-projects list of identical names.
+    const project = await window.api.newProject(
+      namedAfter ? projectNameFromSource(namedAfter) : suggestedProjectName()
+    )
+    if (state.settings) {
+      project.exportSettings =
+        state.settings.exportPresets.find((p) => p.isDefault)?.settings ?? state.settings.export
+      project.outputDirectory = state.settings.outputDirectory
+    }
+    store.setProject(project, null)
+  }
+
   const loadVod = async (target: string): Promise<void> => {
     if (target.trim() === '') return
     setLoading(true)
@@ -594,16 +940,38 @@ export default function App(): JSX.Element {
         })
         return
       }
+      // addSource is a no-op without a project, so the source would otherwise
+      // resolve and then be dropped on the floor.
+      await ensureProject(resolved)
       store.addSource(resolved)
-      // A multi-POV export has to say whose angle each file is, and the app
-      // already knows the answer — so the badge is drawn rather than asked
-      // for. Only when this POV has no watermark of its own: an editor who
-      // set a real logo must never have it replaced by a generated one.
-      void ensureNameBadge(resolved)
+      /*
+       * A POV you just loaded is the one you want to watch.
+       *
+       * Without this it arrives as a follower: a small muted tile whose player
+       * caps its quality to the tile's own size. So the angle you just added
+       * spent its first seconds picking a rendition for a postage stamp, and
+       * clicking it to focus meant tearing that down and climbing from wherever
+       * the abandoned one had got to. Focusing it up front means the full-size
+       * player is the one that establishes the quality, once.
+       */
+      store.setActiveSource(resolved.id)
+      /*
+       * The generated "whose angle is this" badge, baked into the exported
+       * file so an editor never has to place one by hand.
+       *
+       * On unless it has been turned off. It does cost an encode — a redrawn
+       * frame cannot be copied — which is why that encode composites on the
+       * GPU where the machine allows it rather than dragging every frame
+       * through system memory. Settings → Exports has the switch for anyone
+       * who would rather have the copy.
+       */
+      if (store.settings?.ui.autoNameBadge !== false) void ensureNameBadge(resolved)
       store.toast({
         kind: 'success',
-        title: 'VOD loaded',
-        message: `${resolved.title} — ${formatTimecode(resolved.durationSeconds, { millis: false })}`
+        title: resolved.isLive ? 'Live POV added' : 'VOD loaded',
+        message: resolved.isLive
+          ? `${resolved.title} — holding the last few minutes so you can clip what just happened.`
+          : `${resolved.title} — ${formatTimecode(resolved.durationSeconds, { millis: false })}`
       })
     } catch (err) {
       store.toast({ kind: 'error', title: title(err, 'Could not load VOD'), message: message(err) })
@@ -782,6 +1150,9 @@ export default function App(): JSX.Element {
     }
   }, [watermarkFor])
 
+  // Hand it to the E shortcut, which is bound above this point.
+  exportEveryPovRef.current = exportEveryPov
+
   const combineClips = async (name: string): Promise<void> => {
     const state = useStore.getState()
     if (!state.project || !source || clips.length === 0 || name === '') return
@@ -927,10 +1298,10 @@ export default function App(): JSX.Element {
   }
 
   /** Guarded by the caller: `startNewProject` asks first when work would be lost. */
-  const newProject = async (): Promise<void> => {
+  const newProject = async (name: string): Promise<void> => {
     const state = useStore.getState()
     try {
-      const project = await window.api.newProject('Untitled project')
+      const project = await window.api.newProject(name)
       if (state.settings) {
         project.exportSettings =
           state.settings.exportPresets.find((p) => p.isDefault)?.settings ?? state.settings.export
@@ -954,7 +1325,7 @@ export default function App(): JSX.Element {
       setConfirmNewProject(true)
       return
     }
-    void newProject()
+    setNewProjectPrompt(suggestedProjectName())
   }
 
   const openProject = async (): Promise<void> => {
@@ -1037,191 +1408,86 @@ export default function App(): JSX.Element {
     onShowGuide: () => setShowGuide(true)
   })
 
+  /**
+   * The Project menu, built here rather than in AppHeader: every entry closes
+   * over this component's own save/open/recover handlers and its recent-project
+   * list. One prop is a smaller seam than relocating half of this file.
+   */
+  const projectMenu: MenuItem[] = [
+    { id: 'new', label: 'New project', icon: 'new', onSelect: startNewProject },
+    { id: 'open', label: 'Open project…', icon: 'open', onSelect: () => void openProject() },
+    {
+      id: 'reopen-last-closed',
+      label: lastClosedProjectPath.current
+        ? `Reopen "${projectFileName(lastClosedProjectPath.current)}"`
+        : 'Reopen last closed project',
+      icon: 'undo',
+      disabled: !lastClosedProjectPath.current,
+      onSelect: () => void openRecentProject(lastClosedProjectPath.current!)
+    },
+    ...store.recentProjects.slice(0, 6).map((path, i) => ({
+      id: `recent-${path}`,
+      label: projectFileName(path),
+      separatorBefore: i === 0,
+      onSelect: () => void openRecentProject(path)
+    })),
+    {
+      id: 'save',
+      label: 'Save',
+      icon: 'save',
+      shortcut: 'Ctrl+S',
+      disabled: !store.project,
+      onSelect: () => void saveProject(false),
+      separatorBefore: true
+    },
+    {
+      id: 'saveas',
+      label: 'Save as…',
+      disabled: !store.project,
+      onSelect: () => void saveProject(true)
+    },
+    {
+      // Its only entry point used to be the Event page; kept here so
+      // removing that page did not quietly remove packaging with it.
+      id: 'package',
+      label: 'Export package…',
+      icon: 'download',
+      disabled: !store.project,
+      onSelect: () => void exportPackage()
+    },
+    {
+      id: 'recover',
+      label: 'Recover autosave',
+      icon: 'refresh',
+      separatorBefore: true,
+      onSelect: () => void recoverProject()
+    },
+    {
+      id: 'history',
+      label: 'Version history…',
+      icon: 'refresh',
+      disabled: !store.projectPath,
+      onSelect: () => setShowVersionHistory(true)
+    }
+  ]
+
   return (
     <div className="app-shell">
       <AppRail />
       <div className="app">
-      {/*
-        * The shell: identity, project commands, undo, the three workspaces, and
-        * help. It does not change between pages, so the editor never has to
-        * re-find anything after switching.
-        */}
-      <header
-        className="topbar"
-        onDoubleClick={(e) => {
-          // Only the drag region itself, not a double-click that landed on a
-          // button inside it — standard titlebar behaviour, not a shortcut
-          // that happens to fire from anywhere in the strip.
-          if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('spacer')) {
-            void window.api.toggleMaximizeWindow()
-          }
-        }}
-      >
-        <div className="brand">
-          Ripper<span>Clipper</span>
-        </div>
+      <AppHeader
+        projectName={store.project?.name ?? 'No project'}
+        projectMeta={projectMeta}
+        windowMaximized={windowMaximized}
+        onCommandPalette={() => setShowCommandPalette(true)}
+        onGuide={() => setShowGuide(true)}
+        projectMenu={projectMenu}
+      />
 
-        <Menu
-          label="Project"
-          icon="file"
-          items={[
-            { id: 'new', label: 'New project', icon: 'new', onSelect: startNewProject },
-            { id: 'open', label: 'Open project…', icon: 'open', onSelect: () => void openProject() },
-            {
-              id: 'reopen-last-closed',
-              label: lastClosedProjectPath.current
-                ? `Reopen "${projectFileName(lastClosedProjectPath.current)}"`
-                : 'Reopen last closed project',
-              icon: 'undo',
-              disabled: !lastClosedProjectPath.current,
-              onSelect: () => void openRecentProject(lastClosedProjectPath.current!)
-            },
-            ...store.recentProjects.slice(0, 6).map((path, i) => ({
-              id: `recent-${path}`,
-              label: projectFileName(path),
-              separatorBefore: i === 0,
-              onSelect: () => void openRecentProject(path)
-            })),
-            {
-              id: 'save',
-              label: 'Save',
-              icon: 'save',
-              shortcut: 'Ctrl+S',
-              disabled: !store.project,
-              onSelect: () => void saveProject(false),
-              separatorBefore: true
-            },
-            {
-              id: 'saveas',
-              label: 'Save as…',
-              disabled: !store.project,
-              onSelect: () => void saveProject(true)
-            },
-            {
-              // Its only entry point used to be the Event page; kept here so
-              // removing that page did not quietly remove packaging with it.
-              id: 'package',
-              label: 'Export package…',
-              icon: 'download',
-              disabled: !store.project,
-              onSelect: () => void exportPackage()
-            },
-            {
-              id: 'recover',
-              label: 'Recover autosave',
-              icon: 'refresh',
-              separatorBefore: true,
-              onSelect: () => void recoverProject()
-            },
-            {
-              id: 'history',
-              label: 'Version history…',
-              icon: 'refresh',
-              disabled: !store.projectPath,
-              onSelect: () => setShowVersionHistory(true)
-            }
-          ]}
-        />
-
-        <span className="project-name ellipsis" title={store.projectPath ?? 'Not saved yet'}>
-          {store.project?.name ?? 'No project'}
-          {store.dirty && (
-            <span className="dirty" title="Unsaved changes">
-              •
-            </span>
-          )}
-        </span>
-
-        <span className="topbar-divider" />
-
-        <IconButton
-          icon="undo"
-          label="Undo (Ctrl+Z)"
-          onClick={() => store.undo()}
-          disabled={store.past.length === 0}
-        />
-        <IconButton
-          icon="redo"
-          label="Redo (Ctrl+Shift+Z)"
-          onClick={() => store.redo()}
-          disabled={store.future.length === 0}
-        />
-
-        <span className="spacer" />
-
-        <nav className="pages" aria-label="Workspaces">
-          {(
-            [
-              ['video', 'Video'],
-              ...(EditorPage ? ([['editor', 'Editor']] as const) : []),
-              ['properties', 'Properties'],
-              ['export', 'Export']
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              className={`page-tab${page === id ? ' on' : ''}`}
-              aria-current={page === id ? 'page' : undefined}
-              onClick={() => setPage(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-
-        <span className="spacer" />
-
-        <Button
-          icon="search"
-          onClick={() => setShowSearch(true)}
-          disabled={!store.project}
-          title="Search clips, POVs, collections, moments and anything said on camera"
-        >
-          Search
-        </Button>
-
-        <div className="nav-badge-anchor">
-          <Button
-            icon="users"
-            onClick={() => setShowStreamers(true)}
-            title={
-              overlapAvailableCount > 0
-                ? `${overlapAvailableCount} other saved streamer${overlapAvailableCount === 1 ? '' : 's'} covered this clip's moment`
-                : undefined
-            }
-          >
-            Streamers
-          </Button>
-          {overlapAvailableCount > 0 && (
-            <span className="nav-badge" aria-label={`${overlapAvailableCount} other streamers live at this moment`}>
-              {overlapAvailableCount > 9 ? '9+' : overlapAvailableCount}
-            </span>
-          )}
-        </div>
-        <IconButton icon="help" label="How Ripper Clipper works" onClick={() => setShowGuide(true)} />
-        <IconButton icon="settings" label="Settings" onClick={() => setShowSettings(true)} />
-
-        <span className="topbar-divider" />
-
-        <div className="window-controls">
-          <IconButton
-            icon="window-minimize"
-            label="Minimize"
-            onClick={() => void window.api.minimizeWindow()}
-          />
-          <IconButton
-            icon={windowMaximized ? 'window-restore' : 'window-maximize'}
-            label={windowMaximized ? 'Restore' : 'Maximize'}
-            onClick={() => void window.api.toggleMaximizeWindow()}
-          />
-          <IconButton
-            icon="close"
-            label="Close"
-            className="close"
-            onClick={() => void window.api.closeWindow()}
-          />
-        </div>
-      </header>
+      {/* One row of the `.app` grid. Everything a page puts on screen lives
+          here, so the header and the status bar keep their own rows and cannot
+          be pushed out of the viewport by a notice or a coach strip. */}
+      <div className="app-body">
 
       {/*
         * Setup problems are stated as what the editor cannot do, with the one
@@ -1266,7 +1532,7 @@ export default function App(): JSX.Element {
         </div>
       )}
 
-      {source && clips.length === 0 && (
+      {source && !hasMadeAClip && (
         <div className="coach">
           <strong>Making your first clip</strong>
           <ol>
@@ -1322,12 +1588,16 @@ export default function App(): JSX.Element {
         )}
       </div>
 
+      {route === 'workspace' && <ReviewRunStrip />}
+
       {route === 'workspace' && (
       <PovBar
         onAddPov={() => urlRef.current?.focus()}
         onDiscoverEvent={() => setShowDiscovery(true)}
         onFindInPovs={() => setShowFind(true)}
         onManualSync={() => setShowWaveform('pov')}
+        overlapAvailableCount={overlapAvailableCount}
+        onShowStreamers={() => setShowStreamers(true)}
       />
       )}
 
@@ -1388,6 +1658,14 @@ export default function App(): JSX.Element {
             </Button>
             {showAll && (
               <>
+                <Button
+                  icon="list"
+                  size="compact"
+                  title="Choose which angles are on screen"
+                  onClick={() => setShowAnglePicker(true)}
+                >
+                  Angles {shownAngles}/{store.project?.sources.length ?? 0}
+                </Button>
                 <label className="chip-field">
                   Layout
                   <Select
@@ -1497,6 +1775,21 @@ export default function App(): JSX.Element {
               >
                 Export every POV ({povExportCount})
               </Button>
+              {/*
+                The step after exporting: the angles are files now, and this
+                turns them into a project an editor can open with the timeline
+                already built and the watermark already placed. Deliberately
+                below the export buttons, because it needs their output.
+              */}
+              <Button
+                fullWidth
+                icon="grid"
+                disabled={!store.selectedClipId}
+                title="Build a project for DaVinci Resolve, Final Cut or any other editor — angles synchronised, watermark placed"
+                onClick={() => setSendToEditor(store.selectedClipId)}
+              >
+                Send to an editor
+              </Button>
               <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
                 <Button
                   size="compact"
@@ -1597,14 +1890,8 @@ export default function App(): JSX.Element {
         </div>
       </div>
 
-      {route === 'home' && (
-        <HomePage
-          onOpenProject={() => void openProject()}
-          onNewProject={startNewProject}
-          onFindVod={() => setRoute('vods')}
-        />
-      )}
-      {route === 'streamers' && <StreamersPage />}
+      {route === 'home' && <BacklogPage onLoadVod={loadVod} />}
+      {route === 'streamers' && <StreamersPage onLoadVod={loadVod} />}
       {route === 'vods' && <VodsPage onLoadVod={loadVod} />}
       {route === 'clips' && <ClipsPage />}
       {route === 'projects' && (
@@ -1646,6 +1933,54 @@ export default function App(): JSX.Element {
         />
       )}
       {showWatermark && <WatermarkEditor onClose={() => setShowWatermark(false)} />}
+      {showAnglePicker && <AnglePicker onClose={() => setShowAnglePicker(false)} />}
+      {recovery && (
+        <Dialog
+          title="Unsaved work was recovered"
+          size="small"
+          onClose={() => setRecovery(null)}
+          footer={
+            <>
+              <Button
+                size="compact"
+                onClick={() => {
+                  // Explicit, and only on the person's say-so. The copy is not
+                  // deleted by looking at this dialog.
+                  void window.api.discardRecovery()
+                  setRecovery(null)
+                }}
+              >
+                Discard it
+              </Button>
+              <Button size="compact" onClick={() => setRecovery(null)}>
+                Decide later
+              </Button>
+              <Button
+                variant="primary"
+                size="compact"
+                onClick={() => {
+                  setRecovery(null)
+                  void recoverProject()
+                }}
+              >
+                Open it
+              </Button>
+            </>
+          }
+        >
+          <p>
+            Ripper Clipper did not close cleanly last time. An autosave of{' '}
+            <strong>{recovery.projectName ?? 'a project'}</strong>
+            {recovery.savedAt ? <> from {new Date(recovery.savedAt).toLocaleString()}</> : null} is
+            still on disk.
+          </p>
+          <p className="hint">
+            Opening it does not overwrite anything — save it wherever you like. Leaving this until
+            later is fine too, but the copy is replaced the next time autosave runs, so it will not
+            wait forever.
+          </p>
+        </Dialog>
+      )}
       {showVersionHistory && store.projectPath && (
         <VersionHistoryDialog
           projectPath={store.projectPath}
@@ -1707,7 +2042,65 @@ export default function App(): JSX.Element {
           onCancel={() => store.closeClipNamePrompt()}
           onConfirm={(name) => {
             store.closeClipNamePrompt()
-            store.createClip(name)
+            const id = store.createClip(name)
+            /*
+             * Made the clip; now go and find who else filmed it.
+             *
+             * Straight after creation rather than as a menu item somewhere: the
+             * moment you have just marked is exactly when you know what you are
+             * looking for, and the alternative is opening three sites and doing
+             * the arithmetic by hand for every clip.
+             */
+            const made = id
+              ? useStore.getState().project?.clips.find((c) => c.id === id)
+              : undefined
+            if (made?.eventStartTime && made?.eventEndTime) {
+              setFindPovsFor({
+                name: made.name,
+                startSeconds: made.eventStartTime,
+                endSeconds: made.eventEndTime
+              })
+            }
+          }}
+        />
+      )}
+      {sendToEditor !== null &&
+        (() => {
+          const clip = store.project?.clips.find((c) => c.id === sendToEditor)
+          return clip ? (
+            <EditorExportWizard clip={clip} onClose={() => setSendToEditor(null)} />
+          ) : null
+        })()}
+      {findPovsFor && (
+        <FindPovsDialog
+          clipName={findPovsFor.name}
+          eventStartSeconds={findPovsFor.startSeconds}
+          eventEndSeconds={findPovsFor.endSeconds}
+          loadedUrls={(store.project?.sources ?? []).map((s) => s.url)}
+          onClose={() => setFindPovsFor(null)}
+          onAdd={(picked) => {
+            setFindPovsFor(null)
+            // Sequential on purpose: each resolve is a platform request, and a
+            // dozen at once is how a discovery sweep turns into a rate limit.
+            void (async () => {
+              for (const one of picked) await loadVod(one.url)
+            })()
+          }}
+        />
+      )}
+      {newProjectPrompt !== null && (
+        <PromptDialog
+          title="New project"
+          description="A project holds one event: every angle of it, and every clip you cut from them. Naming it now is what makes it findable later."
+          label="Project name"
+          defaultValue={newProjectPrompt}
+          confirmLabel="Create project"
+          onCancel={() => setNewProjectPrompt(null)}
+          onConfirm={(name) => {
+            setNewProjectPrompt(null)
+            // An empty box means "you pick" rather than an error to argue
+            // with — the suggestion is already the sensible answer.
+            void newProject(name.trim() === '' ? suggestedProjectName() : name)
           }}
         />
       )}
@@ -1763,11 +2156,13 @@ export default function App(): JSX.Element {
           onCancel={() => setConfirmNewProject(false)}
           onConfirm={() => {
             setConfirmNewProject(false)
-            void newProject()
+            setNewProjectPrompt(suggestedProjectName())
           }}
         />
       )}
       <Toasts />
+      </div>
+      <AppStatusBar />
       </div>
     </div>
   )

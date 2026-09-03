@@ -9,7 +9,6 @@ import { buildClipListCsv } from '@shared/clipListCsv'
 import type { ClipListRow } from '@shared/clipListCsv'
 import type { ClipSegment, DiskSpaceInfo } from '@shared/types'
 import { useStore } from '../store.js'
-import QueuePanel from './QueuePanel.js'
 import QualityPanel, { message, title } from './QualityPanel.js'
 import { resolveWatermark, streamerFor } from '@shared/watermark'
 import { Badge, Button, Checkbox, EmptyState, Menu, Notice, PageHeader, Select, StatusBadge } from '../ui/index.js'
@@ -328,10 +327,13 @@ export default function ExportPage({
         <QualityPanel />
       </section>
 
-      <section>
-        <h3>Queue</h3>
-        <QueuePanel />
-      </section>
+      {/*
+        The queue is a persistent strip rendered once by App, below every page
+        including this one. Mounting a second copy here put two Pause buttons on
+        screen with independent state — pausing in one left the other reading
+        "Pause", and clicking it did nothing — and duplicated the "Export queue"
+        landmark for screen readers.
+      */}
       </div>
     </>
   )

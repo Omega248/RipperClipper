@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  durationFromPlaylist,
   isMasterPlaylist,
   parseAttributes,
   parseMaster,
@@ -7,6 +8,7 @@ import {
   selectSegments,
   sortVariants
 } from '../../src/main/media/hls.js'
+import type { HlsVariant } from '../../src/main/media/hls.js'
 
 const MASTER = `#EXTM3U
 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aac",NAME="English",DEFAULT=YES,URI="audio/index.m3u8"
@@ -161,5 +163,128 @@ describe('selectSegments — only the covering media is chosen', () => {
   it('returns nothing meaningful for an empty playlist rather than throwing', () => {
     const empty = parseMedia('#EXTM3U\n#EXT-X-ENDLIST\n', 'https://cdn.invalid/x.m3u8')
     expect(selectSegments(empty, 0, 10).segments).toHaveLength(0)
+  })
+})
+
+/**
+ * A live playlist, as a platform actually serves one: no ENDLIST, a
+ * MEDIA-SEQUENCE that has already advanced, and a PROGRAM-DATE-TIME stamp.
+ *
+ * Both new fields exist for the same reason — a live playlist is a sliding
+ * window, so nothing positional survives a refresh. Sequence numbers identify
+ * media across polls; PROGRAM-DATE-TIME is what puts that media on the event
+ * clock, which is the only clock a clip is stored against.
+ */
+const LIVE_MEDIA = `#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:4821
+#EXT-X-PROGRAM-DATE-TIME:2026-08-29T14:30:00.000Z
+#EXTINF:2.000,
+4821.ts
+#EXTINF:2.000,
+4822.ts
+#EXTINF:2.000,
+4823.ts
+`
+
+describe('a live media playlist', () => {
+  it('is live exactly when it has no ENDLIST', () => {
+    expect(parseMedia(LIVE_MEDIA, 'https://x/live/').endList).toBe(false)
+    expect(parseMedia(MEDIA, 'https://x/vod/').endList).toBe(true)
+  })
+
+  it('numbers segments from the media sequence, not from zero', () => {
+    const p = parseMedia(LIVE_MEDIA, 'https://x/live/')
+    expect(p.mediaSequence).toBe(4821)
+    expect(p.segments.map((s) => s.sequence)).toEqual([4821, 4822, 4823])
+  })
+
+  it('keeps identifying the same media after the window slides', () => {
+    // The window slid by one: the first segment is gone, a new one arrived,
+    // and the server re-stamped PROGRAM-DATE-TIME onto the new first segment,
+    // which is what a platform actually serves.
+    const later = LIVE_MEDIA.replace('#EXT-X-MEDIA-SEQUENCE:4821', '#EXT-X-MEDIA-SEQUENCE:4822')
+      .replace('2026-08-29T14:30:00.000Z', '2026-08-29T14:30:02.000Z')
+      .replace('#EXTINF:2.000,\n4821.ts\n', '')
+      .replace('4823.ts\n', '4823.ts\n#EXTINF:2.000,\n4824.ts\n')
+    const first = parseMedia(LIVE_MEDIA, 'https://x/live/')
+    const second = parseMedia(later, 'https://x/live/')
+
+    // 4822 is the second segment in one poll and the first in the next. Its
+    // position and its startSeconds both changed; its sequence did not.
+    const a = first.segments.find((s) => s.sequence === 4822)!
+    const b = second.segments.find((s) => s.sequence === 4822)!
+    expect(a.startSeconds).not.toBe(b.startSeconds)
+    expect(a.uri).toBe(b.uri)
+    expect(a.programDateTime).toBe(b.programDateTime)
+  })
+
+  it('carries the wall clock forward across segments from one stamp', () => {
+    const p = parseMedia(LIVE_MEDIA, 'https://x/live/')
+    const base = Date.parse('2026-08-29T14:30:00.000Z') / 1000
+    expect(p.segments.map((s) => s.programDateTime)).toEqual([base, base + 2, base + 4])
+  })
+
+  it('leaves the wall clock unset on a playlist that does not stamp one', () => {
+    const p = parseMedia(MEDIA, 'https://x/vod/')
+    expect(p.segments.every((s) => s.programDateTime === undefined)).toBe(true)
+  })
+})
+
+describe('durationFromPlaylist', () => {
+  const master: HlsVariant[] = [
+    { uri: 'https://cdn.invalid/1080p60/playlist.m3u8', bandwidth: 8558474, width: 1920, height: 1080, frameRate: 60, codecs: 'avc1.64002A,mp4a.40.2' },
+    { uri: 'https://cdn.invalid/480p30/playlist.m3u8', bandwidth: 1488983, width: 852, height: 480, frameRate: 30, codecs: 'avc1.4D401F,mp4a.40.2' },
+    { uri: 'https://cdn.invalid/720p60/playlist.m3u8', bandwidth: 3483983, width: 1280, height: 720, frameRate: 60, codecs: 'avc1.4D401F,mp4a.40.2' }
+  ]
+
+  const media = (segments: number, endList: boolean): string =>
+    [
+      '#EXTM3U',
+      '#EXT-X-VERSION:3',
+      '#EXT-X-TARGETDURATION:11',
+      '#EXT-X-PLAYLIST-TYPE:EVENT',
+      ...Array.from({ length: segments }, (_, i) => `#EXTINF:10.740,\n${i}.ts`),
+      ...(endList ? ['#EXT-X-ENDLIST'] : [])
+    ].join('\n')
+
+  it('reads the length the platform would not tell us', async () => {
+    // The real case: Kick answered `duration: 0` for a complete, public,
+    // ENDLIST-terminated 1.11-hour recording, and a zero-length POV has no
+    // span on the timeline and nothing to sync against.
+    const asked: string[] = []
+    const seconds = await durationFromPlaylist(master, async (url) => {
+      asked.push(url)
+      return media(372, true)
+    })
+    expect(seconds).toBeCloseTo(372 * 10.74, 1)
+    expect(seconds! / 3600).toBeCloseTo(1.11, 2)
+  })
+
+  it('asks the cheapest rendition — every variant lists the same segments', async () => {
+    const asked: string[] = []
+    await durationFromPlaylist(master, async (url) => {
+      asked.push(url)
+      return media(10, true)
+    })
+    expect(asked).toEqual(['https://cdn.invalid/480p30/playlist.m3u8'])
+  })
+
+  it('reports what a still-growing playlist has published', async () => {
+    // No ENDLIST: the sum is a floor that moves, which is what
+    // `durationSeconds` already means for a live source.
+    const seconds = await durationFromPlaylist(master, async () => media(50, false))
+    expect(seconds).toBeCloseTo(537, 0)
+  })
+
+  it('keeps quiet rather than failing a resolve it cannot confirm', async () => {
+    await expect(
+      durationFromPlaylist(master, async () => {
+        throw new Error('network down')
+      })
+    ).resolves.toBeUndefined()
+    await expect(durationFromPlaylist(master, async () => '#EXTM3U\n')).resolves.toBeUndefined()
+    await expect(durationFromPlaylist([], async () => media(5, true))).resolves.toBeUndefined()
   })
 })

@@ -1,7 +1,7 @@
 import { Errors, serializeError } from '../../shared/errors.js'
 import type { FfmpegInfo, HwAccelPreference } from '../../shared/types.js'
 import { run, runChecked } from '../services/process.js'
-import type { RunOptions } from '../services/process.js'
+import type { ProcessPriority, RunOptions } from '../services/process.js'
 import type { Logger } from '../services/logger.js'
 import { executableNames, locateExecutable } from '../services/locate.js'
 
@@ -42,6 +42,7 @@ export interface FfprobeResult {
     filename?: string
     format_name?: string
     duration?: string
+    start_time?: string
     size?: string
     bit_rate?: string
   }
@@ -64,8 +65,12 @@ export class FfmpegService {
     ffprobePath: null,
     version: null,
     hwEncoders: [],
+    cudaOverlay: false,
     error: null
   }
+
+  /** The override paths the current `info` was worked out from. */
+  private detectedFor: string | null = null
 
   constructor(private readonly log: Logger) {}
 
@@ -73,12 +78,36 @@ export class FfmpegService {
     return this.info
   }
 
-  /** Locate + validate ffmpeg/ffprobe. Never assumes they exist. */
-  async detect(overrides: {
-    ffmpegPath?: string | null
-    ffprobePath?: string | null
-    bundledDir?: string | null
-  }): Promise<FfmpegInfo> {
+  /**
+   * Locate + validate ffmpeg/ffprobe. Never assumes they exist.
+   *
+   * The answer is remembered against the paths it was worked out from,
+   * because working it out is not cheap: two executable searches, two version
+   * reads, an encoder listing, and then a real one-frame encode per hardware
+   * encoder candidate to prove the machine can actually run it — up to a
+   * dozen child processes. That is the right price to pay at startup and
+   * after installing a tool. It is the wrong price to pay every time someone
+   * changes a setting, which is what used to happen: flipping the theme
+   * re-ran the whole thing and the interface waited for it.
+   *
+   * A failed detection is not remembered, so a tool that appears later is
+   * found without anyone having to ask. `force` re-runs regardless — for
+   * after an install, or when the person explicitly asks to re-check.
+   */
+  async detect(
+    overrides: {
+      ffmpegPath?: string | null
+      ffprobePath?: string | null
+      bundledDir?: string | null
+    },
+    opts: { force?: boolean } = {}
+  ): Promise<FfmpegInfo> {
+    const signature = JSON.stringify([
+      overrides.ffmpegPath ?? null,
+      overrides.ffprobePath ?? null,
+      overrides.bundledDir ?? null
+    ])
+    if (!opts.force && this.info.available && this.detectedFor === signature) return this.info
     try {
       const ffmpegFound = await locateExecutable(executableNames('ffmpeg'), {
         override: overrides.ffmpegPath,
@@ -115,15 +144,30 @@ export class FfmpegService {
       )
       const hwEncoders = smokeTested.filter((name): name is string => name !== null)
 
+      // Only worth asking if there is an NVIDIA encoder to end the chain with:
+      // a CUDA overlay feeding a software encoder would download every frame
+      // anyway, which is the cost this exists to avoid.
+      const cudaOverlay = hwEncoders.some((e) => e.includes('nvenc'))
+        ? await smokeTestCudaOverlay(ffmpegPath)
+        : false
+
       this.info = {
         available: true,
         ffmpegPath,
         ffprobePath,
         version,
         hwEncoders,
+        cudaOverlay,
         error: null
       }
-      this.log.info('ffmpeg', 'FFmpeg detected', { ffmpegPath, ffprobePath, version, hwEncoders })
+      this.detectedFor = signature
+      this.log.info('ffmpeg', 'FFmpeg detected', {
+        ffmpegPath,
+        ffprobePath,
+        version,
+        hwEncoders,
+        cudaOverlay
+      })
     } catch (err) {
       this.info = {
         available: false,
@@ -131,8 +175,10 @@ export class FfmpegService {
         ffprobePath: null,
         version: null,
         hwEncoders: [],
+        cudaOverlay: false,
         error: serializeError(err instanceof Error ? err : Errors.ffmpegMissing())
       }
+      this.detectedFor = null
       this.log.warn('ffmpeg', 'FFmpeg not available', err)
     }
     return this.info
@@ -184,16 +230,30 @@ export class FfmpegService {
    */
   async keyframes(file: string, fromSeconds = 0, windowSeconds = 30): Promise<KeyframeInfo> {
     const { ffprobe } = this.require()
+    /*
+     * Read PACKETS carrying the keyframe flag, not decoded frames.
+     *
+     * The obvious spelling — `-skip_frame nokey -show_entries frame=pts_time`
+     * — is version-dependent in a way that fails silently: ffprobe 5 and
+     * later report a frame's timestamp as `pts_time`, while ffprobe 4 and
+     * earlier call it `pkt_pts_time` and emit `{}` for every frame when asked
+     * for the newer name. The caller then sees no keyframes at all, decides a
+     * smart cut is impossible, and quietly re-encodes whole clips — slow, and
+     * with nothing anywhere saying why. The app bundles its own ffmpeg, but
+     * the FFmpeg path is a setting, so an older binary is a real possibility.
+     *
+     * A packet's `pts_time` and `flags` have been spelled the same way for as
+     * long as this matters, and a keyframe packet is exactly what the splice
+     * needs to know about. It is also cheaper: no decoding at all.
+     */
     const args = [
       '-hide_banner',
       '-loglevel',
       'error',
       '-select_streams',
       'v:0',
-      '-skip_frame',
-      'nokey',
       '-show_entries',
-      'frame=pts_time',
+      'packet=pts_time,flags',
       '-read_intervals',
       `${fromSeconds.toFixed(3)}%+${windowSeconds.toFixed(3)}`,
       '-print_format',
@@ -201,14 +261,15 @@ export class FfmpegService {
       file
     ]
     const result = await runChecked(ffprobe, args, { idleTimeoutMs: 120_000 })
-    let parsed: { frames?: Array<{ pts_time?: string }> }
+    let parsed: { packets?: Array<{ pts_time?: string; flags?: string }> }
     try {
       parsed = JSON.parse(result.stdout)
     } catch {
       return { times: [] }
     }
-    const times = (parsed.frames ?? [])
-      .map((f) => Number(f.pts_time))
+    const times = (parsed.packets ?? [])
+      .filter((p) => (p.flags ?? '').includes('K'))
+      .map((p) => Number(p.pts_time))
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b)
     return { times }
@@ -253,7 +314,10 @@ export class FfmpegService {
       'null',
       '-'
     ]
-    const result = await runChecked(ffmpeg, args, { idleTimeoutMs: 120_000 })
+    // A full decode of the range to measure how different each frame is from
+    // the last — the most expensive thing in here that nobody explicitly
+    // asked for, so it runs where it cannot be felt.
+    const result = await runChecked(ffmpeg, args, { idleTimeoutMs: 120_000, priority: 'idle' })
     const times: number[] = []
     for (const match of result.stderr.matchAll(/pts_time:\s*([\d.]+)/g)) {
       const t = fromSeconds + Number(match[1])
@@ -261,6 +325,52 @@ export class FfmpegService {
     }
     times.sort((a, b) => a - b)
     return { times }
+  }
+
+  /**
+   * What ffmpeg prints for an informational query — `-hwaccels`, `-filters`.
+   *
+   * These describe the *build*, never the machine, and the difference is the
+   * whole reason `producesFrame` exists below.
+   */
+  async textOutput(args: string[]): Promise<string> {
+    const { ffmpeg } = this.require()
+    const result = await run(ffmpeg, ['-hide_banner', ...args], { maxBufferBytes: 1 << 24 })
+    return result.stdout
+  }
+
+  /**
+   * Does this argument list actually produce picture on this machine?
+   *
+   * Bytes on stdout, not an exit code: a hardware pipeline that cannot create
+   * its device fails in ways that still exit zero, and the symptom is a black
+   * tile with nothing anywhere saying why. Asking "did any frame come out"
+   * is the only question whose answer cannot be wrong.
+   */
+  async producesFrame(
+    args: string[],
+    opts: { signal?: AbortSignal; label: string; timeoutMs?: number } = { label: 'probe' }
+  ): Promise<boolean> {
+    const { ffmpeg } = this.require()
+    let produced = 0
+    const controller = new AbortController()
+    const onAbort = (): void => controller.abort()
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 15_000)
+    try {
+      await run(ffmpeg, ['-hide_banner', '-nostdin', '-loglevel', 'error', ...args], {
+        signal: controller.signal,
+        priority: 'background',
+        onStdout: (chunk) => (produced += chunk.length)
+      })
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+    }
+    this.log.debug('ffmpeg', `${opts.label}: ${produced > 0 ? 'produced frames' : 'produced nothing'}`)
+    return produced > 0
   }
 
   /**
@@ -273,6 +383,14 @@ export class FfmpegService {
       signal?: AbortSignal
       onProgress?: (p: { outTimeSeconds: number; totalSizeBytes: number; speed: number }) => void
       label: string
+      /**
+       * How much of the machine this run may take. Every caller states it,
+       * because "how urgent is this" is knowledge the call site has and this
+       * service does not: an export is work someone is waiting on, a
+       * filmstrip is not. Defaults to `background` — of the things that run
+       * through here, nothing should outrank the foreground window.
+       */
+      priority?: ProcessPriority
     }
   ): Promise<void> {
     const { ffmpeg } = this.require()
@@ -283,6 +401,7 @@ export class FfmpegService {
     let stdoutBuffer = ''
     const runOpts: RunOptions = {
       signal: opts.signal,
+      priority: opts.priority ?? 'background',
       idleTimeoutMs: 5 * 60_000,
       onStdout: (chunk) => {
         if (!opts.onProgress) return
@@ -335,6 +454,57 @@ export class FfmpegService {
  * `ffmpeg -encoders` only says the build supports it, not that this machine
  * has the driver or hardware to run it.
  */
+/**
+ * Can this machine composite on the GPU?
+ *
+ * The whole chain is exercised, not just the filter's presence: a synthetic
+ * frame is uploaded to CUDA, a second one is overlaid onto it there, and the
+ * result is encoded with NVENC. Anything short of that — the filter listed but
+ * not built with nvcc, a driver too old for the surface format, an encoder
+ * session the machine will not give — shows up here as a non-zero exit rather
+ * than as a failed export twenty minutes into someone's afternoon.
+ */
+async function smokeTestCudaOverlay(ffmpegPath: string): Promise<boolean> {
+  try {
+    const result = await run(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-init_hw_device',
+        'cuda=cu:0',
+        '-filter_hw_device',
+        'cu',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black:s=320x240:r=25:d=0.2',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=white:s=64x64:r=25:d=0.2',
+        '-filter_complex',
+        '[0:v]format=nv12,hwupload[bg];[1:v]format=yuva420p,hwupload[fg];[bg][fg]overlay_cuda=x=8:y=8[v]',
+        '-map',
+        '[v]',
+        '-c:v',
+        'h264_nvenc',
+        '-frames:v',
+        '1',
+        '-f',
+        'null',
+        '-'
+      ],
+      { idleTimeoutMs: 20_000 }
+    )
+    return result.code === 0
+  } catch {
+    return false
+  }
+}
+
 async function smokeTestEncoder(ffmpegPath: string, encoder: string): Promise<boolean> {
   try {
     const result = await run(

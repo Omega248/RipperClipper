@@ -12,7 +12,7 @@ import react from '@vitejs/plugin-react'
  *   dev           everything, including the Editor
  *
  * `npm run dev`'s live server always behaves as `dev`, unset otherwise
- * defaults to `stable`. Only `dev` gets the Editor: `__EDITOR_ENABLED__` is
+ * defaults to `stable`. `dev` and `experimental` get the Editor: `__EDITOR_ENABLED__` is
  * replaced with a literal `true`/`false` at build time, which lets Rollup
  * prove the Editor's own `import()` is unreachable in the other two channels
  * and drop the whole module graph from the built output — not merely hide
@@ -27,7 +27,10 @@ export default defineConfig(({ command }) => {
       : process.env.RIPPER_CHANNEL === 'experimental'
         ? 'experimental'
         : 'stable'
-  const editorEnabled = channel === 'dev'
+  // The Editor ships on dev *and* experimental now that it is a real
+  // multi-track editor with tests behind it; stable still drops the whole
+  // module graph, which is what the literal below is for.
+  const editorEnabled = channel !== 'stable'
   const define = {
     __EDITOR_ENABLED__: JSON.stringify(editorEnabled),
     __CHANNEL__: JSON.stringify(channel)

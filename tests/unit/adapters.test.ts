@@ -22,8 +22,24 @@ describe('Twitch URL recognition', () => {
     expect(match!.startSeconds).toBe(3723)
   })
 
-  it('rejects channels, clips and other platforms', () => {
-    expect(adapter.match('https://www.twitch.tv/somechannel')).toBeNull()
+  it('reads a bare channel as the broadcast happening now', () => {
+    const match = adapter.match('https://www.twitch.tv/somechannel')
+    // No recording exists yet, so the channel's own name is the identity.
+    expect(match).toMatchObject({ platform: 'twitch', kind: 'channel', vodId: 'somechannel' })
+    expect(match!.canonicalUrl).toBe('https://www.twitch.tv/somechannel')
+  })
+
+  it('does not mistake Twitch\'s own pages for people', () => {
+    for (const url of [
+      'https://www.twitch.tv/directory',
+      'https://www.twitch.tv/settings',
+      'https://www.twitch.tv/downloads'
+    ]) {
+      expect(adapter.match(url)).toBeNull()
+    }
+  })
+
+  it('rejects clips and other platforms', () => {
     expect(adapter.match('https://clips.twitch.tv/SomeClipSlug')).toBeNull()
     expect(adapter.match('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull()
   })
@@ -45,13 +61,28 @@ describe('Kick URL recognition', () => {
     expect(match!.canonicalUrl).toBe(`https://kick.com/somechannel/videos/${id}`)
   })
 
-  it('rejects a bare channel page', () => {
-    expect(adapter.match('https://kick.com/somechannel')).toBeNull()
+  it('reads a bare channel as the broadcast happening now', () => {
+    const match = adapter.match('https://kick.com/somechannel')
+    expect(match).toMatchObject({ platform: 'kick', kind: 'channel', vodId: 'somechannel' })
+  })
+
+  it("does not mistake Kick's own pages for people", () => {
+    for (const url of ['https://kick.com/browse', 'https://kick.com/categories']) {
+      expect(adapter.match(url)).toBeNull()
+    }
   })
 })
 
 describe('YouTube URL recognition', () => {
   const adapter = new YouTubeAdapter()
+
+  it("reads a channel's live URL as the broadcast happening now", () => {
+    const byHandle = adapter.match('https://www.youtube.com/@somechannel/live')
+    expect(byHandle).toMatchObject({ platform: 'youtube', kind: 'channel', vodId: 'somechannel' })
+
+    const byId = adapter.match('https://www.youtube.com/channel/UC1234567890abcdefghij/live')
+    expect(byId).toMatchObject({ kind: 'channel', vodId: 'uc1234567890abcdefghij' })
+  })
 
   it('accepts every common watch form', () => {
     for (const url of [

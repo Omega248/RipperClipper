@@ -68,6 +68,7 @@ const TimelineLivePlayer = forwardRef<TimelineLivePlayerHandle, Props>(function 
 ) {
   const sources = useStore((s) => s.project?.sources) ?? []
   const mediaProxyBase = useStore((s) => s.env?.mediaProxyBase)
+  const mediaProxyToken = useStore((s) => s.env?.mediaProxyToken)
   const muted = useStore((s) => s.muted)
   const volume = useStore((s) => s.volume)
   const rate = useStore((s) => s.rate)
@@ -81,7 +82,7 @@ const TimelineLivePlayer = forwardRef<TimelineLivePlayerHandle, Props>(function 
     const ids = new Set(timeline.items.filter((i) => i.kind === 'video').map((i) => i.sourceId))
     return [...ids].filter((id) => {
       const source = sources.find((s) => s.id === id)
-      return Boolean(source && playbackSrc(source, mediaProxyBase))
+      return Boolean(source && playbackSrc(source, mediaProxyBase, mediaProxyToken))
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeline?.items, sources, mediaProxyBase])
@@ -122,7 +123,7 @@ const TimelineLivePlayer = forwardRef<TimelineLivePlayerHandle, Props>(function 
   const composition = timeline ? pipCompositionAt(timeline, playheadSeconds) : null
   const insetItem = composition?.inset ?? null
   const insetSource = insetItem ? sources.find((s) => s.id === insetItem.sourceId) : undefined
-  const insetSrc = insetSource ? playbackSrc(insetSource, mediaProxyBase) : null
+  const insetSrc = insetSource ? playbackSrc(insetSource, mediaProxyBase, mediaProxyToken) : null
   const insetLocalSeconds = insetItem
     ? insetItem.sourceStartSeconds + (playheadSeconds - insetItem.timelineStartSeconds)
     : null
@@ -131,7 +132,7 @@ const TimelineLivePlayer = forwardRef<TimelineLivePlayerHandle, Props>(function 
     <div className="timeline-live-player">
       {liveSourceIds.map((id) => {
         const source = sources.find((s) => s.id === id)
-        const src = source ? playbackSrc(source, mediaProxyBase) : null
+        const src = source ? playbackSrc(source, mediaProxyBase, mediaProxyToken) : null
         if (!source || !src) return null
         return (
           <WarmVideo
@@ -218,7 +219,11 @@ function WarmVideo({
         // FollowerVideo uses, so idle POVs don't hold minutes of video each.
         backBufferLength: 15,
         maxBufferLength: 15,
-        maxMaxBufferLength: 45
+        maxMaxBufferLength: 45,
+        // A byte ceiling as well as a time one: a timeline referencing twenty
+        // POVs keeps twenty of these warm, and "45 seconds" of a 1080p60 rung
+        // is a very different number of megabytes from 45 seconds of a 480p one.
+        maxBufferSize: 8 * 1000 * 1000
       })
       hls.loadSource(src)
       hls.attachMedia(video)

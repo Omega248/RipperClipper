@@ -26,7 +26,7 @@ const source = (id: string): VodSource => ({
   creator: id,
   durationSeconds: 3600,
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: false
 })
 

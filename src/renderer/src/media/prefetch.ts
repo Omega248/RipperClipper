@@ -30,38 +30,34 @@ export function bucketsFor(durationSeconds: number): number {
 const inFlight = new Set<string>()
 
 /**
+ * How many speculative reads may be outstanding before new ones are dropped.
+ *
+ * Everything in this module is an optimisation: the Editor computes any of it
+ * lazily if it is missing, which is exactly what makes shedding load the right
+ * response to a backlog rather than a compromise. Queueing would be the wrong
+ * one — a review run can create forty clips in a couple of minutes, and at
+ * three requests per angle per clip that is several hundred ffmpeg jobs behind
+ * which the filmstrip someone is actually waiting on would sit and wait.
+ *
+ * The main process caps concurrent decodes at 2, so the machine was never
+ * going to catch fire; what this protects is the *latency* of the work that
+ * someone is looking at.
+ */
+const MAX_OUTSTANDING = 12
+
+/**
  * Warms the disk-backed filmstrip/waveform cache for a clip across every
  * loaded POV that covers it, the moment the clip exists — not when it's
  * first dragged onto the Editor's timeline. Fire-and-forget: a failure here
  * just means the Editor computes it lazily later, the same as before this
  * existed.
  */
-/**
- * Reads every POV's cut of a clip in the background, so the censor list is
- * already populated by the time anyone opens it.
- *
- * Fire-and-forget and deliberately silent: this was never asked for, so a
- * POV that cannot be read must not interrupt anyone. The main process
- * skips POVs already read and returns false when no model is installed,
- * which is why this is safe to call on every clip change.
- */
-export function analyseClipPovs(clip: ClipSegment, sources: VodSource[]): void {
-  for (const source of sources) {
-    const range = clipRangeInPov(clip, source)
-    if (range.coverage === 'none' || range.coverage === 'unknown') continue
-    void window.api
-      .clipAnalyse({
-        clipId: clip.id,
-        source,
-        startSeconds: range.localStart,
-        endSeconds: range.localEnd
-      })
-      .catch(() => undefined)
-  }
-}
-
 export function prefetchClipMedia(clip: ClipSegment, sources: VodSource[]): void {
   for (const source of sources) {
+    // Stop rather than pile up. Warming the cache for the clip just made is
+    // worth far more than warming it for the thirty before it, and a queue
+    // deep enough to hold both is one that serves neither promptly.
+    if (inFlight.size >= MAX_OUTSTANDING) return
     const range = clipRangeInPov(clip, source)
     if (range.coverage === 'none') continue
     const start = Math.max(0, range.localStart - MASTER_PAD_SECONDS)

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { BoundedCache } from '../boundedCache.js'
 import { clipRangeInPov } from '@shared/povMapping'
 import { povUsage } from '@shared/collections'
 import type { ClipSegment, VodSource } from '@shared/types'
@@ -25,7 +26,7 @@ import { Spinner } from '../ui/index.js'
 const THUMB_WIDTH = 160
 
 /** Frames are keyed by POV and range, so a re-render never refetches. */
-const sheetCache = new Map<string, string | null>()
+const sheetCache = new BoundedCache<string, string | null>(300)
 
 export default function ClipThumbnails({ clip }: { clip: ClipSegment }): JSX.Element | null {
   const sources = useStore((s) => s.project?.sources) ?? []

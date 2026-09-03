@@ -1,5 +1,6 @@
 import { net } from 'electron'
 import type { PlatformId } from '../../shared/types.js'
+import type { LiveNow } from '../../shared/ipc.js'
 import type { ResolverService } from '../media/resolver.js'
 
 /**
@@ -153,4 +154,165 @@ export function profileIsStale(fetchedAt: string | undefined, now = Date.now()):
   if (!fetchedAt) return true
   const at = Date.parse(fetchedAt)
   return !Number.isFinite(at) || now - at > PROFILE_MAX_AGE_MS
+}
+
+/**
+ * Whether a channel is broadcasting right now.
+ *
+ * Every platform already answers this on a route this file (or the VOD
+ * listing) is calling anyway, so this is the same three requests with a
+ * different field read — no new mechanism, no polling service, no websocket.
+ *
+ * Fails soft to `null`, which the interface shows as "not live". Getting it
+ * wrong for one refresh is a badge that lags by a minute; throwing would be a
+ * page that will not load.
+ *
+ * ponytail: YouTube costs a yt-dlp process per channel per check, unlike the
+ * plain HTTP the other two use. Fine for a library of this size at a
+ * minute's cadence; if it starts to bite, check YouTube on a slower cycle
+ * than the rest rather than adding a service.
+ */
+export async function fetchLive(
+  platform: PlatformId,
+  handle: string,
+  resolver: ResolverService,
+  signal?: AbortSignal
+): Promise<LiveNow | null> {
+  const name = handle.replace(/^@/, '').trim()
+  if (name === '') return null
+
+  try {
+    if (platform === 'twitch') return await twitchLive(name, signal)
+    if (platform === 'kick') return await kickLive(name, signal)
+    return await youtubeLive(name, resolver, signal)
+  } catch {
+    return null
+  }
+}
+
+async function twitchLive(login: string, signal?: AbortSignal): Promise<LiveNow | null> {
+  // Deliberately only `id` and `viewersCount`: both are certain to exist on
+  // Stream, and a query naming a field that does not errors as a whole — which
+  // would read as "offline" for a channel that is live. A title is not worth
+  // that risk.
+  const query = `{ user(login: "${login.replace(/"/g, '')}") { stream { id viewersCount } } }`
+  const response = await net.fetch('https://gql.twitch.tv/gql', {
+    method: 'POST',
+    headers: {
+      'Client-ID': TWITCH_PUBLIC_CLIENT_ID,
+      'Content-Type': 'application/json',
+      'user-agent': BROWSER_UA
+    },
+    body: JSON.stringify({ query }),
+    signal
+  })
+  if (!response.ok) return null
+
+  const body = (await response.json()) as {
+    data?: { user?: { stream?: { id?: string; viewersCount?: number } | null } | null }
+  }
+  const stream = body.data?.user?.stream
+  // Null `stream` is exactly how Twitch says "offline".
+  if (!stream?.id) return null
+  return typeof stream.viewersCount === 'number' ? { viewers: stream.viewersCount } : {}
+}
+
+async function kickLive(slug: string, signal?: AbortSignal): Promise<LiveNow | null> {
+  const response = await net.fetch(`https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`, {
+    headers: { 'user-agent': BROWSER_UA, accept: 'application/json', referer: 'https://kick.com/' },
+    signal
+  })
+  if (!response.ok) return null
+
+  const body = (await response.json()) as {
+    livestream?: { is_live?: boolean; session_title?: string; viewer_count?: number } | null
+  }
+  const stream = body.livestream
+  if (!stream || stream.is_live === false) return null
+  return {
+    ...(typeof stream.viewer_count === 'number' ? { viewers: stream.viewer_count } : {}),
+    ...(stream.session_title ? { title: stream.session_title } : {})
+  }
+}
+
+/**
+ * YouTube marks a live broadcast in the same channel listing the VOD crawl
+ * reads — `live_status: 'is_live'` on the entry. A handful of entries is
+ * enough: a live broadcast is always at the top of /streams.
+ */
+async function youtubeLive(
+  handle: string,
+  resolver: ResolverService,
+  signal?: AbortSignal
+): Promise<LiveNow | null> {
+  const raw = (await resolver.flatPlaylist(`https://www.youtube.com/@${handle}/streams`, {
+    signal,
+    limit: 3,
+    priority: 'idle'
+  })) as { entries?: Array<Record<string, unknown>> } | null
+
+  const live = (raw?.entries ?? []).find((e) => e.live_status === 'is_live')
+  if (!live) return null
+  return {
+    ...(typeof live.concurrent_view_count === 'number'
+      ? { viewers: live.concurrent_view_count }
+      : {}),
+    ...(typeof live.title === 'string' ? { title: live.title } : {})
+  }
+}
+
+/**
+ * When every broadcast on a Twitch channel happened, in one request.
+ *
+ * This is the difference between a back catalogue that fills in over an
+ * afternoon and one that is complete before you have finished reading the
+ * page. Twitch's video listing carries no dates, so learning them the obvious
+ * way costs one yt-dlp process per broadcast — three hundred VODs is three
+ * hundred processes, which is why the crawl paces itself at one every few
+ * seconds and takes seventeen minutes for a single channel.
+ *
+ * The same GQL endpoint used for profiles will hand over a hundred videos and
+ * their publish times in a single call. Keyed by Twitch's own video id, which
+ * is what a VOD URL ends with.
+ *
+ * Returns an empty map on any failure, which the caller reads as "ask the slow
+ * way" — this is an accelerator, never the only route.
+ */
+export async function twitchVideoDates(
+  login: string,
+  signal?: AbortSignal
+): Promise<Record<string, string>> {
+  const query = `{ user(login: "${login.replace(/"/g, '')}") { videos(first: 100, type: ARCHIVE) { edges { node { id publishedAt } } } } }`
+  try {
+    const response = await net.fetch('https://gql.twitch.tv/gql', {
+      method: 'POST',
+      headers: {
+        'Client-ID': TWITCH_PUBLIC_CLIENT_ID,
+        'Content-Type': 'application/json',
+        'user-agent': BROWSER_UA
+      },
+      body: JSON.stringify({ query }),
+      signal
+    })
+    if (!response.ok) return {}
+
+    const body = (await response.json()) as {
+      data?: {
+        user?: {
+          videos?: { edges?: Array<{ node?: { id?: string; publishedAt?: string } }> } | null
+        } | null
+      }
+    }
+    const out: Record<string, string> = {}
+    for (const edge of body.data?.user?.videos?.edges ?? []) {
+      const id = edge?.node?.id
+      const at = edge?.node?.publishedAt
+      if (!id || !at) continue
+      const parsed = Date.parse(at)
+      if (Number.isFinite(parsed)) out[id] = new Date(parsed).toISOString()
+    }
+    return out
+  } catch {
+    return {}
+  }
 }

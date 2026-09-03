@@ -1,0 +1,83 @@
+/* ---------------------------------------------------------------------------
+   Ripper Clipper — the renderer's single style entry point.
+
+   NEW FILE. This is what `main.tsx` imports, instead of `styles.css`.
+
+   Why it exists
+   -------------
+   `ui.css` opens by stating the rule the system runs on:
+
+       "No page stylesheet may restyle a `.ui-*` class: if a control needs to
+        look different somewhere, that is either a new variant defined here or
+        a sign the wrong control was chosen."
+
+   That rule was correct and unenforceable. `styles.css` imported the tokens
+   and the primitives at its top and then continued for six thousand lines —
+   and an `@import` inserts a sheet *at the point of the import*, so every one
+   of those lines came after the primitives and beat them on any tie. The
+   system was the weakest layer in the cascade. Ten page rules had already
+   reached into `.ui-btn`, one of them re-deciding icon-button height against
+   the token, and nothing anywhere warned that it had happened.
+
+   Cascade layers fix it in four lines. Order is declared once, below, and it
+   holds regardless of file position or specificity: a rule in `app` cannot
+   accidentally outrank `primitives`, no matter how specific it is or how far
+   down the file it sits. Overriding a primitive is still possible — it just
+   has to be deliberate now (see the escape hatch at the foot of this file).
+
+   Electron is Chromium, so `@layer` support is not a question.
+
+   Order matters and reads bottom-wins: tokens are the substrate, primitives
+   own every `.ui-*` control, and app owns layout, pages and composition.
+--------------------------------------------------------------------------- */
+
+@layer tokens, primitives, app;
+
+@import './design/tokens.css' layer(tokens);
+@import './ui/ui.css' layer(primitives);
+@import './app.css' layer(app);
+
+/* Vendored, not a CDN: a packaged Electron app has no network guarantee.
+   Latin subset of the Inter variable face. Declared after the imports because
+   @import must precede every rule but @charset and @layer statements. */
+@font-face {
+  font-family: 'Inter';
+  src: url('./assets/Inter-Variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
+   The escape hatch.
+
+   Anything outside a layer beats everything inside one. That makes this file
+   the only place where a primitive may be deliberately overridden, and it
+   makes the list of such overrides short enough to review — which is the whole
+   point of the change.
+
+   The bar for adding to this list: you have checked that no variant of the
+   component does what you need, and adding one would be wrong. In practice
+   that is almost never true, and the two entries below are both cases where
+   the control genuinely is not the app's own.
+--------------------------------------------------------------------------- */
+
+/* The window controls are OS chrome, not application UI. They follow the
+   platform's caption-button geometry — 46×32 on Windows 11 — which is set by
+   the shell, not by our control scale. This is the one place a `.ui-btn` is
+   correctly a different size. */
+.window-controls .ui-btn {
+  width: 46px;
+  height: 32px;
+  border-radius: 0;
+  border-color: transparent;
+}
+
+.window-controls .ui-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.window-controls .ui-btn.is-close:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff; /* Windows' close-button convention, not a theme colour. */
+}

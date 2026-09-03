@@ -2,7 +2,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ProjectStore, normalizeProject, parseProject } from '../../src/main/services/projects.js'
+import {
+  RENAME_ATTEMPTS,
+  isTransientRenameError,
+  renameRetryDelayMs
+} from '../../src/shared/atomicWrite.js'
+import {
+  ProjectStore,
+  atomicWriteJson,
+  normalizeProject,
+  parseJsonSalvagingTail,
+  parseProject
+} from '../../src/main/services/projects.js'
 import { Logger } from '../../src/main/services/logger.js'
 import { addClip, makeMarker } from '../../src/shared/clips.js'
 import type { ProjectFile, VodSource } from '../../src/shared/types.js'
@@ -21,12 +32,7 @@ const SOURCE: VodSource = {
   creator: 'Streamer',
   durationSeconds: 3600,
   playbackKind: 'hls',
-  capabilities: {
-    metadata: true,
-    playback: true,
-    rangeDownload: true,
-    requiresAuth: false,
-    notes: []
+  capabilities: { notes: []
   },
   formatsInspected: false
 }
@@ -209,6 +215,20 @@ describe('corruption handling', () => {
     expect(normalized.clips.map((c) => c.name)).toEqual(['good'])
   })
 
+  it('remembers which angles the wall was watching', () => {
+    // Re-ticking eight of fourteen angles on every reopen would make the
+    // picker worse than no picker, so the choice rides in the project file.
+    const normalized = normalizeProject(
+      {
+        sources: [SOURCE, { ...SOURCE, id: 'off', hiddenInWall: true }],
+        clips: [],
+        markers: []
+      },
+      'x.cookieclip'
+    )
+    expect(normalized.sources.map((s) => s.hiddenInWall)).toEqual([undefined, true])
+  })
+
   it('resets transient statuses so an interrupted job is not shown as running', () => {
     const normalized = normalizeProject(
       {
@@ -275,7 +295,7 @@ describe('clip POV mappings survive a save and reopen', () => {
           durationSeconds: 7200,
           createdAt: '2026-08-17T20:00:00Z',
           playbackKind: 'progressive' as const,
-          capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+          capabilities: { notes: [] },
           formatsInspected: false,
           syncMapping: {
             vodId: 'A',
@@ -299,7 +319,7 @@ describe('clip POV mappings survive a save and reopen', () => {
           durationSeconds: 7200,
           createdAt: '2026-08-17T20:00:30Z',
           playbackKind: 'progressive' as const,
-          capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+          capabilities: { notes: [] },
           formatsInspected: false,
           syncMapping: {
             vodId: 'B',
@@ -355,5 +375,88 @@ describe('clip POV mappings survive a save and reopen', () => {
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('surviving a damaged file', () => {
+  it('salvages the complete document in front of a corrupted tail', () => {
+    // Exactly what a shared staging file produced: a shorter array published
+    // over a longer one, leaving the longer one's tail behind it.
+    const good = JSON.stringify([{ id: 'a' }, { id: 'b' }], null, 2)
+    const damaged = `${good}\n  { "id": "c" }\n]`
+    expect(parseJsonSalvagingTail(damaged)).toEqual([{ id: 'a' }, { id: 'b' }])
+  })
+
+  it('leaves an intact document exactly as it is', () => {
+    const text = JSON.stringify({ a: 1, b: [2, 3] })
+    expect(parseJsonSalvagingTail(text)).toEqual({ a: 1, b: [2, 3] })
+  })
+
+  it('returns null when there is nothing to salvage, rather than guessing empty', () => {
+    // The distinction that matters: "unreadable" must never be mistaken for
+    // "empty", or the next write persists the mistake.
+    expect(parseJsonSalvagingTail('not json at all')).toBeNull()
+    expect(parseJsonSalvagingTail('')).toBeNull()
+    expect(parseJsonSalvagingTail('{ "a": ')).toBeNull()
+  })
+})
+
+describe('publishing a write when the filesystem says "not now"', () => {
+  /*
+   * Windows only, and it took a real Windows run to find: renaming over an
+   * existing file is atomic on POSIX and is not on Windows, where anything
+   * holding the target for an instant — the indexer, a scanner, or another of
+   * this app's own concurrent writes — fails the rename with EPERM. The four
+   * concurrent writers below produced exactly that.
+   *
+   * The rules are tested here rather than the loop, because making a real
+   * filesystem fail on demand is not something a test can do portably, and
+   * the decision is the part that can be wrong.
+   */
+  it('retries the codes Windows uses for a momentary lock', () => {
+    expect(isTransientRenameError('EPERM')).toBe(true)
+    expect(isTransientRenameError('EACCES')).toBe(true)
+    expect(isTransientRenameError('EBUSY')).toBe(true)
+  })
+
+  it('does not retry a failure that will never clear', () => {
+    // A missing directory or a full disk is not going to fix itself, and
+    // retrying it just delays telling the truth.
+    expect(isTransientRenameError('ENOENT')).toBe(false)
+    expect(isTransientRenameError('ENOSPC')).toBe(false)
+    expect(isTransientRenameError('EROFS')).toBe(false)
+    expect(isTransientRenameError(undefined)).toBe(false)
+  })
+
+  it('backs off, but stays within a fifth of a second', () => {
+    const waits = Array.from({ length: RENAME_ATTEMPTS - 1 }, (_, i) => renameRetryDelayMs(i))
+    expect(waits).toEqual([10, 20, 40, 80])
+    // A lock that has not cleared in this long is not a scanner, and a save
+    // that hangs is worse than one that reports it failed.
+    expect(waits.reduce((a, b) => a + b, 0)).toBeLessThan(200)
+  })
+})
+
+describe('atomicWriteJson under concurrency', () => {
+  it('never lets two writes to one path share a staging file', async () => {
+    // The corruption this caused was reproducible: one temp name per process
+    // meant concurrent writers overwrote each other mid-flight.
+    const dir = await mkdtemp(join(tmpdir(), 'atomic-'))
+    const file = join(dir, 'thing.json')
+    const big = Array.from({ length: 400 }, (_, i) => ({ id: `id-${i}`, pad: 'x'.repeat(50) }))
+    const small = [{ id: 'only' }]
+
+    await Promise.all([
+      atomicWriteJson(file, big),
+      atomicWriteJson(file, small),
+      atomicWriteJson(file, big),
+      atomicWriteJson(file, small)
+    ])
+
+    // Whichever won, the file must be one complete document — never a short
+    // one with a long one's tail behind it.
+    const text = await readFile(file, 'utf8')
+    expect(() => JSON.parse(text)).not.toThrow()
+    await rm(dir, { recursive: true, force: true })
   })
 })

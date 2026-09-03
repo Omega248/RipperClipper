@@ -15,6 +15,7 @@ import {
   CHUNKS,
   CHUNK_SECONDS,
   TOTAL_SECONDS,
+  buildBulkySource,
   buildFixture,
   chunkIndexAt,
   sampleColor,
@@ -40,6 +41,7 @@ let server: MediaServer
 let outDir: string
 let workDir: string
 let sourceSizeBytes = 0
+let fixtureRoot = ''
 
 const SOURCE: VodSource = {
   id: 'test:local',
@@ -51,7 +53,7 @@ const SOURCE: VodSource = {
   durationSeconds: TOTAL_SECONDS,
   createdAt: '2026-08-17T00:00:00.000Z',
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: true
 }
 
@@ -73,7 +75,7 @@ function hlsStreams(): SelectedStreams {
   return { video, audio: null, muxed: true, notes: [] }
 }
 
-function httpStreams(): SelectedStreams {
+function httpStreams(file = 'source.mp4'): SelectedStreams {
   const video: StreamInfo = {
     id: 'progressive',
     container: 'mp4',
@@ -84,7 +86,7 @@ function httpStreams(): SelectedStreams {
     bitrate: 1_200_000,
     protocol: 'http-range',
     label: '360p',
-    url: `${server.url}/source.mp4`,
+    url: `${server.url}/${file}`,
     hasVideo: true,
     hasAudio: true
   }
@@ -104,6 +106,7 @@ beforeAll(async () => {
   if (!info.available) throw new Error('FFmpeg is required to run the integration tests')
 
   const fixture = await buildFixture(root)
+  fixtureRoot = fixture.root
   sourceSizeBytes = (await stat(fixture.sourceMp4)).size
 
   // Serve the whole fixture root so both the HLS directory and source.mp4 are
@@ -294,7 +297,14 @@ describe('HLS range export — the core requirement', () => {
       endSeconds: 31,
       source: SOURCE,
       streams: hlsStreams(),
-      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'smart', keyframeToleranceSeconds: 0.2 },
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        cutMode: 'smart',
+        keyframeToleranceSeconds: 0.2,
+        // The splice path has its own suite below; this case is about the
+        // plain single-pass re-encode it falls back to.
+        smartCut: false
+      },
       outputPath: join(outDir, 'Smart Mid GOP.mp4'),
       workDir,
       onProgress: () => undefined
@@ -419,50 +429,70 @@ describe('HLS range export — the core requirement', () => {
 
 describe('HTTP range export', () => {
   it('fetches only the needed bytes from a progressive source', async () => {
+    /*
+     * Deliberately fat: a high-bitrate copy of the same 120 seconds, tens of
+     * megabytes rather than two.
+     *
+     * The small fixture cannot test this at all. At 2 MB the clip's bytes sit
+     * inside what ffmpeg will happily read past while opening the file, so
+     * whether it seeks or simply reads through is down to timing — which is
+     * why this test passed on its own and failed whenever the machine was
+     * busy with another test file. Reading forty megabytes to reach a clip
+     * ten seconds long is exactly the behaviour §4 forbids, and only a file
+     * too big to skim can tell the two apart.
+     */
     const before = server.requests.length
+    const bulky = await buildBulkySource(fixtureRoot)
     const start = 52.5
     const end = 62.5
 
-    const result = await exporter.exportClip({
-      clipId: 'clip-k',
-      clipName: 'Progressive Range',
-      startSeconds: start,
-      endSeconds: end,
-      source: SOURCE,
-      streams: httpStreams(),
-      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'precise' },
-      outputPath: join(outDir, 'Progressive Range.mp4'),
-      workDir,
-      onProgress: () => undefined
-    })
+    try {
+      const result = await exporter.exportClip({
+        clipId: 'clip-k',
+        clipName: 'Progressive Range',
+        startSeconds: start,
+        endSeconds: end,
+        source: SOURCE,
+        streams: httpStreams('bulky.mp4'),
+        settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'precise' },
+        outputPath: join(outDir, 'Progressive Range.mp4'),
+        workDir,
+        onProgress: () => undefined
+      })
 
-    const ranged = server.requests.slice(before).filter((r) => r.path.includes('source.mp4'))
-    expect(ranged.length).toBeGreaterThan(0)
+      const ranged = server.requests.slice(before).filter((r) => r.path.includes('bulky.mp4'))
+      expect(ranged.length).toBeGreaterThan(0)
 
-    // FFmpeg must seek into the file with a Range request rather than reading
-    // it front to back. The first request is the bounded container analysis
-    // (capped by -probesize); the seek request is what carries the clip.
-    const seeking = ranged.filter((r) => /^bytes=[1-9]/.test(r.range ?? ''))
-    expect(seeking.length).toBeGreaterThan(0)
+      // FFmpeg must seek into the file with a Range request rather than reading
+      // it front to back. The first request is the bounded container analysis
+      // (capped by -probesize); the seek request is what carries the clip.
+      const seeking = ranged.filter((r) => /^bytes=[1-9]/.test(r.range ?? ''))
+      expect(seeking.length).toBeGreaterThan(0)
 
-    // The seek lands near the clip's position in the file rather than at the
-    // beginning: 52.5s of 120s is ~44% in, and the request offset matches.
-    const offsets = seeking.map((r) => Number(/^bytes=(\d+)/.exec(r.range ?? '')![1]))
-    const firstSeek = Math.min(...offsets)
-    expect(firstSeek / sourceSizeBytes).toBeGreaterThan(0.3)
-    expect(firstSeek / sourceSizeBytes).toBeLessThan(0.6)
+      // The seek lands near the clip's position rather than at the beginning.
+      // 52.5s of 120s is 44% through in time; in bytes it comes out around a
+      // third, since the picture is where the size is and the encoder does not
+      // spend bits evenly. The bounds are wide enough for that and still far
+      // from zero.
+      const offsets = seeking.map((r) => Number(/^bytes=(\d+)/.exec(r.range ?? '')![1]))
+      const firstSeek = Math.min(...offsets)
+      expect(firstSeek / bulky.bytes).toBeGreaterThan(0.3)
+      expect(firstSeek / bulky.bytes).toBeLessThan(0.6)
 
-    // The container-analysis read is bounded by -probesize, so opening a long
-    // VOD costs a few megabytes rather than a full sequential download.
-    const analysisBytes = ranged
-      .filter((r) => !/^bytes=[1-9]/.test(r.range ?? ''))
-      .reduce((sum, r) => sum + r.bytesSent, 0)
-    expect(analysisBytes).toBeLessThanOrEqual(5 * 1024 * 1024)
+      // The container-analysis read is bounded by -probesize, so opening a long
+      // VOD costs a few megabytes rather than a full sequential download.
+      const analysisBytes = ranged
+        .filter((r) => !/^bytes=[1-9]/.test(r.range ?? ''))
+        .reduce((sum, r) => sum + r.bytesSent, 0)
+      expect(analysisBytes).toBeLessThanOrEqual(5 * 1024 * 1024)
 
-    expect(result.verification.video.present).toBe(true)
-    expect(result.verification.audio.present).toBe(true)
-    expect(result.verification.durationSeconds).toBeCloseTo(end - start, 0)
-    expectColorNear(await sampleColor(result.outputPath, 0.3), CHUNKS[chunkIndexAt(start)].rgb)
+      expect(result.verification.video.present).toBe(true)
+      expect(result.verification.audio.present).toBe(true)
+      expect(result.verification.durationSeconds).toBeCloseTo(end - start, 0)
+      expectColorNear(await sampleColor(result.outputPath, 0.3), CHUNKS[chunkIndexAt(start)].rgb)
+    } finally {
+      await rm(bulky.path, { force: true })
+    }
   })
 })
 
@@ -582,3 +612,163 @@ function expectColorNear(actual: [number, number, number], expected: readonly nu
 
 // Keeps CHUNK_SECONDS referenced for readers scanning the fixture contract.
 void CHUNK_SECONDS
+
+
+/**
+ * Smart cut. An exact start only strands the frames between the mark and the
+ * next keyframe — those depend on a keyframe being discarded, so they have to
+ * be re-encoded. Every frame from that keyframe on is already right and is
+ * copied. These tests care that the splice is *invisible*: same picture at the
+ * same instants as re-encoding the whole clip, with the join in the middle of
+ * it.
+ */
+describe('smart cut — exact starts without re-encoding the whole clip', () => {
+  // 21s is a second past the keyframe at 20s, so an exact cut is required.
+  // The clip runs to 31s, crossing the 30s colour change 9 seconds in — well
+  // past the 22s splice point, so the boundary lands in copied footage and
+  // proves the tail kept the source's timing.
+  const START = 21
+  const END = 31
+
+  it('re-encodes only the head and copies the rest', async () => {
+    const result = await exporter.exportClip({
+      clipId: 'clip-sc1',
+      clipName: 'Smart Cut Spliced',
+      startSeconds: START,
+      endSeconds: END,
+      source: SOURCE,
+      streams: hlsStreams(),
+      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'smart', keyframeToleranceSeconds: 0.2 },
+      outputPath: join(outDir, 'Smart Cut Spliced.mp4'),
+      workDir,
+      onProgress: () => undefined
+    })
+
+    expect(result.notes.join(' ')).toMatch(/Smart cut: only the first/)
+    // Only the ~1s head, not the whole 10s clip.
+    expect(result.notes.join(' ')).toMatch(/only the first 1\.\d\ds was re-encoded/)
+    expect(result.notes.join(' ')).toMatch(/stream copy for the rest/)
+    // An exact cut is an exact cut however it was produced.
+    expect(result.startDriftSeconds).toBe(0)
+    expect(result.verification.problems).toEqual([])
+    expect(result.verification.durationSeconds).toBeCloseTo(END - START, 0)
+    expect(result.verification.video.codec).toBe('h264')
+    expect(result.verification.audio.present).toBe(true)
+  })
+
+  it('lands the same frames as re-encoding the whole clip would', async () => {
+    const spliced = join(outDir, 'Smart Cut Spliced.mp4')
+
+    const reference = await exporter.exportClip({
+      clipId: 'clip-sc2',
+      clipName: 'Smart Cut Reference',
+      startSeconds: START,
+      endSeconds: END,
+      source: SOURCE,
+      streams: hlsStreams(),
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        cutMode: 'smart',
+        keyframeToleranceSeconds: 0.2,
+        smartCut: false
+      },
+      outputPath: join(outDir, 'Smart Cut Reference.mp4'),
+      workDir,
+      onProgress: () => undefined
+    })
+
+    // 0.2s and 8.5s are before the source's colour change, 9.5s is after it —
+    // so this checks the head, the copied tail, and the seam's timing.
+    for (const at of [0.2, 1.5, 8.5, 9.5]) {
+      const expected = CHUNKS[chunkIndexAt(START + at)].rgb
+      expectColorNear(await sampleColor(spliced, at), expected)
+      expectColorNear(await sampleColor(reference.outputPath, at), expected)
+    }
+  })
+
+  it('keeps sound in step with the picture across the splice', async () => {
+    const spliced = join(outDir, 'Smart Cut Spliced.mp4')
+    for (const at of [0.5, 8.5, 9.5]) {
+      const freq = await sampleFrequency(spliced, at)
+      expect(freq).toBeCloseTo(CHUNKS[chunkIndexAt(START + at)].freq, -1)
+    }
+  })
+
+  it('lines the sound up with the picture when it comes from another POV', async () => {
+    // The sound is fetched as its own window on its own clock, so the splice's
+    // final mux has to put two independently seeked timelines on top of each
+    // other. Seeking the audio input rather than the output silently ran it
+    // 0.85s late here, which is why this case has its own test.
+    const AUDIO_START = 41
+    const result = await exporter.exportClip({
+      clipId: 'clip-sc4',
+      clipName: 'Smart Cut Audio POV',
+      startSeconds: START,
+      endSeconds: END,
+      source: SOURCE,
+      streams: hlsStreams(),
+      audioOverride: {
+        stream: hlsStreams().video!,
+        startSeconds: AUDIO_START,
+        endSeconds: AUDIO_START + (END - START)
+      },
+      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'smart', keyframeToleranceSeconds: 0.2 },
+      outputPath: join(outDir, 'Smart Cut Audio POV.mp4'),
+      workDir,
+      onProgress: () => undefined
+    })
+
+    expect(result.notes.join(' ')).toMatch(/Smart cut/)
+    expect(result.verification.problems).toEqual([])
+    for (const at of [0.5, 8.5]) {
+      expectColorNear(await sampleColor(result.outputPath, at), CHUNKS[chunkIndexAt(START + at)].rgb)
+      const freq = await sampleFrequency(result.outputPath, at)
+      expect(freq).toBeCloseTo(CHUNKS[chunkIndexAt(AUDIO_START + at)].freq, -1)
+    }
+  })
+
+  it('splices into MKV as well as MP4', async () => {
+    const result = await exporter.exportClip({
+      clipId: 'clip-sc5',
+      clipName: 'Smart Cut Mkv',
+      startSeconds: START,
+      endSeconds: END,
+      source: SOURCE,
+      streams: hlsStreams(),
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        container: 'mkv',
+        cutMode: 'smart',
+        keyframeToleranceSeconds: 0.2
+      },
+      outputPath: join(outDir, 'Smart Cut Mkv.mkv'),
+      workDir,
+      onProgress: () => undefined
+    })
+    expect(result.notes.join(' ')).toMatch(/Smart cut/)
+    expect(result.verification.problems).toEqual([])
+    expectColorNear(await sampleColor(result.outputPath, 9.5), CHUNKS[chunkIndexAt(START + 9.5)].rgb)
+  })
+
+  it('still re-encodes the whole clip when the picture is being redrawn', async () => {
+    // Nothing to copy when every frame changes — a source with sparse enough
+    // keyframes is the same story, and both must fall back cleanly.
+    const result = await exporter.exportClip({
+      clipId: 'clip-sc3',
+      clipName: 'Smart Cut Short',
+      startSeconds: 25,
+      // Under SPLICE_MIN_CLIP_SECONDS: three ffmpeg processes would cost more
+      // than the encode they save.
+      endSeconds: 27,
+      source: SOURCE,
+      streams: hlsStreams(),
+      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'precise' },
+      outputPath: join(outDir, 'Smart Cut Short.mp4'),
+      workDir,
+      onProgress: () => undefined
+    })
+    expect(result.notes.join(' ')).not.toMatch(/Smart cut/)
+    expect(result.reEncoded).toBe(true)
+    expect(result.verification.durationSeconds).toBeCloseTo(2, 0)
+  })
+})

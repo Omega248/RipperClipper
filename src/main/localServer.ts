@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import type { Server } from 'node:http'
 import { basename, extname, join, normalize, resolve, sep } from 'node:path'
 import { handleMediaRequest } from './mediaProxy.js'
+import type { MediaProxyOptions } from './mediaProxy.js'
 
 /**
  * One loopback HTTP server with two jobs:
@@ -66,13 +67,29 @@ export interface LocalServer {
   close(): Promise<void>
 }
 
-export async function startLocalServer(rendererDir: string | null): Promise<LocalServer> {
+/**
+ * The segment store the media proxy should share with the exporter, if any.
+ *
+ * Set by the app at startup. Kept as a setter rather than a parameter so the
+ * server can start before the cache directory has been settled from settings,
+ * which is the order the app actually boots in.
+ */
+let segmentStore: MediaProxyOptions['segments'] = undefined
+
+export function setMediaSegmentStore(store: MediaProxyOptions['segments']): void {
+  segmentStore = store
+}
+
+export async function startLocalServer(
+  rendererDir: string | null,
+  log?: { warn(scope: string, message: string, data?: unknown): void }
+): Promise<LocalServer> {
   const root = rendererDir ? resolve(rendererDir) : null
   let base = ''
 
   const server: Server = createServer((req, res) => {
     void (async () => {
-      if (await handleMediaRequest(req, res, { base })) return
+      if (await handleMediaRequest(req, res, { base, segments: segmentStore, log })) return
 
       const requested = decodeURIComponent((req.url ?? '/').split('?')[0])
 

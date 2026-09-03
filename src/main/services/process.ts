@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { constants as osConstants, setPriority } from 'node:os'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 
 /**
@@ -9,7 +10,29 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
  * shell. There is no string-concatenated command anywhere in the app.
  */
 
+/**
+ * How much of the machine a child process is allowed to take.
+ *
+ * Nothing this app runs is more important than whatever the person is
+ * actually looking at. FFmpeg will use every cycle it is given, and at normal
+ * priority that means competing head-on with the foreground window for the
+ * scheduler — which is what a machine "freezing up" during an export actually
+ * is. Below the foreground, ffmpeg still gets every idle cycle (so a batch
+ * left running alone finishes just as fast) and gives them back the instant
+ * anything else asks.
+ *
+ * - `normal`   the OS default. For quick metadata reads that finish in
+ *              milliseconds, where the scheduling hint would cost more than
+ *              the work.
+ * - `background` exports: everything the person is waiting on.
+ * - `idle`     filmstrips, waveforms, scene detection — work nobody asked
+ *              for by name, which should never be felt at all.
+ */
+export type ProcessPriority = 'normal' | 'background' | 'idle'
+
 export interface RunOptions {
+  /** Scheduling priority for the child. Defaults to `normal`. */
+  priority?: ProcessPriority
   /** Called for each chunk of stderr (ffmpeg writes progress there). */
   onStderr?: (chunk: string) => void
   onStdout?: (chunk: string) => void
@@ -63,6 +86,8 @@ export function run(command: string, args: string[], options: RunOptions = {}): 
       reject(err)
       return
     }
+
+    applyPriority(child.pid, options.priority)
 
     const maxBuffer = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER
     let stdout = ''
@@ -130,6 +155,27 @@ export function run(command: string, args: string[], options: RunOptions = {}): 
 
     bumpIdle()
   })
+}
+
+/**
+ * Lower the child's scheduling priority, if the OS lets us.
+ *
+ * Best-effort by design: lowering your own child's priority is permitted
+ * everywhere this app runs, but a hardened policy or a container can still
+ * refuse it, and a process that exits between spawn and this call leaves
+ * nothing to set. None of that is worth failing an export over — the work
+ * runs, it just runs at the default priority.
+ */
+function applyPriority(pid: number | undefined, priority: ProcessPriority | undefined): void {
+  if (!pid || !priority || priority === 'normal') return
+  try {
+    setPriority(
+      pid,
+      priority === 'idle' ? osConstants.priority.PRIORITY_LOW : osConstants.priority.PRIORITY_BELOW_NORMAL
+    )
+  } catch {
+    // Nothing to do about it, and nothing worth telling the user.
+  }
 }
 
 /** Run and throw a ProcessError unless the exit code is 0. */

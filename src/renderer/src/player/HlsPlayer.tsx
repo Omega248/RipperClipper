@@ -48,6 +48,23 @@ export default function HlsPlayer({ src, progressive, onFatalError }: Props): JS
         backBufferLength: 60,
         maxBufferLength: 30,
         maxMaxBufferLength: 90,
+        /*
+         * Start at a believable bitrate instead of the bottom rung.
+         *
+         * hls.js's default first guess is 500 kbps, which on any real ladder
+         * picks the smallest rendition for the opening segments and then climbs
+         * — the "loads blurry and slowly recovers" that made a freshly focused
+         * angle look broken. The estimate is only the *first* guess: measured
+         * throughput replaces it within a segment or two, so an actually slow
+         * connection still ends up where it belongs, just from above rather
+         * than from below.
+         */
+        abrEwmaDefaultEstimate: 5_000_000,
+        // Fetch the next fragment while the current one plays, rather than
+        // waiting for the buffer to run down first.
+        startFragPrefetch: true,
+        // Drop a rung if the decoder cannot keep up, rather than stuttering.
+        capLevelOnFPSDrop: true,
         startPosition: startAt > 0.05 ? startAt : -1
       })
       hls.loadSource(src)
@@ -107,7 +124,18 @@ export default function HlsPlayer({ src, progressive, onFatalError }: Props): JS
         void video.play().catch(() => setPlaying(false))
       }
     }
-    const onTime = (): void => setCurrentTime(video.currentTime)
+    /*
+     * A fresh element reports 0 before it has loaded anything.
+     *
+     * `timeupdate` and `seeked` both fire during setup, and writing that zero
+     * into the store loses the position the *next* initialisation would have
+     * started from — which is how a re-init at the end of a stream turned into
+     * a jump back to the beginning. Nothing is believed until metadata is in.
+     */
+    const onTime = (): void => {
+      if (video.readyState < 1) return
+      setCurrentTime(video.currentTime)
+    }
     const onPlay = (): void => setPlaying(true)
     const onPause = (): void => setPlaying(false)
     // A <video> error says only "src not supported", which is also what a 403
@@ -123,6 +151,51 @@ export default function HlsPlayer({ src, progressive, onFatalError }: Props): JS
         )
       )
     }
+
+    /*
+     * What the player is doing, in the log rather than only on screen.
+     *
+     * Quality changes, playlist reloads and stalls are the three things that
+     * explain "it went blurry", "it stopped at the end" and "it keeps
+     * buffering", and none of them were visible after the fact.
+     */
+    if (hls) {
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+        const level = hls?.levels?.[data.level]
+        if (!level) return
+        void window.api.logEvent('info', 'player', 'Quality changed', {
+          src: src.slice(0, 120),
+          height: level.height,
+          fps: level.frameRate,
+          kbps: Math.round(level.bitrate / 1000)
+        })
+      })
+      hls.on(Hls.Events.LEVEL_UPDATED, (_e, data) => {
+        // A growing recording: the playlist gained segments, which is the
+        // mechanism that keeps a live angle playing past where it was loaded.
+        const details = data.details
+        if (!details.live) return
+        void window.api.logEvent('debug', 'player', 'Playlist re-read', {
+          src: src.slice(0, 120),
+          segments: details.fragments.length,
+          endSeconds: Math.round(details.totalduration),
+          live: details.live
+        })
+      })
+    }
+    const onWaiting = (): void =>
+      void window.api.logEvent('debug', 'player', 'Waiting for data', {
+        src: src.slice(0, 120),
+        at: Math.round(video.currentTime),
+        buffered: video.buffered.length ? Math.round(video.buffered.end(video.buffered.length - 1)) : 0
+      })
+    const onStalled = (): void =>
+      void window.api.logEvent('warn', 'player', 'Playback stalled', {
+        src: src.slice(0, 120),
+        at: Math.round(video.currentTime)
+      })
+    video.addEventListener('waiting', onWaiting)
+    video.addEventListener('stalled', onStalled)
 
     video.addEventListener('loadedmetadata', onLoaded)
     video.addEventListener('timeupdate', onTime)
@@ -162,6 +235,8 @@ export default function HlsPlayer({ src, progressive, onFatalError }: Props): JS
       video.removeEventListener('play', onPlay)
       video.removeEventListener('pause', onPause)
       video.removeEventListener('error', onError)
+      video.removeEventListener('waiting', onWaiting)
+      video.removeEventListener('stalled', onStalled)
       hls?.destroy()
       video.removeAttribute('src')
       video.load()

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { playbackSrc } from '@shared/playbackSrc'
 import { useActiveSource, useStore } from '../store.js'
 import HlsPlayer from './HlsPlayer.js'
 import { message, title } from '../components/QualityPanel.js'
@@ -39,7 +40,11 @@ export function usePlayerViewport(opts: { onShowGuide: () => void }): {
   playerError: string | null
 } {
   const source = useActiveSource()
-  const store = useStore()
+  // One field, one subscription. Selecting the whole store here pulled the
+  // Editor into a re-render on every playhead tick for a proxy base that
+  // changes once at startup.
+  const mediaProxyBase = useStore((s) => s.env?.mediaProxyBase)
+  const mediaProxyToken = useStore((s) => s.env?.mediaProxyToken)
   const [madePreview, setMadePreview] = useState<{
     sourceId: string
     url: string
@@ -68,10 +73,21 @@ export function usePlayerViewport(opts: { onShowGuide: () => void }): {
         target ?? state.project?.clips.find((c) => c.id === state.selectedClipId) ?? null
       // Around the clip if there is one, otherwise around the playhead: never
       // the whole VOD.
+      /*
+       * A duration of zero is "not known yet", not "nothing here".
+       *
+       * Clamping to it collapsed every range to nothing and the preview came
+       * back "That range is empty, so there is nothing to preview." A live
+       * broadcast opened as its in-progress recording is exactly this case:
+       * the platform reports `duration: 0` until the stream ends, and the
+       * length is worked out from the playlist afterwards.
+       */
+      const end = src.durationSeconds > 0 ? src.durationSeconds : Number.POSITIVE_INFINITY
       const from = clip ? Math.max(0, clip.startSeconds - PREVIEW_PAD_SECONDS) : Math.max(0, state.currentTime - 30)
       const to = clip
-        ? Math.min(src.durationSeconds, clip.endSeconds + PREVIEW_PAD_SECONDS)
-        : Math.min(src.durationSeconds, Math.max(60, state.currentTime + 90))
+        ? Math.min(end, clip.endSeconds + PREVIEW_PAD_SECONDS)
+        : Math.min(end, Math.max(60, state.currentTime + 90))
+      if (!(to > from)) return
       if (!buildOpts?.silent) setMakingPreview('Preparing a playable preview of this range…')
       try {
         const result = await window.api.previewMedia({
@@ -144,14 +160,17 @@ export function usePlayerViewport(opts: { onShowGuide: () => void }): {
         />
       )
     }
-    if (source.playbackUrl && (source.playbackKind === 'hls' || source.playbackKind === 'progressive')) {
-      // Preview traffic goes through the app's own local proxy so it is always
-      // same-origin; platform CDNs do not reliably send CORS headers.
-      const base = store.env?.mediaProxyBase
-      const kind = source.playbackKind === 'hls' ? 'manifest' : 'segment'
-      const src = base
-        ? `${base}/media/${kind}?u=${encodeURIComponent(source.playbackUrl)}`
-        : source.playbackUrl
+    // Preview traffic goes through the app's own local proxy so it is always
+    // same-origin; platform CDNs do not reliably send CORS headers.
+    //
+    // Through `playbackSrc` rather than a template written out here. This was
+    // the fourth hand-written copy of that URL, and when the proxy started
+    // requiring a per-run secret it was the one nobody found: the main
+    // viewport asked for every manifest without the secret, the proxy answered
+    // 403 before fetching anything, and the player reported the recording as
+    // unplayable. `tests/unit/mediaProxyCallers.test.ts` now fails on a fifth.
+    const src = playbackSrc(source, mediaProxyBase, mediaProxyToken)
+    if (src) {
       return (
         <HlsPlayer
           // Deliberately not keyed by src: keeping the same <video> across a POV
@@ -175,7 +194,7 @@ export function usePlayerViewport(opts: { onShowGuide: () => void }): {
       />
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, playerError, madePreview, makingPreview, store.env?.mediaProxyBase, buildPreview])
+  }, [source, playerError, madePreview, makingPreview, mediaProxyBase, mediaProxyToken, buildPreview])
 
   return { element, buildPreview, makingPreview, playerError }
 }

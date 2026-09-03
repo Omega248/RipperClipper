@@ -560,3 +560,198 @@ export function appendClip(
 
   return { ...timeline, items: [...timeline.items, video, audio] }
 }
+
+// ------------------------------------------------------- many items at once ---
+
+/**
+ * The ids you asked for, plus the other half of any linked video/audio pair.
+ *
+ * A clip's picture and its sound are two items that happen to point at the
+ * same range. Every edit in this file acts on exactly the id it is given —
+ * that is what keeps each one simple — so "move the sound with the picture"
+ * has to be spelled somewhere, and this is it. The editor puts every
+ * selection through here, which is why dragging a video item no longer
+ * silently desynchronises the audio item beneath it.
+ */
+export function withLinked(timeline: EditorTimeline, ids: Iterable<string>): string[] {
+  const out = new Set<string>()
+  const byId = new Map(timeline.items.map((i) => [i.id, i]))
+  for (const id of ids) {
+    if (!byId.has(id)) continue
+    out.add(id)
+    const partner = byId.get(id)?.linkedItemId
+    if (partner !== undefined && byId.has(partner)) out.add(partner)
+  }
+  return [...out]
+}
+
+/** One item's destination in a multi-item drag. */
+export interface ItemMove {
+  id: string
+  trackId: string
+  timelineStartSeconds: number
+}
+
+/**
+ * Moves several items in one edit, so a group drag is a single undo step
+ * rather than one per item — and so two items that swap places cannot see
+ * each other half-moved.
+ */
+export function moveItems(timeline: EditorTimeline, moves: ItemMove[]): EditorTimeline {
+  if (moves.length === 0) return timeline
+  const byId = new Map(moves.map((m) => [m.id, m]))
+  return {
+    ...timeline,
+    items: timeline.items.map((item) => {
+      const move = byId.get(item.id)
+      if (!move) return item
+      const duration = item.timelineEndSeconds - item.timelineStartSeconds
+      const start = Math.max(0, move.timelineStartSeconds)
+      return { ...item, trackId: move.trackId, timelineStartSeconds: start, timelineEndSeconds: start + duration }
+    })
+  }
+}
+
+/**
+ * Shifts items along their own tracks by a delta, clamped so the earliest of
+ * them stops at zero rather than the group tearing apart against the start of
+ * the sequence.
+ */
+export function nudgeItems(
+  timeline: EditorTimeline,
+  ids: Iterable<string>,
+  deltaSeconds: number
+): EditorTimeline {
+  const wanted = new Set(ids)
+  const moving = timeline.items.filter((i) => wanted.has(i.id))
+  if (moving.length === 0 || deltaSeconds === 0) return timeline
+  const earliest = Math.min(...moving.map((i) => i.timelineStartSeconds))
+  const delta = Math.max(deltaSeconds, -earliest)
+  if (delta === 0) return timeline
+  return moveItems(
+    timeline,
+    moving.map((i) => ({
+      id: i.id,
+      trackId: i.trackId,
+      timelineStartSeconds: i.timelineStartSeconds + delta
+    }))
+  )
+}
+
+/**
+ * Deletes several items as one edit. With `ripple` on, each track closes up
+ * behind what it lost — applied one item at a time so two deletions on the
+ * same track shift the survivors by the sum of both, which is what "close the
+ * gap" means when the gap was made twice.
+ */
+export function deleteItems(
+  timeline: EditorTimeline,
+  ids: Iterable<string>,
+  ripple = false
+): EditorTimeline {
+  let next = timeline
+  // Latest first: a ripple delete only moves items that start *after* the one
+  // removed, so working backwards means each deletion sees the positions the
+  // earlier ones have not yet disturbed.
+  const ordered = [...ids]
+    .map((id) => next.items.find((i) => i.id === id))
+    .filter((i): i is TimelineItem => i !== undefined)
+    .sort((a, b) => b.timelineStartSeconds - a.timelineStartSeconds)
+  for (const item of ordered) next = deleteItem(next, item.id, ripple)
+  return next
+}
+
+/**
+ * Splits every one of `ids` that actually spans the position — the blade
+ * applied to a selection, or (with no ids) to everything crossing that
+ * instant on an unlocked track, which is what pressing the split key with
+ * nothing selected should do.
+ */
+export function splitItemsAt(
+  timeline: EditorTimeline,
+  atTimelineSeconds: number,
+  ids?: Iterable<string>
+): EditorTimeline {
+  const only = ids === undefined ? null : new Set(ids)
+  const lockedTrackIds = new Set(timeline.tracks.filter((t) => t.locked).map((t) => t.id))
+  const targets = timeline.items
+    .filter((i) => (only === null ? !lockedTrackIds.has(i.trackId) : only.has(i.id)))
+    .filter((i) => atTimelineSeconds > i.timelineStartSeconds && atTimelineSeconds < i.timelineEndSeconds)
+    .map((i) => i.id)
+  let next = timeline
+  for (const id of targets) next = splitItem(next, id, atTimelineSeconds)
+  return next
+}
+
+/** Every item overlapping a time span on one of `trackIds` — the marquee's answer. */
+export function itemsInSpan(
+  timeline: EditorTimeline,
+  startSeconds: number,
+  endSeconds: number,
+  trackIds: Iterable<string>
+): string[] {
+  const tracks = new Set(trackIds)
+  const from = Math.min(startSeconds, endSeconds)
+  const to = Math.max(startSeconds, endSeconds)
+  return timeline.items
+    .filter((i) => tracks.has(i.trackId) && i.timelineEndSeconds > from && i.timelineStartSeconds < to)
+    .map((i) => i.id)
+}
+
+/**
+ * Pulls everything after a gap on one track left until it meets what came
+ * before — the "close this hole" command, which trimming and deleting without
+ * ripple both leave behind.
+ */
+export function closeGapAt(
+  timeline: EditorTimeline,
+  trackId: string,
+  atTimelineSeconds: number
+): EditorTimeline {
+  const onTrack = timeline.items
+    .filter((i) => i.trackId === trackId)
+    .sort((a, b) => a.timelineStartSeconds - b.timelineStartSeconds)
+  const next = onTrack.find((i) => i.timelineStartSeconds > atTimelineSeconds)
+  if (!next) return timeline
+  // Where the gap actually begins: the end of the last item before it, or the
+  // start of the sequence when nothing precedes it.
+  const previousEnd = onTrack
+    .filter((i) => i.timelineEndSeconds <= next.timelineStartSeconds + 0.001)
+    .reduce((max, i) => Math.max(max, i.timelineEndSeconds), 0)
+  const gap = next.timelineStartSeconds - previousEnd
+  if (gap <= 0.001) return timeline
+  return {
+    ...timeline,
+    items: timeline.items.map((i) =>
+      i.trackId === trackId && i.timelineStartSeconds >= next.timelineStartSeconds - 0.001
+        ? {
+            ...i,
+            timelineStartSeconds: i.timelineStartSeconds - gap,
+            timelineEndSeconds: i.timelineEndSeconds - gap
+          }
+        : i
+    )
+  }
+}
+
+/** Moves a track up or down its own kind's stack, which is what decides who is on top. */
+export function reorderTrack(
+  timeline: EditorTimeline,
+  trackId: string,
+  direction: 'up' | 'down'
+): EditorTimeline {
+  const track = timeline.tracks.find((t) => t.id === trackId)
+  if (!track) return timeline
+  const siblings = timeline.tracks
+    .filter((t) => t.kind === track.kind)
+    .sort((a, b) => a.order - b.order)
+  const index = siblings.findIndex((t) => t.id === trackId)
+  const swapWith = siblings[index + (direction === 'up' ? 1 : -1)]
+  if (!swapWith) return timeline
+  return {
+    ...timeline,
+    tracks: timeline.tracks.map((t) =>
+      t.id === track.id ? { ...t, order: swapWith.order } : t.id === swapWith.id ? { ...t, order: track.order } : t
+    )
+  }
+}

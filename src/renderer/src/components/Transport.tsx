@@ -1,7 +1,7 @@
 import { formatTimecode, nearestWithin } from '@shared/time'
 import { useActiveClips, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
-import { povLabel } from './PovBar.js'
+import { povLabel } from '@shared/pov'
 import { message, title } from './QualityPanel.js'
 import { useEffect, useRef, useState } from 'react'
 import { Button, IconButton, Select, Slider } from '../ui/index.js'
@@ -48,7 +48,6 @@ export default function Transport(): JSX.Element {
   const hasSource = useStore((s) => s.activeSourceId !== null)
   const sources = useStore((s) => s.project?.sources)
   const activeSourceId = useStore((s) => s.activeSourceId)
-  const setActiveSource = useStore((s) => s.setActiveSource)
   const toast = useStore((s) => s.toast)
   const [sceneSnapping, setSceneSnapping] = useState<'in' | 'out' | null>(null)
 
@@ -127,6 +126,10 @@ export default function Transport(): JSX.Element {
     return () => clearInterval(id)
   }, [sequenceIndex, clips, setSequenceIndex])
 
+  const watching = sources && sources.length > 1
+    ? (sources.find((s) => s.id === activeSourceId) ?? null)
+    : null
+
   const gotoClip = (delta: number): void => {
     if (clips.length === 0) return
     const index = selected ? clips.findIndex((c) => c.id === selected.id) : -1
@@ -164,21 +167,13 @@ export default function Transport(): JSX.Element {
         {formatTimecode(currentTime)} <span className="dim">/ {formatTimecode(duration)}</span>
       </span>
 
-      {sources && sources.length > 1 && (
-        <span className="watching" role="group" aria-label="Point of view">
+      {/* The POV strip above the stage is the switcher, and the timeline's
+          own angle rows are the other one. A third copy of the same list
+          here just made the bar long enough to push Add clip off-centre. */}
+      {watching && (
+        <span className="watching" title={`Watching ${watching.title}`}>
           <span className="watching-label">Watching</span>
-          {sources.map((source, index) => (
-            <Button
-              key={source.id}
-              size="compact"
-              variant="ghost"
-              selected={source.id === activeSourceId}
-              title={`Watch ${source.title} at the same moment`}
-              onClick={() => setActiveSource(source.id)}
-            >
-              {povLabel(source, index)}
-            </Button>
-          ))}
+          <span className="ellipsis">{povLabel(watching)}</span>
         </span>
       )}
 

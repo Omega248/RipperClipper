@@ -1,15 +1,16 @@
 import type { ResolvedWatermark, WatermarkConfig, WatermarkImage } from './watermark.js'
+import type { EditingProject } from './editingProject.js'
+import type { EditorCapabilities, EditorId } from './editorCapabilities.js'
 import type { AudioEdit } from './audioEdits.js'
 import type { DiscoveredStream } from './discovery.js'
 import type { ProjectPackage } from './packaging.js'
-import type { AnalysisProgress, ClipTranscript, WhisperModelId } from './transcription.js'
-import type { ProfanityHit } from './profanity.js'
 import type {
   AppSettings,
   DiskSpaceInfo,
   ExportJob,
   ExportSettings,
   FfmpegInfo,
+  LiveState,
   ProjectFile,
   ResolverInfo,
   PlatformId,
@@ -17,6 +18,30 @@ import type {
   TimelineTransform,
   VodSource
 } from './types.js'
+
+/**
+ * Every live source's state, plus the one cross-source fact none of them owns.
+ *
+ * `windowNotice` is set when the live memory budget forced a smaller window
+ * than the user asked for. It travels with the states because the UI has to
+ * say so — a buffer strip that silently holds ninety seconds when five minutes
+ * was chosen is lying about what can be clipped.
+ */
+export interface LiveSnapshot {
+  sources: Record<string, LiveState>
+  windowNotice: string | null
+  /**
+   * The platform's own recording of each broadcast still in progress, resolved
+   * as an ordinary VOD.
+   *
+   * This is what makes a live POV clippable from the moment it went live
+   * rather than only across the rolling buffer: it is a growing playlist the
+   * existing VOD path can already seek and export, so the source swaps its
+   * media over to it and everything downstream carries on unchanged. Keyed by
+   * live source id; absent while no recording has been found.
+   */
+  recordings?: Record<string, VodSource>
+}
 
 export interface PeaksQuery {
   source: VodSource
@@ -82,7 +107,7 @@ export interface FilmstripReply {
 }
 
 /** External programs Ripper Clipper can install for itself. */
-export type ToolId = 'ffmpeg' | 'ytdlp' | 'whisper'
+export type ToolId = 'ffmpeg' | 'ytdlp'
 
 export interface ToolStatus {
   id: ToolId
@@ -147,6 +172,14 @@ export interface SavedStreamer {
   watermark?: WatermarkConfig
   /** Which StreamerGroups this streamer's current character belongs to — PD, a gang, EMS, … */
   groupIds?: string[]
+  /**
+   * When the other platforms were last searched for this same person.
+   *
+   * Set so the search happens once per streamer rather than on every launch:
+   * it costs a profile lookup per platform, and a handle that does not exist
+   * on Twitch today is not going to exist on Twitch tomorrow either.
+   */
+  siblingsCheckedAt?: string
   /**
    * Shared by every saved entry that is the same real person restreaming to
    * more than one platform, so a moment covered by two of them can be
@@ -257,18 +290,67 @@ export interface EventDiscoveryReply {
   notes: string[]
 }
 
-/** A speech model as the Setup panel sees it. */
-export interface WhisperModelStatus {
-  id: WhisperModelId
-  label: string
-  purpose: string
-  approxBytes: number
-  installed: boolean
-  sizeBytes: number
-  path: string | null
+/** One past broadcast in the streamer picker. */
+/** Everything known about one streamer's back catalogue. */
+export interface StreamerVodShelf {
+  streamerId: string
+  platform: PlatformId
+  handle: string
+  /** Newest first. An empty `publishedAt` means "asked, and the platform would not say". */
+  vods: StreamerVod[]
+  listedAt: string | null
+  /** When the listing was last attempted, successful or not. */
+  attemptedAt?: string | null
+  datedAt: string | null
+  error?: string
 }
 
-/** One past broadcast in the streamer picker. */
+/** How far along the background crawl is, for the interface to show. */
+export interface VodCrawlProgress {
+  /** Whose broadcasts are being read right now, by display name. */
+  active: string | null
+  /** Broadcasts still needing a date, across every streamer. */
+  pending: number
+  /** True while the crawl is standing aside for an export. */
+  waiting: boolean
+}
+
+/** The best streams one platform offers for a channel's newest broadcast. */
+export interface PlatformQuality {
+  platform: PlatformId
+  handle: string
+  channelUrl: string
+  /** Whether a channel with this handle exists there at all. */
+  found: boolean
+  displayName?: string
+  vod?: { url: string; title: string; publishedAt: string | null }
+  video?: {
+    label: string
+    width?: number
+    height?: number
+    fps?: number
+    /** bits per second */
+    bitrate?: number
+    codec?: string
+  }
+  audio?: { bitrate?: number; channels?: number; sampleRate?: number; codec?: string }
+  /** Why this platform could not be read, when it could not. */
+  error?: string
+}
+
+/** The same handle across every platform, and which one to cut from. */
+export interface PlatformComparison {
+  handle: string
+  options: PlatformQuality[]
+  bestPlatform: PlatformId | null
+}
+
+/** A channel that is broadcasting right now. Absent from the map = offline. */
+export interface LiveNow {
+  viewers?: number
+  title?: string
+}
+
 export interface StreamerVod {
   url: string
   title: string
@@ -293,6 +375,7 @@ export const IPC = {
   // sources
   sourceResolve: 'source:resolve',
   sourceInspectFormats: 'source:inspect-formats',
+  sourceLiveStatus: 'source:live-status',
 
   // projects
   projectNew: 'project:new',
@@ -308,24 +391,27 @@ export const IPC = {
   projectBackupRestore: 'project:backup-restore',
   projectStartupPath: 'project:startup-path',
 
+  // editing-project export
+  editorsList: 'editors:list',
+  editingProjectValidate: 'editing-project:validate',
+  editingProjectExport: 'editing-project:export',
+  editingProjectChooseFolder: 'editing-project:choose-folder',
+
   // streamers
   streamersList: 'streamers:list',
   streamersAdd: 'streamers:add',
   streamersRemove: 'streamers:remove',
   streamersVods: 'streamers:vods',
+  streamersShelf: 'streamers:shelf',
+  streamersLive: 'streamers:live',
+  streamersLiveCached: 'streamers:live-cached',
+  streamersCompare: 'streamers:compare',
+  streamersDiscoverSiblings: 'streamers:discover-siblings',
+  streamersCrawlProgress: 'streamers:crawl-progress',
+  streamersCrawlNow: 'streamers:crawl-now',
   streamersWatermark: 'streamers:watermark',
   streamersOverlap: 'streamers:overlap',
   discoverEvent: 'discovery:event',
-  clipAnalyse: 'censor:analyse',
-  clipAnalysisCancel: 'censor:cancel',
-  clipAnalysisProgress: 'censor:progress',
-  clipHits: 'censor:hits',
-  clipTranscript: 'censor:transcript',
-  clipAnalysisForget: 'censor:forget',
-  censorReady: 'censor:ready',
-  whisperModels: 'whisper:models',
-  whisperModelInstall: 'whisper:model-install',
-  whisperModelRemove: 'whisper:model-remove',
   resolveMoment: 'scene:resolve-moment',
   archiveRange: 'scene:archive-range',
   packageExport: 'package:export',
@@ -349,6 +435,13 @@ export const IPC = {
   audioPeaks: 'audio:peaks',
   sceneChanges: 'media:scene-changes',
   filmstrip: 'media:filmstrip',
+
+  // live sources
+  liveWatch: 'live:watch',
+  liveUnwatch: 'live:unwatch',
+  liveStates: 'live:states',
+  liveCovers: 'live:covers',
+  liveWindow: 'live:window',
 
   // dependency installer
   depsStatus: 'deps:status',
@@ -380,6 +473,7 @@ export const IPC = {
 
   // cache / disk
   cacheStats: 'cache:stats',
+  appMetrics: 'app:metrics',
   cacheClear: 'cache:clear',
   diskSpace: 'disk:space',
 
@@ -388,7 +482,10 @@ export const IPC = {
   openPath: 'shell:open',
 
   // logs
+  queuePaused: 'export:paused',
   logsPath: 'logs:path',
+  /** Anything the renderer needs in the app log. See `logEvent`. */
+  logEvent: 'logs:event',
   logsTail: 'logs:tail',
 
   // window chrome — the titlebar is drawn by the app, not the OS
@@ -406,6 +503,10 @@ export const IPC = {
 
   // events (main -> renderer)
   evtJobs: 'evt:jobs',
+  /** The background VOD crawl found something, or changed what it is doing. */
+  evtVodCrawl: 'evt:vod-crawl',
+  /** A live source changed state — went live, dropped, ended, filled. */
+  evtLive: 'evt:live',
   evtLog: 'evt:log',
   evtToast: 'evt:toast',
   evtDeps: 'evt:deps',
@@ -416,6 +517,21 @@ export const IPC = {
   evtBeforeClose: 'evt:before-close'
 } as const
 
+/**
+ * What Electron itself says it is costing, sampled live.
+ *
+ * Exposed for the playback benchmark: the question "is the browser media stack
+ * expensive enough to be worth replacing" cannot be answered from inside a
+ * renderer, which can only see its own tab. This is every process the app owns.
+ */
+export interface AppMetrics {
+  /** Summed across every process, so 250 means two and a half cores. */
+  cpuPercent: number
+  /** Working set, MB, summed. */
+  memoryMB: number
+  processes: Array<{ type: string; cpuPercent: number; memoryMB: number }>
+}
+
 export interface EnvInfo {
   ffmpeg: FfmpegInfo
   resolver: ResolverInfo
@@ -424,6 +540,8 @@ export interface EnvInfo {
   defaultOutputDirectory: string
   /** Base URL of the local same-origin media proxy used by the preview player. */
   mediaProxyBase: string
+  /** Required on every media-proxy URL. See shared/mediaProxyUrl.ts. */
+  mediaProxyToken: string
 }
 
 export interface EnqueueRequest {
@@ -541,6 +659,14 @@ export interface RendererApi {
     event?: { projectId: string; projectName: string; eventName?: string }
   ): Promise<VodSource>
   inspectFormats(source: VodSource): Promise<StreamInfo[]>
+  /**
+   * Whether this recording is still being written, and how long it is now.
+   *
+   * Both go stale the moment they are read — see `SourceService.liveStatus`.
+   * Null when the platform could not be asked, which leaves what the project
+   * already knew alone.
+   */
+  liveStatus(source: VodSource): Promise<{ durationSeconds: number; stillRecording: boolean } | null>
 
   newProject(name: string): Promise<ProjectFile>
   saveProject(project: ProjectFile, path?: string): Promise<{ path: string; project: ProjectFile }>
@@ -557,6 +683,24 @@ export interface RendererApi {
   restoreBackup(path: string): Promise<ProjectFile>
 
   /** Peaks for a window of one POV's audio, for the manual-sync waveform. */
+  /**
+   * Start holding a rolling buffer for a live source. Idempotent — one buffer
+   * per source, shared by every consumer.
+   */
+  liveWatch(source: VodSource): Promise<LiveState>
+  /** Stop holding media for a source and free it. */
+  liveUnwatch(sourceId: string): Promise<void>
+  /** Every live source's current state, by source id. */
+  liveStates(): Promise<LiveSnapshot>
+  /**
+   * Whether an event range can be served from held media or needs an origin
+   * fetch. The difference between instant and slow, which the UI states before
+   * the user asks for the clip.
+   */
+  liveCovers(req: { sourceId: string; startEpoch: number; endEpoch: number }): Promise<boolean>
+  /** Change the buffer window (Settings -> Playback & live). */
+  liveSetWindow(seconds: number): Promise<LiveSnapshot>
+
   audioPeaks(req: PeaksQuery): Promise<PeaksReply>
   /** Where the picture actually cuts within a window — suggests clip in/out points. */
   sceneChanges(req: SceneChangesQuery): Promise<SceneChangesReply>
@@ -584,6 +728,32 @@ export interface RendererApi {
   /** Store (or clear) a streamer's default watermark. */
   setStreamerWatermark(id: string, watermark: WatermarkConfig | null): Promise<SavedStreamer[]>
   /** Saved streamers whose broadcasts overlap an event's real-world range. */
+  /** Every editing application the app knows about, and what each can be given. */
+  listEditors(): Promise<Record<EditorId, EditorCapabilities>>
+  /** What is wrong with this project before anything is written. */
+  validateEditingProject(
+    project: EditingProject,
+    editor: EditorId
+  ): Promise<{ ok: boolean; issues: Array<{ severity: 'error' | 'warning'; message: string; fix?: string }> }>
+  /**
+   * Write the project package. Never reads a frame of video: the result's
+   * `elapsedMs` is expected to be independent of how long the angles are.
+   */
+  exportEditingProject(req: {
+    project: EditingProject
+    editor: EditorId
+    parentDirectory: string
+    copyMedia: boolean
+  }): Promise<{
+    editor: EditorId
+    directory: string
+    projectFile: string | null
+    files: string[]
+    notes: string[]
+    elapsedMs: number
+  }>
+  /** Ask for the folder the package should be written under. */
+  chooseEditingProjectFolder(): Promise<string | null>
   streamersCoveringEvent(req: EventOverlapRequest): Promise<EventOverlapReply>
   /**
    * Every POV of a real-world event, swept across the platforms that support
@@ -592,29 +762,6 @@ export interface RendererApi {
    * it could not sweep — see main/services/discovery.ts.
    */
   discoverEvent(req: EventDiscoveryRequest): Promise<EventDiscoveryReply>
-
-  /**
-   * Read one POV's cut of a clip in the background. Resolves when that POV
-   * is done; progress for every POV arrives on `onClipAnalysisProgress`.
-   */
-  clipAnalyse(req: {
-    clipId: string
-    source: VodSource
-    startSeconds: number
-    endSeconds: number
-  }): Promise<boolean>
-  clipAnalysisCancel(clipId: string): Promise<void>
-  onClipAnalysisProgress(handler: (progress: AnalysisProgress) => void): () => void
-  /** Censor suggestions for a clip. The word list is applied fresh on every call. */
-  clipHits(req: { clipId: string; sourceIds: string[]; words?: string[] }): Promise<ProfanityHit[]>
-  clipTranscript(clipId: string, sourceId: string): Promise<ClipTranscript | null>
-  clipAnalysisForget(clipId: string, sourceIds: string[]): Promise<void>
-  /** Whether local reading is possible at all, and why not when it is not. */
-  censorReady(): Promise<{ available: boolean; reason: string | null }>
-
-  whisperModelStatus(): Promise<WhisperModelStatus[]>
-  whisperModelInstall(id: WhisperModelId): Promise<WhisperModelStatus[]>
-  whisperModelRemove(id: WhisperModelId): Promise<WhisperModelStatus[]>
 
   /**
    * Turn a shared clip/VOD link into the real-world instant it points at.
@@ -642,6 +789,35 @@ export interface RendererApi {
   addStreamer(input: string, platform?: PlatformId): Promise<SavedStreamer[]>
   removeStreamer(id: string): Promise<SavedStreamer[]>
   streamerVods(id: string): Promise<StreamerVod[]>
+  /**
+   * Start the frame server and say where to read from.
+   *
+   * Starting is deferred until something actually wants to decode: an app
+   * nobody opens a POV in should never have run ffmpeg at all.
+   */
+  /** Tell the decoder which angles it may be asked for. */
+  /**
+   * Everything the library knows about one streamer's past broadcasts.
+   *
+   * Answered from disk, so it returns instantly and works offline. Asking
+   * also moves that streamer to the front of the background crawl, because
+   * asking is the clearest signal of what matters now.
+   */
+  streamerShelf(id: string): Promise<StreamerVodShelf | null>
+  /** Which saved channels are broadcasting right now, keyed by streamer id. */
+  streamersLive(): Promise<Record<string, LiveNow>>
+  /** Who was live when the app last looked — instant, possibly a few minutes old. */
+  streamersLiveCached(): Promise<Record<string, LiveNow>>
+  /** The same handle on every platform, ranked by the quality each offers. */
+  compareStreamerPlatforms(handle: string): Promise<PlatformComparison>
+  /** Find this person's channels on the other platforms and link them as one. */
+  discoverStreamerSiblings(id: string): Promise<SavedStreamer[]>
+  /** How far along the background crawl is. */
+  vodCrawlProgress(): Promise<VodCrawlProgress>
+  /** Read this channel's listing next, rather than waiting for its turn. */
+  refreshStreamerVods(id: string): Promise<void>
+  /** The background crawl reported progress. */
+  onVodCrawl(listener: (progress: VodCrawlProgress) => void): () => void
   /** Replaces a streamer's whole group membership list. */
   setStreamerGroups(id: string, groupIds: string[]): Promise<SavedStreamer[]>
   /** Pins/unpins a streamer to the top of the list. */
@@ -687,13 +863,39 @@ export interface RendererApi {
   exportClipListCsv(csv: string, suggestedName: string): Promise<string | null>
 
   cacheStats(): Promise<CacheStats>
+  /** Live per-process CPU and memory, for the playback benchmark. */
+  appMetrics(): Promise<AppMetrics>
   clearCache(): Promise<CacheStats>
   diskSpace(path: string): Promise<DiskSpaceInfo>
 
   revealPath(path: string): Promise<void>
   openPath(path: string): Promise<void>
 
+  /**
+   * Is the export queue paused?
+   *
+   * Asked once on startup because the answer lives in the main process and the
+   * button used to be a renderer-local guess: a reload — including the one the
+   * crash screen offers — came back showing "Pause" on a queue that was
+   * already paused, with no way to resume but to guess.
+   */
+  queuePaused(): Promise<boolean>
   logsPath(): Promise<string>
+  /**
+   * Write to the app log from the renderer.
+   *
+   * Half of what goes wrong in this app is only visible in the window: a
+   * render that threw, a tile decoding at 13fps, an angle that fell back to
+   * the browser. None of it reached the log, so diagnosing "it's not smooth"
+   * meant reading numbers off a screenshot. The main process cannot see any of
+   * it, so the renderer has to say.
+   */
+  logEvent(
+    level: 'debug' | 'info' | 'warn' | 'error',
+    scope: string,
+    message: string,
+    data?: unknown
+  ): Promise<void>
   tailLogs(lines: number): Promise<string>
 
   /** The window chrome is drawn by the app; these reach the real OS window. */
@@ -712,6 +914,7 @@ export interface RendererApi {
   installUpdate(): Promise<void>
 
   onJobs(cb: (jobs: ExportJob[]) => void): () => void
+  onLive(cb: (snapshot: LiveSnapshot) => void): () => void
   onToast(cb: (toast: ToastEvent) => void): () => void
   onOpenProject(cb: (path: string) => void): () => void
   /** Fires on maximize/unmaximize/snap, so the restore-vs-maximize icon stays honest. */

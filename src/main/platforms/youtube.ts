@@ -14,13 +14,9 @@ export class YouTubeAdapter implements PlatformAdapter {
   readonly displayName = 'YouTube'
 
   readonly capabilities: AdapterCapabilities = {
-    metadata: true,
-    playback: true,
-    rangeDownload: true,
-    requiresAuth: false,
     notes: [
       'Preview plays through the application player using the muxed progressive stream; export still uses the best adaptive video and audio available.',
-      'Age-restricted, private and members-only videos need an authenticated session; add browser cookies in Settings → Advanced.',
+      'Age-restricted, private and members-only videos need an authenticated session; choose your browser under Settings → Setup → Restricted VODs.',
       'Videos that YouTube serves only under DRM cannot be exported — Ripper Clipper reports this instead of failing silently.'
     ]
   }
@@ -31,6 +27,31 @@ export class YouTubeAdapter implements PlatformAdapter {
     const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
 
     let videoId: string | null = null
+
+    // A channel's live URL — youtube.com/@handle/live — names a person, not a
+    // recording. YouTube gives the broadcast an ordinary video id, but only
+    // once it starts, so until then the handle is the only identity there is.
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      const parts = parsed.pathname.split('/').filter(Boolean)
+      const handle =
+        parts[0]?.startsWith('@') && parts[1] === 'live'
+          ? parts[0].slice(1)
+          : (parts[0] === 'channel' || parts[0] === 'c' || parts[0] === 'user') &&
+              parts[1] &&
+              parts[2] === 'live'
+            ? parts[1]
+            : null
+      if (handle) {
+        return {
+          platform: this.id,
+          vodId: handle.toLowerCase(),
+          kind: 'channel',
+          canonicalUrl: parts[0].startsWith('@')
+            ? `https://www.youtube.com/@${handle}/live`
+            : `https://www.youtube.com/${parts[0]}/${handle}/live`
+        }
+      }
+    }
 
     if (host === 'youtu.be') {
       videoId = parsed.pathname.split('/').filter(Boolean)[0] ?? null
@@ -50,6 +71,7 @@ export class YouTubeAdapter implements PlatformAdapter {
     return {
       platform: this.id,
       vodId: videoId,
+      kind: 'vod',
       canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`,
       startSeconds: parseOffset(parsed.searchParams.get('t') ?? parsed.searchParams.get('start'))
     }

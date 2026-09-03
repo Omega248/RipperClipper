@@ -2,7 +2,13 @@ import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/p
 import { basename, dirname, join } from 'node:path'
 import { Errors } from '../../shared/errors.js'
 import { DEFAULT_EXPORT_SETTINGS } from '../../shared/defaults.js'
+import { masterPlaylistFor } from '../../shared/mediaProxyUrl.js'
 import { createId, normalizeOrder } from '../../shared/clips.js'
+import {
+  RENAME_ATTEMPTS,
+  isTransientRenameError,
+  renameRetryDelayMs
+} from '../../shared/atomicWrite.js'
 import { refreshClipMappings } from '../../shared/povMapping.js'
 import { CLIP_WORKFLOW_ORDER } from '../../shared/types.js'
 import type {
@@ -66,6 +72,7 @@ export class ProjectStore {
   async save(project: ProjectFile, path: string): Promise<ProjectFile> {
     const next: ProjectFile = {
       ...project,
+      sources: stripLive(project.sources),
       clips: normalizeOrder(project.clips),
       updatedAt: new Date().toISOString()
     }
@@ -102,6 +109,9 @@ export class ProjectStore {
   }
 
   /** Snapshot whatever is currently on disk before it gets overwritten. */
+  /** Monotonic within this process, so backup names sort in creation order. */
+  private backupSequence = 0
+
   private async backupExisting(path: string): Promise<void> {
     let existing: Buffer
     try {
@@ -112,9 +122,24 @@ export class ProjectStore {
     const dir = this.backupDir(path)
     await mkdir(dir, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    // The suffix guards against two saves landing in the same millisecond,
-    // which would otherwise silently overwrite one backup with another.
-    await writeFile(join(dir, `${stamp}-${createId('bak')}.${PROJECT_EXTENSION}`), existing)
+    /*
+     * Timestamp, then a counter, then a random id.
+     *
+     * `pruneBackups` drops the oldest by sorting these names, so the name has
+     * to sort in creation order. The timestamp alone does not: two saves in the
+     * same millisecond share it, and the random suffix that follows then
+     * decides which is "oldest" — at random. The counter makes the order real
+     * within a millisecond, and the random id still keeps two *processes* from
+     * colliding on the same name.
+     *
+     * Padded so it sorts as a string rather than a number: `10` must not come
+     * before `9`.
+     */
+    const sequence = String(this.backupSequence++).padStart(6, '0')
+    await writeFile(
+      join(dir, `${stamp}-${sequence}-${createId('bak')}.${PROJECT_EXTENSION}`),
+      existing
+    )
     await this.pruneBackups(dir)
   }
 
@@ -148,7 +173,7 @@ export class ProjectStore {
   async autosave(project: ProjectFile): Promise<void> {
     await atomicWriteJson(this.recoveryFile, {
       savedAt: new Date().toISOString(),
-      project
+      project: { ...project, sources: stripLive(project.sources) }
     })
   }
 
@@ -229,11 +254,145 @@ function emptyRecovery(): RecoveryInfo {
   return { available: false, path: null, savedAt: null, projectName: null }
 }
 
+/**
+ * `VodSource.live` is transient runtime state — buffer fill, measured latency,
+ * retry count. Persisting it writes facts that are false the moment the file is
+ * reopened, so it is dropped on every write path.
+ */
+function stripLive(sources: VodSource[]): VodSource[] {
+  return sources.map(({ live: _live, ...rest }) => rest)
+}
+
+/**
+ * Counter for temp file names. See below for why the pid alone was not enough.
+ */
+let atomicWriteSeq = 0
+
 export async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  const tmp = `${path}.${process.pid}.tmp`
+  /*
+   * Unique per CALL, not per process.
+   *
+   * This used to be `${path}.${process.pid}.tmp`, which is one temp file
+   * shared by every concurrent write to the same path inside one app. Two
+   * writers then wrote into the same file at once and the rename published
+   * whatever the overlap produced: a shorter document followed by the tail of
+   * a longer one. That reads back as "Unexpected non-whitespace character
+   * after JSON at position N" — a file that is valid JSON and then suddenly
+   * is not, which is exactly how a streamer library got corrupted.
+   *
+   * A counter makes each write its own file, so the rename is the only thing
+   * that can publish and it publishes one complete document. The rename
+   * itself was always atomic; the staging was not.
+   */
+  const tmp = `${path}.${process.pid}.${atomicWriteSeq++}.tmp`
   await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
-  await rename(tmp, path)
+  await publish(tmp, path)
+}
+
+/**
+ * Replace `path` with `tmp`, retrying the way Windows requires.
+ *
+ * On POSIX, renaming over an existing file is atomic and simply succeeds. On
+ * Windows it can fail with EPERM, EACCES or EBUSY when anything holds a handle
+ * to the target for an instant — the indexer, a virus scanner, or another of
+ * this app's own concurrent writes to the same path, since replacing a file
+ * there is not the single indivisible operation it is on POSIX.
+ *
+ * The failure is transient and the fix is to ask again shortly. Not retrying
+ * means a save that silently did not happen, and every durable thing the app
+ * owns goes through here: projects, settings, the streamer library, the VOD
+ * library. Losing one of those to a momentary lock is not acceptable, and it
+ * is invisible until someone notices their work is missing.
+ *
+ * Bounded, and it gives up loudly rather than leaving a caller believing a
+ * write succeeded. The staging file is cleaned up either way, so a failure
+ * does not leave `.tmp` litter beside the real one.
+ */
+async function publish(tmp: string, path: string): Promise<void> {
+  let lastError: unknown = null
+
+  for (let attempt = 0; attempt < RENAME_ATTEMPTS; attempt++) {
+    try {
+      await rename(tmp, path)
+      return
+    } catch (err) {
+      lastError = err
+      if (!isTransientRenameError((err as NodeJS.ErrnoException).code)) break
+      await new Promise((resolve) => setTimeout(resolve, renameRetryDelayMs(attempt)))
+    }
+  }
+
+  // Give up loudly. A caller that believes a write succeeded when it did not
+  // is worse than one that has to handle a failure.
+  await rm(tmp, { force: true }).catch(() => undefined)
+  throw lastError
+}
+
+/**
+ * Read back a JSON document that may have a corrupted tail.
+ *
+ * Recovery for files written by the bug above: the good document is intact at
+ * the front and the damage is everything after its closing bracket, so the
+ * longest valid prefix is the real content. Returns null when there is nothing
+ * salvageable, which the caller must treat as "could not read" rather than
+ * "empty" — the two are not the same answer.
+ */
+export function parseJsonSalvagingTail(text: string): unknown | null {
+  try {
+    return JSON.parse(text)
+  } catch {
+    const end = firstDocumentEnd(text)
+    if (end === -1) return null
+    try {
+      return JSON.parse(text.slice(0, end + 1))
+    } catch {
+      return null
+    }
+  }
+}
+
+/**
+ * Index of the closing bracket of the FIRST complete value in the text.
+ *
+ * The first, not the last: the damage is a short document published over a
+ * longer one, so what follows the first complete value is the longer one's
+ * tail — including its own closing bracket, which is why taking the last one
+ * finds nothing parseable. Strings and escapes are tracked because a bracket
+ * inside a title would otherwise end the scan early, and broadcast titles are
+ * full of them.
+ */
+function firstDocumentEnd(text: string): number {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  let started = false
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+
+    if (ch === '"') {
+      inString = true
+      continue
+    }
+    if (ch === '[' || ch === '{') {
+      depth++
+      started = true
+      continue
+    }
+    if (ch === ']' || ch === '}') {
+      depth--
+      if (started && depth === 0) return i
+    }
+  }
+  return -1
 }
 
 export function parseProject(raw: string, path: string): ProjectFile {
@@ -253,20 +412,28 @@ export function parseProject(raw: string, path: string): ProjectFile {
 export function normalizeProject(input: unknown, path: string): ProjectFile {
   if (typeof input !== 'object' || input === null) throw Errors.projectCorrupt(path)
   const p = input as Record<string, unknown>
-
   if (!Array.isArray(p.clips) || !Array.isArray(p.sources)) {
     throw Errors.projectCorrupt(path, 'missing clips or sources array')
   }
 
-  const sources: VodSource[] = (p.sources as unknown[]).filter(isSource).map((s) => ({
+  const sources = (p.sources as unknown[]).filter(isSource).map((s) => ({
     ...s,
-    formatsInspected: Boolean(s.formatsInspected)
+    formatsInspected: Boolean(s.formatsInspected),
+    /*
+     * Repair a playback URL saved as a single rendition.
+     *
+     * Every project written before the resolver was fixed stored the highest
+     * *variant* here instead of the master, which pinned every angle to
+     * 1080p60 however small it was drawn — hls.js had one level to cap to and
+     * the tile decoder's rendition picker never ran. Nothing re-resolves on
+     * open, so without this those projects keep the bug forever.
+     */
+    ...(s.playbackUrl && masterPlaylistFor(s.playbackUrl)
+      ? { playbackUrl: masterPlaylistFor(s.playbackUrl)! }
+      : {})
   }))
 
-  // v2 projects stored clips only in VOD time. They keep working: the event
-  // range stays null until the POV's timing is known, and the authoring POV's
-  // own numbers are never derived, so nothing shifts under the editor.
-  const clips: ClipSegment[] = normalizeOrder(
+  const clips = normalizeOrder(
     (p.clips as unknown[]).filter(isClip).map((c) => ({
       ...c,
       eventStartTime: typeof c.eventStartTime === 'number' ? c.eventStartTime : null,
@@ -276,8 +443,7 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
           ? c.durationSeconds
           : c.endSeconds - c.startSeconds,
       // Never restore a transient status from disk.
-      status:
-        c.status === 'complete' || c.status === 'failed' ? c.status : ('idle' as ClipSegment['status']),
+      status: c.status === 'complete' || c.status === 'failed' ? c.status : 'idle',
       // v5 additions. A v4 clip has none of these and reads as exactly what
       // it was: loose in the event, freshly found, no POV decided on yet.
       collectionId: typeof c.collectionId === 'string' ? c.collectionId : null,
@@ -288,22 +454,20 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
     }))
   )
 
-  const markers: Marker[] = Array.isArray(p.markers) ? (p.markers as unknown[]).filter(isMarker) : []
-
-  // Anchors are what tie every POV to the real-world clock; losing them would
-  // silently un-sync a project on reopen.
-  const syncAnchors: SyncAnchor[] = Array.isArray(p.syncAnchors)
+  const markers = Array.isArray(p.markers) ? (p.markers as unknown[]).filter(isMarker) : []
+  const syncAnchors = Array.isArray(p.syncAnchors)
     ? (p.syncAnchors as unknown[]).filter(isAnchor)
     : []
-
-  // Mappings are rebuilt from the event timeline on load: a project saved
-  // before a POV was re-synced must not reopen with the old projections.
   const mappedClips = refreshClipMappings(clips, sources, new Date().toISOString())
+  const event = normalizeEvent(p.event)
 
   return {
     schemaVersion: 5,
     id: typeof p.id === 'string' ? p.id : createId('proj'),
-    name: typeof p.name === 'string' && p.name !== '' ? p.name : basename(path).replace(/\.[^.]+$/, ''),
+    name:
+      typeof p.name === 'string' && p.name !== ''
+        ? p.name
+        : basename(path).replace(/\.[^.]+$/, ''),
     createdAt: typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString(),
     updatedAt: typeof p.updatedAt === 'string' ? p.updatedAt : new Date().toISOString(),
     sources,
@@ -312,28 +476,24 @@ export function normalizeProject(input: unknown, path: string): ProjectFile {
     syncAnchors,
     exportSettings: upgradeFilenameTemplate({
       ...DEFAULT_EXPORT_SETTINGS,
-      ...(typeof p.exportSettings === 'object' && p.exportSettings !== null ? p.exportSettings : {})
+      ...(typeof p.exportSettings === 'object' && p.exportSettings !== null
+        ? (p.exportSettings as Partial<ExportSettings>)
+        : {})
     }),
     outputDirectory: typeof p.outputDirectory === 'string' ? p.outputDirectory : null,
-    ...(normalizeEvent(p.event) ? { event: normalizeEvent(p.event)! } : {})
+    ...(event ? { event } : {})
   }
 }
 
-/**
- * The v5 event block, or undefined for a project that predates it.
- *
- * Every field is optional and independently defaulted: a project half-way
- * through gaining an event (named but with no window declared yet, say) must
- * load as exactly that rather than being rejected or silently blanked.
- */
 function isWorkflowState(value: unknown): value is ClipWorkflowState {
-  return typeof value === 'string' && (CLIP_WORKFLOW_ORDER as string[]).includes(value)
+  return typeof value === 'string' && (CLIP_WORKFLOW_ORDER as readonly string[]).includes(value)
 }
 
 function normalizeEvent(input: unknown): EventInfo | undefined {
   if (typeof input !== 'object' || input === null) return undefined
   const e = input as Record<string, unknown>
-  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null
 
   return {
     name: typeof e.name === 'string' && e.name.trim() !== '' ? e.name : null,
@@ -364,11 +524,6 @@ function normalizeEvent(input: unknown): EventInfo | undefined {
   }
 }
 
-/**
- * Projects saved before exports carried the streamer and date keep the bare
- * "{Name}", which collides the moment one clip is exported from two POVs.
- * A template the editor actually chose is left alone.
- */
 function upgradeFilenameTemplate(settings: ExportSettings): ExportSettings {
   return settings.filenameTemplate === '{Name}'
     ? { ...settings, filenameTemplate: DEFAULT_EXPORT_SETTINGS.filenameTemplate }
@@ -405,7 +560,7 @@ function isClip(value: unknown): value is ClipSegment {
     typeof c.endSeconds === 'number' &&
     Number.isFinite(c.startSeconds) &&
     Number.isFinite(c.endSeconds) &&
-    c.endSeconds > c.startSeconds
+    (c.endSeconds as number) > (c.startSeconds as number)
   )
 }
 

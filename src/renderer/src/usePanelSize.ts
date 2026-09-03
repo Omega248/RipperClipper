@@ -24,11 +24,6 @@ export function usePanelSize(opts: {
   const [value, setValue] = useState(persisted)
   const pending = useRef(persisted)
 
-  useEffect(() => {
-    setValue(persisted)
-    pending.current = persisted
-  }, [persisted])
-
   const clamp = useCallback(
     (px: number): number => {
       const viewport = axis === 'width' ? window.innerWidth : window.innerHeight
@@ -36,6 +31,17 @@ export function usePanelSize(opts: {
     },
     [axis, min, max, viewportFraction]
   )
+
+  // Clamped on the way in, not just on drag and resize. A value saved on a
+  // bigger window (or in another layout mode) was previously applied verbatim
+  // at startup and only pulled into range by the first resize event — which is
+  // why the picture came up squashed and fixed itself the moment the window
+  // was touched.
+  useEffect(() => {
+    const next = persisted === undefined ? undefined : clamp(persisted)
+    setValue(next)
+    pending.current = next
+  }, [persisted, clamp])
 
   useEffect(() => {
     const onResize = (): void => {

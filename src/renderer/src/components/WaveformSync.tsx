@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatTimecode } from '@shared/time'
-import { isSynced, localToEvent, eventToLocal } from '@shared/sync'
+import { classifyManualAlignment, isSynced, localToEvent, eventToLocal } from '@shared/sync'
 import { alignByAudio } from '@shared/align'
 import type { AlignmentResult } from '@shared/align'
 import type { ClipSegment } from '@shared/types'
@@ -144,6 +144,19 @@ export default function WaveformSync({ onClose, clip }: Props): JSX.Element {
     drag.current = null
   }
 
+  /**
+   * What applying this offset would actually write.
+   *
+   * Computed once and used for both the button's label and the value stored,
+   * so the two cannot disagree — which is the entire point of the rule. A
+   * button that says "locked" over a write that is an estimate is the failure
+   * mode this guards.
+   */
+  const outcome = classifyManualAlignment({
+    appliedOffsetSeconds: offset,
+    detected: match ? { offsetSeconds: match.offsetSeconds, confidence: match.score } : null
+  })
+
   const apply = (): void => {
     if (!target || offset === 0) return
     // Dragging the target waveform right means its audio happens later than we
@@ -157,11 +170,16 @@ export default function WaveformSync({ onClose, clip }: Props): JSX.Element {
         message: `${label} moved ${offset > 0 ? '+' : ''}${offset.toFixed(3)}s for this clip only. Other clips keep their own alignment.`
       })
     } else {
-      nudgeSync(target.id, -offset)
+      nudgeSync(target.id, -offset, outcome)
       toast({
         kind: 'success',
-        title: 'Timing corrected by hand',
-        message: `${label} moved ${offset > 0 ? '+' : ''}${offset.toFixed(3)}s. Every clip was re-mapped.`
+        title:
+          outcome.method === 'manual' ? 'Timing locked by hand' : 'Timing estimated by hand',
+        message:
+          `${label} moved ${offset > 0 ? '+' : ''}${offset.toFixed(3)}s, and every clip in this POV was re-mapped. ` +
+          (outcome.method === 'manual'
+            ? `Locked at ${Math.round(outcome.confidence * 100)}% confidence.`
+            : outcome.warnings[0])
       })
     }
     onClose()
@@ -274,10 +292,29 @@ export default function WaveformSync({ onClose, clip }: Props): JSX.Element {
               Reset
             </Button>
             <span className="spacer" />
+            {/* The outcome is stated before the click, not after it. */}
             <Button variant="primary" onClick={apply} disabled={offset === 0}>
-              Apply to {target ? povLabel(target, sources.indexOf(target)) : 'this POV'}
+              {outcome.method === 'manual' ? 'Apply as locked' : 'Apply as estimated'}
+              {' — '}
+              {target ? povLabel(target, sources.indexOf(target)) : 'this POV'}
             </Button>
           </div>
+
+          {offset !== 0 && !clip && (
+            <Notice tone={outcome.method === 'manual' ? 'success' : 'warning'}>
+              {outcome.method === 'manual' ? (
+                <>
+                  <strong>Locked</strong> at {Math.round(outcome.confidence * 100)}% — this offset
+                  sits on the detected audio match, so clips are cut tight to their marks.
+                </>
+              ) : (
+                <>
+                  <strong>Estimated</strong> at {Math.round(outcome.confidence * 100)}%.{' '}
+                  {outcome.warnings[0]} Exports from this POV are padded rather than cut tight.
+                </>
+              )}
+            </Notice>
+          )}
 
           <p className="hint">
             {clip ? (

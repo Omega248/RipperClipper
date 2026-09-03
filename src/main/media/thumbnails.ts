@@ -79,7 +79,18 @@ export class ThumbnailService {
         '-t',
         toFfmpegTime(duration),
         '-vf',
-        `fps=${fps},scale=${width}:-2`,
+        /*
+         * `format=yuvj420p` is not cosmetic — it is what stops this failing.
+         *
+         * The mjpeg encoder refuses limited-range YUV outright ("Non
+         * full-range YUV is non-standard"), and whether the decoder hands it
+         * full or limited range depends on how the platform tagged the
+         * source. Platform-tagged VODs (Kick's, notably) land on the refusing
+         * side, so every filmstrip on those went "Could not open encoder"
+         * and the timeline showed no frames at all. Converting explicitly
+         * makes the encoder's answer the same whatever came in.
+         */
+        `fps=${fps},scale=${width}:-2,format=yuvj420p`,
         '-frames:v',
         String(count),
         join(work, 'frame_%03d.jpg')
@@ -90,9 +101,18 @@ export class ThumbnailService {
         // GPU decoder turns this into a non-event for the CPU. Not every
         // machine or build has one wired up for this codec, so a failure
         // here is expected sometimes, not exceptional.
-        await this.ffmpeg.exec(args(true), { signal: req.signal, label: 'filmstrip frames (gpu decode)' })
+        await this.ffmpeg.exec(args(true), {
+          signal: req.signal,
+          label: 'filmstrip frames (gpu decode)',
+          // Nobody asked for a filmstrip by name; it should never be felt.
+          priority: 'idle'
+        })
       } catch {
-        await this.ffmpeg.exec(args(false), { signal: req.signal, label: 'filmstrip frames' })
+        await this.ffmpeg.exec(args(false), {
+          signal: req.signal,
+          label: 'filmstrip frames',
+          priority: 'idle'
+        })
       }
 
       const files = (await readdir(work)).filter((f) => f.startsWith('frame_')).sort()

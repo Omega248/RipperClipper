@@ -71,7 +71,18 @@ describe('Kick direct resolution', () => {
     expect(source.platform).toBe('kick')
     expect(source.durationSeconds).toBe(21_600)
     expect(source.playbackKind).toBe('hls')
-    expect(source.playbackUrl).toContain('1080p60')
+    /*
+     * The master, not the biggest rung.
+     *
+     * This assertion used to read `toContain('1080p60')` — it pinned the bug
+     * in place. Handing the player a media playlist with one rendition in it
+     * left hls.js's `capLevelToPlayerSize` and the tile decoder's
+     * `variantForTile` nothing to choose from, so every angle decoded 1080p60
+     * at any size. Measured on a real VOD: a small tile pulled 8558 kbps where
+     * it should have pulled 630.
+     */
+    expect(source.playbackUrl).toBe(master.url)
+    expect(source.playbackUrl).not.toContain('1080p60')
     expect(source.createdAt).toBe('2026-08-16T19:04:11.000Z')
   })
 

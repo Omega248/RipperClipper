@@ -6,9 +6,8 @@ import type { ClipSegment, ClipWorkflowState } from '@shared/types'
 import { povColor, povTint } from '@shared/povColors'
 import { formatDuration, formatTimecode } from '@shared/time'
 import { LOOSE, useStore } from '../store.js'
-import PovMatrix from './PovMatrix.js'
+import ClipTimeline from './ClipTimeline.js'
 import ClipThumbnails from './ClipThumbnails.js'
-import CensorPanel from './CensorPanel.js'
 import {
   Button,
   EmptyState,
@@ -150,7 +149,10 @@ export default function ClipsPage(): JSX.Element {
             }
           />
         ) : (
-          <div className="clip-grid">
+          // Past a couple of hundred cards, keep the off-screen ones out of
+          // layout and paint. Same trade the VODs list makes, and for the same
+          // reason: at this scale the chrome is what costs, not the data.
+          <div className={`clip-grid${shown.length > 200 ? ' is-long' : ''}`}>
             {shown.map((clip) => (
               <ClipCard
                 key={clip.id}
@@ -326,7 +328,7 @@ function ClipDetail({
   onFile: (collectionId: string | null) => void
   onWorkflow: (state: ClipWorkflowState) => void
 }): JSX.Element {
-  const [tab, setTab] = useState<'overview' | 'audio' | 'states'>('overview')
+  const [tab, setTab] = useState<'overview' | 'states'>('overview')
   const unused = unusedPovIds(clip)
 
   return (
@@ -349,7 +351,6 @@ function ClipDetail({
         {(
           [
             ['overview', 'Overview'],
-            ['audio', 'Audio'],
             ['states', 'States']
           ] as const
         ).map(([id, label]) => (
@@ -369,7 +370,7 @@ function ClipDetail({
         {tab === 'overview' && (
           <>
             <ClipThumbnails clip={clip} />
-            <PovMatrix clip={clip} />
+            <ClipTimeline clip={clip} compact />
             {unused.length > 0 && (
               <p className="hint">
                 {unused.length} POV{unused.length === 1 ? '' : 's'} cover this moment but
@@ -379,7 +380,6 @@ function ClipDetail({
           </>
         )}
 
-        {tab === 'audio' && <CensorPanel clip={clip} />}
 
         {tab === 'states' && (
           <div className="clip-states">

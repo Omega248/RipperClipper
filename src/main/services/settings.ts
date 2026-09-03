@@ -1,7 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { DEFAULT_EXPORT_SETTINGS, defaultSettings, mergeSettings } from '../../shared/defaults.js'
 import type { AppSettings } from '../../shared/types.js'
+import { atomicWriteJson } from './projects.js'
 import type { Logger } from './logger.js'
 
 /** Persisted application settings with atomic writes. */
@@ -49,10 +50,15 @@ export class SettingsStore {
     return this.settings
   }
 
+  /*
+   * Through `atomicWriteJson`, which is the fix for a race this file was
+   * still losing: one shared `settings.json.tmp` for every concurrent save.
+   * Settings save on every change, so two edits in quick succession both
+   * wrote that file and both renamed it — the second rename found nothing
+   * there and threw `ENOENT ... rename settings.json.tmp`. Sixteen of those
+   * in the log, each one a setting that silently did not save.
+   */
   async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
-    const tmp = `${this.file}.tmp`
-    await writeFile(tmp, JSON.stringify(this.settings, null, 2), 'utf8')
-    await rename(tmp, this.file)
+    await atomicWriteJson(this.file, this.settings)
   }
 }

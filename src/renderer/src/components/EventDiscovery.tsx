@@ -4,6 +4,7 @@ import type { DiscoveredStream, DiscoverySort } from '@shared/discovery'
 import type { EventDiscoveryReply } from '@shared/ipc'
 import type { PlatformId } from '@shared/types'
 import { parseLocalDateTime } from '@shared/vodSearch'
+import { oneAnglePerStreamer, personKey } from '@shared/povPriority'
 import { atRisk, estimateExpiry } from '@shared/expiry'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
@@ -69,18 +70,48 @@ export default function EventDiscovery({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState<string | null>(null)
 
+  const streamers = useStore((s) => s.streamers)
+  const personOf = useMemo(
+    () =>
+      new Map(streamers.filter((s) => s.personId).map((s) => [s.id, s.personId as string])),
+    [streamers]
+  )
+
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [minCoverage, setMinCoverage] = useState(0)
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<DiscoverySort>('confidence')
 
+  /*
+   * One row per person, after the editor's own filters have had their say.
+   *
+   * A restreamer covers the same moment on three sites, and three rows for one
+   * angle is not three choices — it is the same footage offered three times.
+   * Collapsed *after* the platform filter on purpose: someone who has filtered
+   * to Kick has asked for the Kick one, and hiding it because Twitch also
+   * exists would be the app overruling them.
+   */
   const shown = useMemo(() => {
     if (!reply) return []
-    return sortDiscoveries(
+    const filtered = sortDiscoveries(
       filterDiscoveries(reply.streams, { platform, minCoverage, search }),
       sort
     )
-  }, [reply, platform, minCoverage, search, sort])
+    return oneAnglePerStreamer(filtered, {
+      key: (s) => personKey(s, (id) => personOf.get(id)),
+      platform: (s) => s.platform,
+      better: (a, b) => b.coverage.fraction - a.coverage.fraction || b.confidence - a.confidence
+    })
+  }, [reply, platform, minCoverage, search, sort, personOf])
+
+  /** How many rows the simulcast collapse removed, so nothing looks lost. */
+  const collapsed = useMemo(() => {
+    if (!reply) return 0
+    return (
+      sortDiscoveries(filterDiscoveries(reply.streams, { platform, minCoverage, search }), sort)
+        .length - shown.length
+    )
+  }, [reply, platform, minCoverage, search, sort, shown.length])
 
   /**
    * Turn a clip or timestamped VOD link into the event window.
@@ -329,6 +360,13 @@ export default function EventDiscovery({
           {reply.unreachable.length > 0 && (
             <Notice tone="warning">
               Could not reach {reply.unreachable.join(', ')} — results may be incomplete.
+            </Notice>
+          )}
+          {collapsed > 0 && (
+            <Notice tone="info">
+              {collapsed} simulcast{collapsed === 1 ? '' : 's'} hidden — the same person on more
+              than one platform is one angle, and the Twitch copy is the one kept. Filter by
+              platform to see a specific one.
             </Notice>
           )}
 

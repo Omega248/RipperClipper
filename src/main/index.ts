@@ -2,16 +2,23 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, ne
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { dirname } from 'node:path'
+import { cpus } from 'node:os'
+import { dirname, resolve, sep } from 'node:path'
 import { Logger } from './services/logger.js'
 import { SettingsStore } from './services/settings.js'
 import { CacheManager } from './services/cache.js'
 import { ProjectStore, PROJECT_EXTENSION, atomicWriteJson } from './services/projects.js'
 import { PACKAGE_EXTENSION, buildPackage, readPackage } from '../shared/packaging.js'
 import type { PackageOptions } from '../shared/packaging.js'
+import type { EditingProject } from '../shared/editingProject.js'
+import type { EditorId } from '../shared/editorCapabilities.js'
 import { FfmpegService } from './media/ffmpeg.js'
 import { ResolverService } from './media/resolver.js'
-import { RangeFetcher } from './media/rangeFetcher.js'
+import {
+  DEFAULT_SEGMENT_PARALLELISM,
+  RangeFetcher,
+  segmentLimiter
+} from './media/rangeFetcher.js'
 import { Exporter } from './media/exporter.js'
 import { AudioPeaksService } from './media/audioPeaks.js'
 import { SceneDetectionService } from './media/sceneDetection.js'
@@ -21,19 +28,23 @@ import { PreviewMediaService } from './media/previewMedia.js'
 import { ExportQueue } from './services/queue.js'
 import type { QueueClipInput } from './services/queue.js'
 import { AdapterRegistry } from './platforms/registry.js'
+import { VodLibrary } from './services/vodLibrary.js'
+import { ProjectExportService, freeDirectory } from './export/projectExporters.js'
+import { VodCrawler } from './services/vodCrawler.js'
+import { compareAcrossPlatforms } from './services/crossPlatform.js'
+import { LiveService } from './services/live.js'
+import type { BufferWindow } from '../shared/live.js'
+import { mediaProxyToken } from './mediaProxy.js'
 import { SourceService } from './services/sources.js'
-import { StreamerService } from './services/streamers.js'
+import { channelVideosUrl, StreamerService } from './services/streamers.js'
 import { DiscoveryService } from './services/discovery.js'
-import { WhisperModelService } from './services/whisperModels.js'
-import { ClipAnalysisService } from './media/clipAnalysis.js'
-import { CensorService } from './services/censor.js'
 import { parseClipLink, momentOf } from '../shared/clipLink.js'
 import { windowExtension } from './media/exporter.js'
 import { WatermarkLibrary } from './services/watermarks.js'
 import { ToolInstaller } from './services/deps.js'
 import { UpdateService } from './services/updater.js'
 import { setManagedToolsDir } from './services/locate.js'
-import { selectStreams } from './media/formats.js'
+import { rankVideo, selectStreams } from './media/formats.js'
 import type { SelectedStreams } from './media/formats.js'
 import { diskSpace } from './services/disk.js'
 import { AppError, Errors, serializeError } from '../shared/errors.js'
@@ -59,8 +70,12 @@ import type {
   TimelineExportRequest
 } from '../shared/ipc.js'
 import type { AppSettings, PlatformId, ProjectFile, VodSource } from '../shared/types.js'
-import type { WhisperModelId } from '../shared/transcription.js'
-import { startLocalServer, setLocalFileResolver, setWatermarkDir } from './localServer.js'
+import {
+  startLocalServer,
+  setLocalFileResolver,
+  setMediaSegmentStore,
+  setWatermarkDir
+} from './localServer.js'
 import type { LocalServer } from './localServer.js'
 
 const __dirname_ = dirname(fileURLToPath(import.meta.url))
@@ -119,10 +134,31 @@ const projects = new ProjectStore(log, stateDir)
 const ffmpeg = new FfmpegService(log)
 const resolver = new ResolverService(log)
 const registry = new AdapterRegistry()
-const sources = new SourceService(log, registry, resolver)
+const sources = new SourceService(log, registry, resolver, () =>
+  settings.current.advanced.cookiesFromBrowser ?? null
+)
 const streamers = new StreamerService(log, resolver, stateDir)
+/*
+ * Every saved streamer's back catalogue, and the slow crawl that fills it in.
+ *
+ * The crawl stands aside whenever the export queue has anything running: the
+ * person is waiting on those, and nobody is waiting on this.
+ */
+const vodLibrary = new VodLibrary(log, stateDir)
+const projectExport = new ProjectExportService(log)
+const vodCrawler = new VodCrawler(
+  log,
+  streamers,
+  vodLibrary,
+  () => queue.busy,
+  (progress) => mainWindow?.webContents.send(IPC.evtVodCrawl, progress)
+)
+// Where a channel's broadcasts come from, once the crawl has read them: the
+// shelf, not a fresh listing per caller. See StreamerService.vods.
+streamers.shelfFor = (id) => vodLibrary.shelf(id)
+// Adding a channel goes looking for that person's other platforms.
+streamers.autoDiscoverSiblings = true
 const discovery = new DiscoveryService(log, streamers, resolver)
-const whisperModels = new WhisperModelService(log, join(userData, 'models'))
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
@@ -132,21 +168,243 @@ const fetcher = new RangeFetcher(log, ffmpeg, cache, tempRoot)
 const exporter = new Exporter(log, ffmpeg, fetcher)
 const queue = new ExportQueue(log, exporter, join(tempRoot, 'jobs'))
 const peaks = new AudioPeaksService(log, ffmpeg, fetcher)
+
+/*
+ * Decoded frames for the native player.
+ *
+ * Constructed but not started: it binds no ports and runs no ffmpeg until
+ * something actually asks to decode, so an install that never turns the
+ * native engine on pays nothing for it.
+ */
+
+/**
+ * Live sources.
+ *
+ * Every state change is pushed rather than polled: the renderer showing a
+ * buffer strip must not be the reason a timer exists, and an app with nothing
+ * live holds no timers here at all.
+ */
+const live = new LiveService(
+  log,
+  (sourceId, state) => {
+    // A recording that has just been located, or one that has grown since it
+    // was last read. Fire-and-forget: the push below must not wait on a
+    // resolve, and the next state change carries whatever it finds.
+    if (state.recordingVodId && !state.archivedVodId) {
+      void keepRecordingCurrent(sourceId, state.recordingVodId)
+    }
+    mainWindow?.webContents.send(IPC.evtLive, {
+      sources: live.states(),
+      windowNotice: live.windowNotice,
+      recordings: Object.fromEntries(liveRecordings)
+    })
+  },
+  (source) => findArchiveFor(source)
+)
+
+/**
+ * VOD ids each watched channel already had when we started watching it.
+ *
+ * This is what makes the archive identifiable at all. Dates cannot do it:
+ * platforms date an archive from when the broadcast *began*, which is before
+ * this app started holding media, so "published since we started" excludes
+ * the very VOD being looked for. Titles cannot do it either — broadcasters
+ * rename archives, and two sessions in a day look identical.
+ *
+ * What is reliable is that the archive is the one that was not there before.
+ */
+const archiveBaseline = new Map<string, Set<string>>()
+
+/** Every recording a channel currently lists, newest first, id and link. */
+async function channelVodEntries(source: VodSource): Promise<Array<{ id: string; url: string }>> {
+  const handle = source.channelHandle ?? source.vodId
+  if (!handle) return []
+  /*
+   * The cheap listing, deliberately.
+   *
+   * This function reads nothing but each entry's url and id, and
+   * `channelVods` would date every broadcast on the channel first — one
+   * yt-dlp process each on Twitch and YouTube. It runs once a minute per live
+   * POV, so with nine angles that was hundreds of processes a minute for
+   * fields that are thrown away on the next line.
+   */
+  const vods = await streamers.listChannelVods(source.platform, handle, { priority: 'idle' })
+  return vods
+    .map((vod) => {
+      const id = registry.tryDetect(vod.url)?.match.vodId
+      return typeof id === 'string' && id.length > 0 ? { id, url: vod.url } : null
+    })
+    .filter((entry): entry is { id: string; url: string } => entry !== null)
+}
+
+async function channelVodIds(source: VodSource): Promise<string[]> {
+  return (await channelVodEntries(source)).map((entry) => entry.id)
+}
+
+/**
+ * The platform's own recording of a broadcast, resolved so it can be played
+ * and cut like any other VOD.
+ *
+ * This is what turns "the last sixty seconds" into "the whole session from the
+ * moment they went live". Twitch, Kick and YouTube each start publishing a
+ * recording while the broadcast runs, and it is the same growing HLS playlist
+ * the VOD path already knows how to seek and export — so nothing downstream
+ * needs to learn anything about live.
+ *
+ * Re-resolved on every check, because its end moves: a recording found twenty
+ * minutes in reports twenty minutes, and the same one an hour later reports an
+ * hour. The `id` is what makes it the same recording; the duration is what
+ * makes it worth asking again.
+ */
+const liveRecordings = new Map<string, VodSource>()
+
+/** When each source's recording was last re-read, so growth is picked up but not hammered. */
+const recordingReadAt = new Map<string, number>()
+
+/**
+ * Keep a live source's recording current, on its own slow clock.
+ *
+ * The buffer changes state every second or so; re-resolving a VOD that often
+ * would be a yt-dlp process per second per POV. Once a minute is enough — the
+ * recording lags the live edge by more than that anyway, and the rolling
+ * buffer covers the gap.
+ */
+const RECORDING_REFRESH_MS = 60_000
+
+async function keepRecordingCurrent(sourceId: string, vodId: string): Promise<void> {
+  const last = recordingReadAt.get(sourceId) ?? 0
+  if (Date.now() - last < RECORDING_REFRESH_MS) return
+  recordingReadAt.set(sourceId, Date.now())
+
+  const source = live.sourceFor(sourceId)
+  if (!source) return
+  await resolveRecording(source, vodId).catch((err) => {
+    log.debug('live', 'Could not read the in-progress recording', { source: sourceId, err })
+  })
+}
+
+async function resolveRecording(source: VodSource, vodId: string): Promise<void> {
+  const known = liveRecordings.get(source.id)
+  const entries = await channelVodEntries(source)
+  const entry = entries.find((e) => e.id === vodId)
+  if (!entry) return
+
+  const resolved = await sources.resolve(entry.url)
+  // The live source keeps its own identity and its sync mapping — this only
+  // supplies the media. Replacing the id would orphan every clip already
+  // marked against it.
+  liveRecordings.set(source.id, resolved)
+  if (!known) {
+    log.info('live', 'Clipping the whole broadcast from its recording', {
+      source: source.id,
+      vodId,
+      seconds: Math.round(resolved.durationSeconds)
+    })
+  }
+}
+
+/**
+ * Remember what a channel had already published, before this broadcast can
+ * add to it.
+ *
+ * Best-effort and deliberately not awaited by the caller: a channel listing
+ * that is slow, rate-limited or broken must not stop the app holding media,
+ * which is the part that cannot be done later.
+ */
+function noteArchiveBaseline(source: VodSource): void {
+  if (archiveBaseline.has(source.id)) return
+  void channelVodIds(source)
+    .then((ids) => {
+      if (!archiveBaseline.has(source.id)) archiveBaseline.set(source.id, new Set(ids))
+    })
+    .catch(() => undefined)
+}
+
+/**
+ * The VOD a finished broadcast became, or null while the platform is still
+ * publishing it.
+ */
+async function findArchiveFor(source: VodSource): Promise<string | null> {
+  const ids = await channelVodIds(source)
+  if (ids.length === 0) return null
+
+  const before = archiveBaseline.get(source.id)
+  if (!before) {
+    // The baseline never landed while the broadcast was running. Everything
+    // listed now might predate it, so claiming any of them would be a guess;
+    // take the baseline instead and let the next poll find what appears after.
+    archiveBaseline.set(source.id, new Set(ids))
+    return null
+  }
+  // Newest first, so the first unfamiliar id is the most recent one — which
+  // for a channel that has published nothing else since is this broadcast.
+  return ids.find((id) => !before.has(id)) ?? null
+}
+
+// The player and the exporter now share one segment store: the seconds an
+// editor watches are the seconds they cut, so watching warms exactly what the
+// export needs instead of paying for the same bytes twice.
+setMediaSegmentStore(cache)
+
+/**
+ * Rebuild the streamer list from the VOD library, if the list is empty and the
+ * library is not.
+ *
+ * The two files are written independently, and a streamer library that has
+ * been emptied while a back catalogue of thousands of dated broadcasts still
+ * sits beside it — every shelf carrying the platform, the handle and the
+ * streamer id it belongs to — is not a person who deleted their streamers. It
+ * is a lost file, and the answer to it is right there.
+ *
+ * Only ever *adds*: `restore` refuses an id that already exists, so this can
+ * run on every launch and does nothing on all of them but the bad one.
+ */
+async function recoverStreamersFromLibrary(): Promise<void> {
+  const shelves = vodLibrary.all().filter((shelf) => shelf.vods.length > 0)
+
+  /*
+   * Collapse duplicates first, every launch.
+   *
+   * The ids that already have a crawled back catalogue are named as the ones
+   * to keep, so a channel saved twice keeps the copy whose broadcasts have
+   * been dated — that is the expensive half and the only part not cheaply
+   * re-fetched.
+   */
+  const shelved = new Set(shelves.map((shelf) => shelf.streamerId))
+  const { removed } = await streamers.dedupe(shelved).catch(() => ({ removed: [] as string[] }))
+  for (const id of removed) vodLibrary.forget(id)
+
+  if (shelves.length === 0) return
+
+  const current = await streamers.list().catch(() => null)
+  if (current === null || current.length > 0) return
+
+  log.warn('streamers', 'Streamer library was empty; rebuilding it from the VOD shelves', {
+    streamers: shelves.length
+  })
+
+  for (const shelf of shelves) {
+    await streamers
+      .restore({
+        id: shelf.streamerId,
+        platform: shelf.platform,
+        handle: shelf.handle,
+        // The real display name and picture come back on the next profile
+        // refresh; the handle is what makes the row usable in the meantime.
+        displayName: shelf.handle,
+        channelUrl: channelVideosUrl(shelf.platform, shelf.handle),
+        addedAt: shelf.listedAt ?? new Date().toISOString(),
+        lastUsedAt: null
+      })
+      .catch((err) => log.warn('streamers', 'Could not restore a streamer', err))
+  }
+
+  // Names and avatars, once, in the background.
+  void streamers.refreshStaleProfiles().catch(() => undefined)
+}
+
 const scenes = new SceneDetectionService(log, ffmpeg, fetcher)
 const thumbs = new ThumbnailService(log, ffmpeg, fetcher)
-const clipAnalysis = new ClipAnalysisService(log, ffmpeg, fetcher)
-/*
- * Readings live outside the media cache: a transcript is cheap to store and
- * expensive to make, so it must never be reclaimed when the disk gets tight.
- */
-const censor = new CensorService(
-  log,
-  clipAnalysis,
-  whisperModels,
-  join(userData, 'readings'),
-  tempRoot,
-  (progress) => mainWindow?.webContents.send(IPC.clipAnalysisProgress, progress)
-)
 // Filmstrips and waveforms survive a restart, keyed by source + range, so
 // the Editor never re-runs ffmpeg for a clip it has already drawn once.
 const thumbCache = new CacheManager(log, join(userData, 'cache', 'thumbnails'), 300 * 1024 * 1024)
@@ -193,16 +451,28 @@ function iconPath(): string {
     : join(__dirname_, '../../resources/icon.png')
 }
 
-async function detectEnvironment(): Promise<EnvInfo> {
+/**
+ * Where the tools are and what they can do.
+ *
+ * Cheap to call: both services remember their answer against the paths it
+ * came from, so this only does real work when a path changed or `force` says
+ * to look again. Forcing is for the moments when the answer can genuinely
+ * have changed underneath us — startup, after installing a tool, or when the
+ * person asks.
+ */
+async function detectEnvironment(force = false): Promise<EnvInfo> {
   const s = settings.current
   const bin = resourcesDir()
   const [ffmpegInfo, resolverInfo] = await Promise.all([
-    ffmpeg.detect({
-      ffmpegPath: s.advanced.ffmpegPath,
-      ffprobePath: s.advanced.ffprobePath,
-      bundledDir: bin
-    }),
-    resolver.detect(s.advanced.ytDlpPath, bin)
+    ffmpeg.detect(
+      {
+        ffmpegPath: s.advanced.ffmpegPath,
+        ffprobePath: s.advanced.ffprobePath,
+        bundledDir: bin
+      },
+      { force }
+    ),
+    resolver.detect(s.advanced.ytDlpPath, bin, { force })
   ])
 
   return {
@@ -211,7 +481,10 @@ async function detectEnvironment(): Promise<EnvInfo> {
     platform: process.platform,
     appVersion: app.getVersion(),
     defaultOutputDirectory: s.outputDirectory,
-    mediaProxyBase: localServer?.loopbackUrl ?? ''
+    mediaProxyBase: localServer?.loopbackUrl ?? '',
+    // The proxy will not serve a caller that cannot prove it is this app, and
+    // the renderer builds its own player URLs, so it needs the same secret.
+    mediaProxyToken: mediaProxyToken()
   }
 }
 
@@ -223,13 +496,58 @@ function applySettings(s: AppSettings): void {
   // Window chrome — title bar, native menus, scrollbars — follows the same
   // choice as the interface, so the frame never disagrees with its contents.
   nativeTheme.themeSource = s.ui.theme
-  cache.configure(s.cache.directory, s.cache.maxSizeBytes)
-  thumbCache.configure(join(s.cache.directory, 'thumbnails'), 300 * 1024 * 1024)
-  waveCache.configure(join(s.cache.directory, 'waveforms'), 100 * 1024 * 1024)
+  /*
+   * "Maximum cache size" means the whole of it.
+   *
+   * There are five caches on disk — segments, previews, filmstrips, waveforms
+   * and scene marks — and the setting used to govern only the first. The
+   * other four carried fixed budgets totalling about 2.4 GB that nothing in
+   * Settings accounted for, so choosing 8 GB really meant up to 10.4 GB. Each
+   * now takes a share of the number the user actually set, and the segment
+   * cache keeps the bulk of it because it is the one holding source media.
+   */
+  const budget = s.cache.maxSizeBytes
+  const share = (fraction: number, min: number): number =>
+    Math.max(min, Math.floor(budget * fraction))
+
+  cache.configure(s.cache.directory, share(0.6, 512 * 1024 * 1024))
+  previewMedia.setMaxSizeBytes(share(0.25, 256 * 1024 * 1024))
+  thumbCache.configure(join(s.cache.directory, 'thumbnails'), share(0.1, 64 * 1024 * 1024))
+  waveCache.configure(join(s.cache.directory, 'waveforms'), share(0.04, 32 * 1024 * 1024))
+  sceneCache.configure(join(s.cache.directory, 'scenes'), share(0.01, 16 * 1024 * 1024))
   tempRoot = s.advanced.tempDirectory ?? join(app.getPath('temp'), 'ripperclipper')
   fetcher.setTempDir(tempRoot)
   queue.setWorkRoot(join(tempRoot, 'jobs'))
   queue.setConcurrency(s.concurrency)
+  /*
+   * One "how many at once" setting, two budgets — because the two halves of
+   * an export are limited by different things.
+   *
+   * Downloading is network-bound and idle most of the time, so the segment
+   * budget scales *up* with the number of exports: that is what keeps the
+   * connection busy. Encoding is CPU-bound, so the thread budget scales
+   * *down* — the machine is a fixed size, and thirty ffmpegs each sizing
+   * their pool to every core would oversubscribe it thirtyfold and spend the
+   * difference on context switching rather than frames.
+   *
+   * Both are ceilings, not reservations. An export that stream-copies (the
+   * normal case, and the whole point of fetching only the range asked for)
+   * never encodes anything and so never spends a thread from the second one.
+   *
+   * The thread budget is the machine minus one core, not the whole machine.
+   * Exports already run below the foreground (see ProcessPriority), which
+   * hands cycles back the moment anything else asks for them — but "the
+   * moment anything else asks" is still a scheduling round trip, and on a
+   * fully claimed CPU the person feels it as the interface hesitating. One
+   * core left unclaimed means the window, the compositor and this process
+   * always have somewhere to run without waiting for a preemption. It costs
+   * a fraction of the encode and buys back the thing that made the machine
+   * feel stuck.
+   */
+  const cores = cpus().length || 4
+  const encodeBudget = Math.max(1, cores - 1)
+  segmentLimiter.setMax(Math.min(64, Math.max(16, s.concurrency * DEFAULT_SEGMENT_PARALLELISM)))
+  exporter.setEncodeThreads(Math.max(1, Math.floor(encodeBudget / s.concurrency)))
   previewMedia.setCacheDir(join(s.cache.directory, 'preview'))
 }
 
@@ -275,7 +593,7 @@ async function installTools(ids: ToolId[]): Promise<void> {
     }
   } finally {
     installing = null
-    await detectEnvironment()
+    await detectEnvironment(true)
     mainWindow?.webContents.send(IPC.evtDeps, {
       id: 'ffmpeg',
       label: 'Setup',
@@ -391,6 +709,41 @@ async function createWindow(): Promise<void> {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  /*
+   * The window never leaves its own origin.
+   *
+   * The preload is attached to the webContents, not to a page, so anything the
+   * window navigates to inherits the entire `window.api` surface — every IPC
+   * handler, including the ones that spawn processes and write files. Popups
+   * were already denied above; top-level navigation was not, and a single
+   * `location = …` from injected script was enough to hand all of that to a
+   * remote page. A link the user actually meant still opens, in their browser,
+   * where it has none of this.
+   */
+  const appOrigin = (): string | null => {
+    try {
+      return new URL(mainWindow?.webContents.getURL() ?? '').origin
+    } catch {
+      return null
+    }
+  }
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    let target: URL
+    try {
+      target = new URL(url)
+    } catch {
+      event.preventDefault()
+      return
+    }
+    if (target.origin === appOrigin()) return
+    event.preventDefault()
+    log.warn('security', 'Blocked navigation away from the app', { to: target.origin })
+    if (target.protocol === 'http:' || target.protocol === 'https:') void shell.openExternal(url)
+  })
+  // A webview or a devtools-extension page would get its own contents; neither
+  // is used here, and this makes sure neither quietly starts being.
+  mainWindow.webContents.on('will-attach-webview', (event) => event.preventDefault())
 
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) {
@@ -510,14 +863,49 @@ function registerIpc(): void {
     platform: process.platform,
     appVersion: app.getVersion(),
     defaultOutputDirectory: settings.current.outputDirectory,
-    mediaProxyBase: localServer?.loopbackUrl ?? ''
+    mediaProxyBase: localServer?.loopbackUrl ?? '',
+    mediaProxyToken: mediaProxyToken()
   }))
-  handle(IPC.envRefresh, () => detectEnvironment())
+  handle(IPC.envRefresh, () => detectEnvironment(true))
 
   handle(IPC.settingsGet, () => settings.current)
+
+  /*
+   * Executable paths the person actually chose, this session.
+   *
+   * `advanced.ffmpegPath` and its siblings are spawned. The settings patch
+   * arrives from the renderer as plain strings, so a compromised renderer
+   * could point any of them at any file on disk and have the app run it on the
+   * next export — no dialog, no prompt. The only legitimate way to set one is
+   * the file picker below, so that is the only source accepted: anything else
+   * keeps whatever is already saved.
+   *
+   * Paths chosen in an earlier session are unaffected — they load from
+   * settings.json, not over IPC.
+   */
+  const pickedToolPaths = new Set<string>()
+
+  const keepToolPaths = (patch: Partial<AppSettings>): Partial<AppSettings> => {
+    if (!patch.advanced) return patch
+    const current = settings.current.advanced
+    const advanced = { ...patch.advanced }
+    for (const key of ['ffmpegPath', 'ffprobePath', 'ytDlpPath'] as const) {
+      const value = advanced[key]
+      // Null is always allowed: clearing an override falls back to the
+      // bundled tool, which is a safe direction to move in.
+      if (value === null || value === undefined) continue
+      if (value === current[key] || pickedToolPaths.has(value)) continue
+      log.warn('security', `Refused a ${key} that did not come from the file picker`)
+      advanced[key] = current[key]
+    }
+    return { ...patch, advanced }
+  }
+
   handle(IPC.settingsUpdate, async (patch: Partial<AppSettings>) => {
-    const next = await settings.update(patch)
+    const next = await settings.update(keepToolPaths(patch))
     applySettings(next)
+    // Unforced: this returns immediately unless the patch moved a tool path,
+    // which is the only way a settings change can alter what is installed.
     await detectEnvironment()
     return next
   })
@@ -537,7 +925,9 @@ function registerIpc(): void {
           ? [{ name: 'Executable', extensions: ['exe'] }]
           : [{ name: 'All files', extensions: ['*'] }]
     })
-    return result.canceled ? null : (result.filePaths[0] ?? null)
+    const chosen = result.canceled ? null : (result.filePaths[0] ?? null)
+    if (chosen) pickedToolPaths.add(chosen)
+    return chosen
   })
 
   handle(
@@ -553,6 +943,7 @@ function registerIpc(): void {
     }
   )
   handle(IPC.sourceInspectFormats, (source: VodSource) => sources.inspectFormats(source))
+  handle(IPC.sourceLiveStatus, (source: VodSource) => sources.liveStatus(source))
 
   handle(IPC.projectNew, (name: string) => projects.createProject(name))
   handle(IPC.projectSave, async (project: ProjectFile, path?: string) => {
@@ -647,6 +1038,30 @@ function registerIpc(): void {
   handle(IPC.projectBackupList, (path: string) => projects.listBackups(path))
   handle(IPC.projectBackupRestore, (path: string) => projects.restoreBackup(path))
   handle(IPC.projectStartupPath, () => startupProjectPath())
+
+  handle(IPC.liveWatch, async (source: VodSource) => {
+    const formats = await sources.inspectFormats(source)
+    const stream = formats.filter((f) => f.protocol === 'hls' && f.hasVideo && f.url).sort(rankVideo)[0]
+    // A live source that is not HLS is not a live source this app can hold:
+    // there is no segment timeline to roll a buffer over. Saying so is better
+    // than presenting a buffer strip that will never fill.
+    if (!stream) throw Errors.liveUnsupported(source.platform)
+    // Before any of this broadcast can reach the channel's VOD list.
+    noteArchiveBaseline(source)
+    return live.watch(source, stream)
+  })
+  handle(IPC.liveUnwatch, (sourceId: string) => {
+    archiveBaseline.delete(sourceId)
+    live.unwatch(sourceId)
+  })
+  handle(IPC.liveStates, () => ({ sources: live.states(), windowNotice: live.windowNotice }))
+  handle(IPC.liveCovers, (req: { sourceId: string; startEpoch: number; endEpoch: number }) =>
+    live.covers(req.sourceId, req.startEpoch, req.endEpoch)
+  )
+  handle(IPC.liveWindow, (seconds: BufferWindow) => {
+    live.setWindow(seconds)
+    return { sources: live.states(), windowNotice: live.windowNotice }
+  })
 
   handle(IPC.audioPeaks, async (req: PeaksQuery) => {
     const startSeconds = Math.max(0, req.startSeconds)
@@ -777,6 +1192,10 @@ function registerIpc(): void {
     await watermarks.load()
     return watermarks.add(result.filePaths[0])
   })
+  handle(IPC.watermarkAddPng, async (dataUrl: string, name: string) => {
+    await watermarks.load()
+    return watermarks.addPng(dataUrl, name)
+  })
   handle(IPC.watermarkRemove, async (id: string) => {
     await watermarks.load()
     return watermarks.remove(id)
@@ -785,55 +1204,44 @@ function registerIpc(): void {
   handle(IPC.streamersWatermark, async (id: string, watermark: WatermarkConfig | null) =>
     streamers.setWatermark(id, watermark)
   )
-  handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
-  handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
-
-  handle(IPC.censorReady, () => censor.ready())
-  handle(IPC.whisperModels, () => whisperModels.status())
-  handle(IPC.whisperModelInstall, (id: WhisperModelId) =>
-    whisperModels.install(id, (progress) => mainWindow?.webContents.send(IPC.evtDeps, progress))
-  )
-  handle(IPC.whisperModelRemove, (id: WhisperModelId) => whisperModels.remove(id))
-
-  /**
-   * Read one POV of a clip. Started automatically by the renderer whenever a
-   * clip gains a POV, so it has to be cheap to call repeatedly and quiet when
-   * it cannot run — background work has no business raising errors at anyone.
+  /*
+   * The editing-project export.
+   *
+   * The universal project is built in the renderer — `buildEditingProject` is
+   * a pure function in `shared/`, and the renderer is where the clip, the
+   * angles and the watermark already live. This side validates it, writes the
+   * package, and never touches the media it points at.
    */
+  handle(IPC.editorsList, () => projectExport.capabilities())
+  handle(IPC.editingProjectValidate, (project: EditingProject, editor: EditorId) =>
+    projectExport.validate(project, editor)
+  )
   handle(
-    IPC.clipAnalyse,
-    async (req: { clipId: string; source: VodSource; startSeconds: number; endSeconds: number }) => {
-      const model = await whisperModels.bestInstalled()
-      if (!model) return false
-      // Formats are needed to pick the audio stream, and a POV loaded before
-      // this existed will not have been probed yet.
-      const source = req.source.formatsInspected
-        ? req.source
-        : {
-            ...req.source,
-            formats: await sources.inspectFormats(req.source),
-            formatsInspected: true
-          }
-      const result = await censor.analyseOne(
-        req.clipId,
-        source,
-        req.startSeconds,
-        req.endSeconds,
-        model
-      )
-      return result !== null
+    IPC.editingProjectExport,
+    async (req: {
+      project: EditingProject
+      editor: EditorId
+      parentDirectory: string
+      copyMedia: boolean
+    }) => {
+      // A folder that already exists is never written into: "Bank job (2)"
+      // beside it, rather than somebody's last export quietly replaced.
+      const directory = await freeDirectory(req.parentDirectory, req.project.name)
+      return projectExport.export(req.project, req.editor, {
+        directory,
+        copyMedia: req.copyMedia === true
+      })
     }
   )
-  handle(IPC.clipAnalysisCancel, (clipId: string) => censor.cancel(clipId))
-  handle(IPC.clipHits, (req: { clipId: string; sourceIds: string[]; words?: string[] }) =>
-    censor.hitsFor(req.clipId, req.sourceIds, req.words)
-  )
-  handle(IPC.clipTranscript, (clipId: string, sourceId: string) =>
-    censor.transcriptFor(clipId, sourceId)
-  )
-  handle(IPC.clipAnalysisForget, (clipId: string, sourceIds: string[]) =>
-    censor.forget(clipId, sourceIds)
-  )
+  handle(IPC.editingProjectChooseFolder, async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Where should the editing project be written?',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
+  handle(IPC.streamersOverlap, (req: EventOverlapRequest) => streamers.coveringEvent(req))
+  handle(IPC.discoverEvent, (req: EventDiscoveryRequest) => discovery.discover(req))
 
   /**
    * Turn a shared link into the real-world instant it points at.
@@ -957,16 +1365,47 @@ function registerIpc(): void {
   })
   handle(IPC.depsInstall, async (ids: ToolId[]) => {
     await installTools(ids)
-    return detectEnvironment()
+    return detectEnvironment(true)
   })
 
   handle(IPC.streamersList, () => streamers.list())
   handle(IPC.streamersAdd, (input: string, platform?: PlatformId) => streamers.add(input, platform))
-  handle(IPC.streamersRemove, (id: string) => streamers.remove(id))
+  handle(IPC.streamersRemove, (id: string) => {
+    // Their back catalogue goes with them, rather than lingering as an
+    // orphaned shelf nothing can reach.
+    vodLibrary.forget(id)
+    return streamers.remove(id)
+  })
   handle(IPC.streamersVods, async (id: string) => {
     const vods = await streamers.vods(id)
     await streamers.touch(id)
     return vods
+  })
+  handle(IPC.streamersShelf, (id: string) => {
+    // Opening someone's page says what matters now, so it jumps the queue.
+    vodCrawler.prioritise(id)
+    return vodLibrary.shelf(id)
+  })
+  handle(IPC.streamersLive, () => streamers.liveNow())
+  handle(IPC.streamersLiveCached, () => streamers.liveCached())
+  handle(IPC.streamersDiscoverSiblings, (id: string) => streamers.discoverSiblings(id))
+  handle(IPC.streamersCompare, (handle: string) =>
+    compareAcrossPlatforms(handle, {
+      log,
+      resolver,
+      listChannelVods: (platform, name) =>
+        streamers.listChannelVods(platform, name, { priority: 'idle' }),
+      resolveSource: (url) => sources.resolve(url)
+    })
+  )
+  handle(IPC.streamersCrawlProgress, () => vodCrawler.progress())
+  handle(IPC.streamersCrawlNow, (id: string) => {
+    // An explicit refresh also reopens anything the platform previously
+    // refused to date — otherwise a channel blocked once stays undated for
+    // good, with no way for the person to ask again.
+    const reopened = vodLibrary.forgetUnanswered(id)
+    if (reopened > 0) log.info('vods', 'Reopened undated broadcasts on request', { id, reopened })
+    vodCrawler.prioritise(id)
   })
 
   handle(IPC.exportEnqueue, async (req: EnqueueRequest) => {
@@ -1098,6 +1537,25 @@ function registerIpc(): void {
   })
 
   handle(IPC.cacheStats, () => cache.stats())
+
+  /*
+   * `app.getAppMetrics()` reports each process's CPU as a percentage of one
+   * core, so nine decoding renderers legitimately sum past 100. Summed rather
+   * than averaged for exactly that reason — "how much of this machine is the
+   * wall using" is the question, and the answer can be 400%.
+   */
+  handle(IPC.appMetrics, () => {
+    const processes = app.getAppMetrics().map((m) => ({
+      type: m.type,
+      cpuPercent: Math.round((m.cpu?.percentCPUUsage ?? 0) * 10) / 10,
+      memoryMB: Math.round((m.memory?.workingSetSize ?? 0) / 1024)
+    }))
+    return {
+      cpuPercent: Math.round(processes.reduce((sum, p) => sum + p.cpuPercent, 0) * 10) / 10,
+      memoryMB: processes.reduce((sum, p) => sum + p.memoryMB, 0),
+      processes
+    }
+  })
   handle(IPC.cacheClear, async () => {
     await cache.clear()
     await thumbCache.clear()
@@ -1107,14 +1565,56 @@ function registerIpc(): void {
   })
   handle(IPC.diskSpace, (path: string) => diskSpace(path))
 
+  /*
+   * Only paths this app produced.
+   *
+   * `shell.openPath` hands a path to the OS, which on Windows *runs* an .exe,
+   * .cmd or .lnk. The renderer used to pass any string straight through, so a
+   * renderer compromise was arbitrary program launch with no dialog. Every
+   * legitimate caller opens an export, the output folder, the log, or the
+   * cache, all of which live under directories this process chose.
+   */
+  const openableRoots = (): string[] =>
+    [
+      settings.current.outputDirectory,
+      settings.current.cache.directory,
+      defaultProjectsDir,
+      dirname(log.path),
+      tempRoot
+    ].filter((dir): dir is string => typeof dir === 'string' && dir.length > 0)
+
+  const openablePath = (candidate: string): string | null => {
+    if (typeof candidate !== 'string' || candidate.length === 0) return null
+    const full = resolve(candidate)
+    const ok = openableRoots().some((root) => {
+      const base = resolve(root)
+      return full === base || full.startsWith(base + sep)
+    })
+    if (!ok) log.warn('security', 'Refused to open a path outside the app’s own folders')
+    return ok ? full : null
+  }
+
   handle(IPC.revealPath, (path: string) => {
-    shell.showItemInFolder(path)
+    const safe = openablePath(path)
+    if (safe) shell.showItemInFolder(safe)
   })
   handle(IPC.openPath, async (path: string) => {
-    await shell.openPath(path)
+    const safe = openablePath(path)
+    if (safe) await shell.openPath(safe)
   })
 
+  handle(IPC.queuePaused, () => queue.isPaused())
   handle(IPC.logsPath, () => log.path)
+  handle(
+    IPC.logEvent,
+    (level: 'debug' | 'info' | 'warn' | 'error', scope: string, message: string, data?: unknown) => {
+      // Scope is prefixed rather than trusted as-is, so a renderer line is
+      // always distinguishable from a main-process one in the log.
+      const where = `ui:${String(scope).slice(0, 24)}`
+      const write = level === 'error' ? log.error : level === 'warn' ? log.warn : level === 'debug' ? log.debug : log.info
+      write.call(log, where, String(message).slice(0, 500), data)
+    }
+  )
   handle(IPC.logsTail, (lines: number) => log.tail(lines))
 
   handle(IPC.updateCheck, () => updater.check())
@@ -1150,6 +1650,37 @@ if (!singleInstance) {
     }
   })
 
+  /*
+   * A throw outside an IPC handler must not take the window with it.
+   *
+   * Every IPC call is individually wrapped, which covers the request path. It
+   * does not cover the queue worker, the live-buffer timers, the VOD crawler
+   * or an ffmpeg child's event handlers — and on Node 15+ an unhandled
+   * rejection is fatal by default. Today that means the window vanishes
+   * mid-export with no message, no log line, and no `will-quit` cleanup, so
+   * the job's scratch files leak too.
+   *
+   * Logged and survived instead. A background failure that leaves the app
+   * usable is worth a log entry; it is not worth throwing away an unsaved
+   * project and a running export.
+   */
+  process.on('uncaughtException', (err) => {
+    log.error('app', 'Uncaught exception in the main process', err)
+  })
+  process.on('unhandledRejection', (reason) => {
+    log.error('app', 'Unhandled promise rejection in the main process', reason)
+  })
+  app.on('render-process-gone', (_event, _contents, details) => {
+    log.error('app', 'The window process died', { reason: details.reason, exitCode: details.exitCode })
+  })
+  app.on('child-process-gone', (_event, details) => {
+    // ffmpeg and yt-dlp live here. A crash is not fatal to the app, but a
+    // silent one is the difference between a diagnosable bug and a mystery.
+    if (details.reason !== 'clean-exit') {
+      log.warn('app', 'A helper process died', { type: details.type, reason: details.reason })
+    }
+  })
+
   app.whenReady().then(async () => {
     await mkdir(stateDir, { recursive: true })
     await mkdir(tempRoot, { recursive: true })
@@ -1157,9 +1688,12 @@ if (!singleInstance) {
 
     // Started in every mode: the preview player needs the media proxy even
     // when Vite is serving the renderer.
-    localServer = await startLocalServer(app.isPackaged || !process.env.ELECTRON_RENDERER_URL
-      ? join(__dirname_, '../renderer')
-      : null)
+    localServer = await startLocalServer(
+      app.isPackaged || !process.env.ELECTRON_RENDERER_URL
+        ? join(__dirname_, '../renderer')
+        : null,
+      log
+    )
 
     await mkdir(toolsDir, { recursive: true })
     setManagedToolsDir(toolsDir)
@@ -1173,7 +1707,7 @@ if (!singleInstance) {
     await cache.prune()
     await thumbCache.ensure()
     await waveCache.ensure()
-    await detectEnvironment()
+    await detectEnvironment(true)
 
     registerIpc()
     await createWindow()
@@ -1181,6 +1715,13 @@ if (!singleInstance) {
 
     // After the window exists, so the user can see it happening.
     void autoInstallMissing().catch((err) => log.error('deps', 'Automatic setup failed', err))
+    // The library is read from disk before the crawl starts, so a session
+    // that has already learned a channel's history does not re-learn it.
+    void vodLibrary
+      .load()
+      .then(() => recoverStreamersFromLibrary())
+      .then(() => vodCrawler.start())
+      .catch((err) => log.error('vods', 'Could not start the VOD crawl', err))
     // Silent unless something is actually found — see UpdateService for why
     // this is a no-op outside the stable channel.
     void updater.check().catch((err) => log.error('updater', 'Startup update check failed', err))
@@ -1195,6 +1736,13 @@ if (!singleInstance) {
   })
 
   app.on('before-quit', () => {
+    // Live buffers hold media in memory and a poll timer each. Nothing about
+    // them should outlive the window.
+    live.stopAll()
+    // Whatever the crawl learned since its last settle would otherwise be
+    // thrown away, and it is expensive to learn again.
+    vodCrawler.stop()
+    void vodLibrary.flush()
     log.info('app', 'Shutting down')
   })
 

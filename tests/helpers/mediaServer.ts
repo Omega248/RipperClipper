@@ -1,7 +1,8 @@
 import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import type { Server } from 'node:http'
+import type { Server, ServerResponse } from 'node:http'
+import type { Readable } from 'node:stream'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 
 /**
@@ -76,11 +77,7 @@ export async function startMediaServer(rootDir: string): Promise<MediaServer> {
           })
           // Count what is actually transferred: a client that seeks away mid
           // response should not be charged for the whole range.
-          const ranged = createReadStream(target, { start, end: clampedEnd })
-          ranged.on('data', (chunk: string | Buffer) => {
-            record.bytesSent += Buffer.byteLength(chunk)
-          })
-          ranged.pipe(res)
+          serve(createReadStream(target, { start, end: clampedEnd }), res, record)
           return
         }
       }
@@ -90,11 +87,7 @@ export async function startMediaServer(rootDir: string): Promise<MediaServer> {
         'content-length': String(info.size),
         'accept-ranges': 'bytes'
       })
-      const whole = createReadStream(target)
-      whole.on('data', (chunk: string | Buffer) => {
-        record.bytesSent += Buffer.byteLength(chunk)
-      })
-      whole.pipe(res)
+      serve(createReadStream(target), res, record)
     })().catch(() => {
       if (!res.headersSent) res.writeHead(500)
       res.end()
@@ -115,4 +108,22 @@ export async function startMediaServer(rootDir: string): Promise<MediaServer> {
         server.close(() => done())
       })
   }
+}
+
+/**
+ * Pipe a file to the client, counting only what it actually takes.
+ *
+ * The stream is destroyed when the response closes. Without that, a client
+ * that seeks away — which is exactly the behaviour these tests are about —
+ * leaves the file streaming on regardless, and the request is recorded as
+ * having delivered the whole file. On a two-megabyte fixture that reads as a
+ * rounding error; on a large one it is the difference between "read a few
+ * megabytes and jumped" and "downloaded the lot".
+ */
+function serve(source: Readable, res: ServerResponse, record: { bytesSent: number }): void {
+  source.on('data', (chunk: string | Buffer) => {
+    record.bytesSent += Buffer.byteLength(chunk)
+  })
+  res.on('close', () => source.destroy())
+  source.pipe(res)
 }

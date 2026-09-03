@@ -44,16 +44,39 @@ describe('buildAudioFilter', () => {
     expect(withCustom.filterComplex).toContain('volume=-9dB')
   })
 
-  it('mixes a gated tone in for a bleep, and mutes the underlying audio', () => {
+  it('replaces a bleeped range with a gated tone, and mutes the underlying audio', () => {
     const plan = buildAudioFilter([edit({ kind: 'bleep', startSeconds: 2, endSeconds: 3 })], {
       durationSeconds: 10,
       bleepHz: 800,
       bleepAmplitude: 0.5
     })
     expect(plan.filterComplex).toContain("volume=enable='between(t,2.000,3.000)':volume=0")
-    expect(plan.filterComplex).toContain('aevalsrc=0.5*sin(2*PI*800*t)')
-    expect(plan.filterComplex).toContain('amix=inputs=2')
-    expect(plan.outputLabel).toBe('out')
+    expect(plan.filterComplex).toContain('sin(2*PI*800*t)')
+    expect(plan.filterComplex).toContain("enable='between(t,2.000,3.000)'")
+    expect(plan.outputLabel).toBe('edited')
+  })
+
+  it('generates the tone from the stream rather than from a source filter', () => {
+    // Not a style preference: an `aevalsrc` feeding an `amix` deadlocks on
+    // ffmpeg 7 whenever the video encoder pushes back, and the export never
+    // finishes. `aeval` is driven by the clip's own samples, so there is
+    // nothing for the graph to wait on.
+    const plan = buildAudioFilter([edit({ kind: 'bleep', startSeconds: 2, endSeconds: 3 })], {
+      durationSeconds: 10
+    })
+    expect(plan.filterComplex).not.toContain('aevalsrc')
+    expect(plan.filterComplex).not.toContain('amix')
+    // One chain, one output — no second branch to synchronise.
+    expect(plan.filterComplex?.split(';')).toHaveLength(1)
+  })
+
+  it('fades the tone in and out so a bleep does not click', () => {
+    const plan = buildAudioFilter([edit({ kind: 'bleep', startSeconds: 2, endSeconds: 3 })], {
+      durationSeconds: 10
+    })
+    // The ramp lives in the amplitude expression, not in an afade filter that
+    // would apply to the whole stream.
+    expect(plan.filterComplex).toContain('clip(min((t-2.000)/0.012,(3.000-t)/0.012),0,1)')
   })
 
   it('applies several edits of different kinds in one pass', () => {
@@ -66,7 +89,11 @@ describe('buildAudioFilter', () => {
       { durationSeconds: 10 }
     )
     expect(plan.notes).toHaveLength(3)
-    expect(plan.filterComplex).toContain('amix=inputs=2')
+    // Every edit lands in the one chain: mute, duck, and the bleep's tone.
+    expect(plan.filterComplex).toContain("volume=enable='between(t,1.000,2.000)':volume=0")
+    expect(plan.filterComplex).toContain("volume=enable='between(t,3.000,4.000)':volume=-18dB")
+    expect(plan.filterComplex).toContain("enable='between(t,5.000,6.000)'")
+    expect(plan.outputLabel).toBe('edited')
   })
 
   it('clamps a range to the clip duration', () => {

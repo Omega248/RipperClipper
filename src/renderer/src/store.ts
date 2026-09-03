@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { markEverywhere } from '@shared/markEverywhere'
 import { create } from 'zustand'
 import {
   addClip,
@@ -18,11 +19,12 @@ import {
   buildClipMappings,
   clipRangeInPov,
   eventRangeFor,
+  refreshClipMapping,
   refreshClipMappings
 } from '@shared/povMapping'
-import type { SyncAnchor } from '@shared/sync'
+import type { ManualAlignment, SyncAnchor } from '@shared/sync'
 import { DEFAULT_EXPORT_SETTINGS } from '@shared/defaults'
-import { analyseClipPovs, prefetchClipMedia } from './media/prefetch.js'
+import { prefetchClipMedia } from './media/prefetch.js'
 import {
   addItem as addTimelineItem,
   addMarker as addTimelineMarker,
@@ -40,8 +42,17 @@ import {
   renameTrack as renameTimelineTrack,
   splitItem as splitTimelineItem,
   trimItem as trimTimelineItem,
-  unlinkItem as unlinkTimelineItem
+  unlinkItem as unlinkTimelineItem,
+  closeGapAt as closeTimelineGapAt,
+  deleteItems as deleteTimelineItems,
+  itemsInSpan as timelineItemsInSpan,
+  moveItems as moveTimelineItems,
+  nudgeItems as nudgeTimelineItems,
+  reorderTrack as reorderTimelineTrackAt,
+  splitItemsAt as splitTimelineItemsAt,
+  withLinked as withLinkedTimelineItems
 } from '@shared/timeline'
+import type { ItemMove } from '@shared/timeline'
 import type {
   AppSettings,
   ClipSegment,
@@ -49,6 +60,7 @@ import type {
   EditorTimeline,
   EventInfo,
   ExportJob,
+  LiveState,
   Marker,
   MarkerCategory,
   ProjectFile,
@@ -59,6 +71,7 @@ import type {
   TimelineTrack,
   VodSource
 } from '@shared/types'
+import type { LiveNow, LiveSnapshot, StreamerGroup } from '@shared/ipc'
 import { emptyEvent } from '@shared/event'
 import {
   addCollection,
@@ -93,6 +106,23 @@ export type AppRoute =
   | 'clips'
   | 'export'
   | 'settings'
+
+/**
+ * Which category Settings is showing.
+ *
+ * Navigation state, so the rail and the command palette can both arrive at a
+ * specific one. Local state in SettingsBody made "open Diagnostics"
+ * unexpressible without a second copy of the nav.
+ */
+export type SettingsTab =
+  | 'appearance'
+  | 'playback'
+  | 'export'
+  | 'downloads'
+  | 'storage'
+  | 'shortcuts'
+  | 'setup'
+  | 'diagnostics'
 
 /** Group filter sentinel: no group at all, as distinct from "any group". */
 export const UNGROUPED = 'ungrouped'
@@ -156,14 +186,27 @@ interface State {
   // assembled multi-track sequence, which maps to a different instant in
   // whichever POV is on top at that point.
   timelinePlayheadSeconds: number
+  /**
+   * The whole selection. `selectedTimelineItemId` is kept in step as its last
+   * member because the Inspector edits exactly one item — a panel of numeric
+   * fields has nothing sensible to show for four items at once — while every
+   * timeline operation acts on the set.
+   */
+  selectedTimelineItemIds: string[]
   selectedTimelineItemId: string | null
   timelineRippleDelete: boolean
+  /** Snapping to edges, the playhead and markers. Off is a real editing mode, not a bug. */
+  timelineSnap: boolean
+  /** Copied items, in their own relative arrangement. Never persisted. */
+  timelineClipboard: TimelineItem[]
 
   // navigation
   /** Which workspace is showing. One page, one job. */
   page: WorkspacePage
   /** Which top-level destination the rail is on. */
   route: AppRoute
+  /** Which settings category is showing. See SettingsTab. */
+  settingsTab: SettingsTab
   /**
    * Icon-only rail. Derived from window width, but the editor can override
    * it — a deliberate choice must survive a resize that would undo it.
@@ -174,9 +217,39 @@ interface State {
   streamerGroupFilter: string | null
   /** Collection id, null = every clip, LOOSE = those filed nowhere. */
   collectionFilter: string | null
+  /**
+   * The moments still to work through, as clip ids, in order. Empty means no
+   * run — deliberately the only state, because a separate `inReviewRun` flag
+   * is exactly the second axis that removing the tab strip was about.
+   */
+  reviewRun: string[]
+  /** Position in `reviewRun`. Meaningless when the run is empty. */
+  reviewIndex: number
 
   // jobs & ui
   jobs: ExportJob[]
+  /**
+   * Live state per source id, pushed from main.
+   *
+   * Kept beside the project rather than on `VodSource` because it is transient
+   * runtime state: it is never saved, and merging it into the project would
+   * mark the project dirty every time a buffer gained a second of media.
+   */
+  live: Record<string, LiveState>
+  /**
+   * Who is on air, shared by every page that shows it.
+   *
+   * Loaded at startup from the snapshot on disk, so the Backlog's Live now
+   * band and the roster's badges are drawn on the first paint rather than
+   * appearing a second after you arrive. Whichever of those pages is open
+   * refreshes it for real and writes back here; two pages polling the same
+   * forty-five channels into two private copies of the same object was the
+   * arrangement before this.
+   */
+  liveNow: Record<string, LiveNow>
+  streamerGroups: StreamerGroup[]
+  /** Set when the live memory budget forced a smaller window than was asked for. */
+  liveWindowNotice: string | null
   toasts: Toast[]
   busy: string | null
   /** Latest progress line per tool while the installer is running. */
@@ -186,6 +259,18 @@ interface State {
 interface Actions {
   setEnv: (env: EnvInfo) => void
   setSettings: (settings: AppSettings) => void
+  /**
+   * Change a setting and show it immediately.
+   *
+   * Persisting goes to the main process, which writes the file — and that
+   * process may be in the middle of an export at the time. Waiting for the
+   * write before showing the change is what made switching between light and
+   * dark feel slow: nothing about the new colour scheme depends on it having
+   * reached disk. So the interface moves now, the write happens behind it,
+   * and the authoritative result replaces the guess when it arrives. A write
+   * that fails puts the old value back and says so.
+   */
+  patchSettings: (patch: Partial<AppSettings>) => Promise<void>
   setUpdateStatus: (status: UpdateStatus) => void
   setRecentProjects: (paths: string[]) => void
 
@@ -193,9 +278,27 @@ interface Actions {
   markClean: (project?: ProjectFile) => void
   addSource: (source: VodSource) => void
   setSourceFormats: (sourceId: string, formats: StreamInfo[]) => void
+  /**
+   * A broadcast's length has moved on, or it has stopped.
+   *
+   * Deliberately not marking the project dirty: nothing the person did changed,
+   * the world did. Saving on a timer that runs while you watch would turn every
+   * open project into unsaved changes for no edit anyone made.
+   */
+  setSourceLiveStatus: (
+    sourceId: string,
+    status: { durationSeconds: number; stillRecording: boolean }
+  ) => void
   addSyncAnchors: (anchors: SyncAnchor[]) => void
   setActiveSource: (id: string | null) => void
   removeSource: (id: string) => void
+  /**
+   * Tick or untick angles in the wall's angle picker.
+   *
+   * Takes the whole set rather than one id at a time so the picker's "all" and
+   * "none" are one change and one undo step, not fourteen.
+   */
+  setWallAngles: (hiddenIds: string[]) => void
 
   pushHistory: () => void
   undo: () => void
@@ -206,7 +309,16 @@ interface Actions {
   requestCreateClip: () => void
   closeClipNamePrompt: () => void
   setClipPov: (clipId: string, role: 'video' | 'audio', sourceId: string | undefined) => void
-  nudgeSync: (sourceId: string, deltaSeconds: number) => void
+  /**
+   * Move a POV's mapping by hand.
+   *
+   * `outcome` comes from `classifyManualAlignment` and decides whether the
+   * result is locked or an estimate. It is a required argument rather than an
+   * option: every caller has a detection result (or knowingly has none), and
+   * defaulting it would quietly restore the bug where every nudge wrote
+   * `manual` at 100%.
+   */
+  nudgeSync: (sourceId: string, deltaSeconds: number, outcome: ManualAlignment) => void
   setClipPovOffset: (clipId: string, sourceId: string, seconds: number) => void
   /** The saved streamer library, kept here so watermark defaults can resolve. */
   streamers: SavedStreamer[]
@@ -221,7 +333,9 @@ interface Actions {
 
   patchClip: (
     id: string,
-    patch: Partial<Pick<ClipSegment, 'name' | 'startSeconds' | 'endSeconds' | 'status' | 'tag'>>
+    patch: Partial<Pick<ClipSegment, 'name' | 'startSeconds' | 'endSeconds' | 'status' | 'tag'>>,
+    /** `history: false` while a drag is in flight — the drag pushed once at its start. */
+    opts?: { history?: boolean }
   ) => void
   /** Applies the same tag to several clips in one update, for the clip list's multi-select. */
   patchClips: (ids: string[], patch: Partial<Pick<ClipSegment, 'tag'>>) => void
@@ -273,6 +387,13 @@ interface Actions {
   ) => void
 
   addMarker: (label?: string, category?: MarkerCategory) => void
+  /**
+   * The same instant, marked in every angle that was recording it.
+   *
+   * Distinct from `addMarker`, which marks one POV: finding a moment is the
+   * expensive part of multi-POV work and finding it once should be enough.
+   */
+  addMarkerEverywhere: (label?: string, category?: MarkerCategory) => number
   deleteMarker: (id: string) => void
   markerToClip: (id: string) => void
 
@@ -289,19 +410,44 @@ interface Actions {
   setSequenceIndex: (index: number | null) => void
 
   setTimelinePlayhead: (seconds: number) => void
-  selectTimelineItem: (id: string | null) => void
+  /** `toggle` is shift/ctrl-click; `add` is the marquee adding to what is already held. */
+  selectTimelineItem: (id: string | null, mode?: 'replace' | 'toggle' | 'add') => void
+  selectTimelineItems: (ids: string[]) => void
+  selectTimelineItemsInSpan: (
+    startSeconds: number,
+    endSeconds: number,
+    trackIds: string[],
+    additive?: boolean
+  ) => void
   setTimelineRippleDelete: (value: boolean) => void
+  setTimelineSnap: (value: boolean) => void
+  moveTimelineItems: (moves: ItemMove[]) => void
+  nudgeTimelineItems: (ids: string[], deltaSeconds: number) => void
+  deleteTimelineItems: (ids: string[], ripple?: boolean) => void
+  duplicateTimelineItems: (ids: string[]) => void
+  splitTimelineAt: (atTimelineSeconds: number, ids?: string[]) => void
+  closeTimelineGap: (trackId: string, atTimelineSeconds: number) => void
+  reorderTimelineTrack: (trackId: string, direction: 'up' | 'down') => void
+  copyTimelineItems: (ids: string[]) => void
+  pasteTimelineItems: (atTimelineSeconds: number) => void
 
   setView: (start: number, span: number) => void
   zoomBy: (factor: number, anchorSeconds?: number) => void
 
   setPage: (page: WorkspacePage) => void
   setRoute: (route: AppRoute) => void
+  setSettingsTab: (settingsTab: SettingsTab) => void
+  setLive: (snapshot: LiveSnapshot) => void
+  setLiveNow: (live: Record<string, LiveNow>) => void
+  setStreamerGroups: (groups: StreamerGroup[]) => void
   /** Width-derived collapse. Ignored once the editor has chosen for themselves. */
   setRailCollapsedByWidth: (collapsed: boolean) => void
   toggleRail: () => void
   setStreamerGroupFilter: (groupId: string | null) => void
   setCollectionFilter: (collectionId: string | null) => void
+  startReviewRun: (clipIds: string[]) => void
+  advanceRun: (delta: number) => void
+  endRun: () => void
   setJobs: (jobs: ExportJob[]) => void
   setToolProgress: (progress: InstallProgress) => void
   toast: (toast: ToastEvent & { action?: Toast['action'] }) => void
@@ -335,16 +481,26 @@ const emptyState: State = {
   loopSelection: false,
   sequenceIndex: null,
   timelinePlayheadSeconds: 0,
+  selectedTimelineItemIds: [],
   selectedTimelineItemId: null,
   timelineRippleDelete: false,
+  timelineSnap: true,
+  timelineClipboard: [],
   viewStart: 0,
   viewSpan: 600,
   page: 'video',
   route: 'home',
+  settingsTab: 'appearance',
+  live: {},
+  liveNow: {},
+  streamerGroups: [],
+  liveWindowNotice: null,
   railCollapsed: false,
   railCollapsedByUser: null,
   streamerGroupFilter: null,
   collectionFilter: null,
+  reviewRun: [],
+  reviewIndex: 0,
   jobs: [],
   toasts: [],
   busy: null,
@@ -358,6 +514,24 @@ export const useStore = create<Store>((set, get) => ({
 
   setEnv: (env) => set({ env }),
   setSettings: (settings) => set({ settings }),
+  patchSettings: async (patch) => {
+    const previous = get().settings
+    if (!previous) return
+    set({ settings: { ...previous, ...patch } })
+    try {
+      set({ settings: await window.api.updateSettings(patch) })
+      // Only a tool path can change what is installed, so that is the only
+      // patch worth a second round trip to find out.
+      if (patch.advanced) set({ env: await window.api.env() })
+    } catch {
+      set({ settings: previous })
+      get().toast({
+        kind: 'error',
+        title: 'Could not save that',
+        message: 'The setting could not be written, so it has been put back.'
+      })
+    }
+  },
   setUpdateStatus: (updateStatus) => set({ updateStatus }),
   setRecentProjects: (recentProjects) => set({ recentProjects }),
 
@@ -403,6 +577,31 @@ export const useStore = create<Store>((set, get) => ({
       }
     }),
 
+  setSourceLiveStatus: (sourceId, status) =>
+    set((s) => {
+      if (!s.project) return {}
+      const before = s.project.sources.find((x) => x.id === sourceId)
+      if (
+        !before ||
+        (before.durationSeconds === status.durationSeconds &&
+          (before.stillRecording === true) === status.stillRecording)
+      ) {
+        // Nothing moved. Returning the same project keeps every subscriber —
+        // the wall, the timeline, the clip list — from re-rendering on a timer.
+        return {}
+      }
+      return {
+        project: {
+          ...s.project,
+          sources: s.project.sources.map((x) =>
+            x.id === sourceId
+              ? { ...x, durationSeconds: status.durationSeconds, stillRecording: status.stillRecording }
+              : x
+          )
+        }
+      }
+    }),
+
   setSourceFormats: (sourceId, formats) =>
     set((s) => {
       if (!s.project) return {}
@@ -439,6 +638,22 @@ export const useStore = create<Store>((set, get) => ({
    * the caller confirms first when there is work attached — losing a POV
    * silently would lose every clip cut from it.
    */
+  setWallAngles: (hiddenIds) =>
+    set((s) => {
+      if (!s.project) return {}
+      const hidden = new Set(hiddenIds)
+      const sources = s.project.sources.map((source) => {
+        const next = hidden.has(source.id)
+        if (next === (source.hiddenInWall === true)) return source
+        // Written as absent rather than false: an angle nobody has ever
+        // unticked should not carry a field saying so into the project file.
+        const { hiddenInWall: _was, ...rest } = source
+        return next ? { ...rest, hiddenInWall: true } : rest
+      })
+      if (sources.every((source, i) => source === s.project!.sources[i])) return {}
+      return { project: { ...s.project, sources }, dirty: true }
+    }),
+
   removeSource: (id) =>
     set((s) => {
       if (!s.project) return {}
@@ -599,7 +814,6 @@ export const useStore = create<Store>((set, get) => ({
         dirty: true
       })
       prefetchClipMedia(created, s.project.sources)
-    analyseClipPovs(created, s.project.sources)
       return created.id
     } catch (err) {
       s.toast({
@@ -620,14 +834,27 @@ export const useStore = create<Store>((set, get) => ({
 
   closeClipNamePrompt: () => set({ clipNamePromptOpen: false }),
 
-  patchClip: (id, patch) => {
+  patchClip: (id, patch, opts) => {
     const s = get()
     if (!s.project) return
     const clip = s.project.clips.find((c) => c.id === id)
     if (!clip) return
     const source = s.project.sources.find((x) => x.id === clip.sourceId)
     try {
-      if (patch.startSeconds !== undefined || patch.endSeconds !== undefined || patch.name !== undefined) {
+      /*
+       * One history entry per edit, not one per mouse move.
+       *
+       * A drag on the timeline calls this on every pointer event, so a single
+       * resize pushed a hundred entries — each a copy of every clip and marker
+       * in the project — and left undo stepping back one pixel at a time. The
+       * timeline pushes once when the drag starts and passes `history: false`
+       * for the rest, so undo lands where the drag began, which is what it
+       * looked like it did anyway.
+       */
+      if (
+        opts?.history !== false &&
+        (patch.startSeconds !== undefined || patch.endSeconds !== undefined || patch.name !== undefined)
+      ) {
         s.pushHistory()
       }
       // Moving the range in VOD time moves it in event time too, or the clip
@@ -646,9 +873,11 @@ export const useStore = create<Store>((set, get) => ({
         { ...patch, ...retimed },
         source?.durationSeconds ?? Infinity
       )
+      // Only the clip that moved: see refreshClipMapping. Rebuilding every
+      // clip's projections here is what made dragging an edge feel heavy.
       const clips =
         patch.startSeconds !== undefined || patch.endSeconds !== undefined
-          ? refreshClipMappings(updated, s.project.sources, new Date().toISOString())
+          ? refreshClipMapping(updated, id, s.project.sources, new Date().toISOString())
           : updated
       set({ project: { ...s.project, clips }, dirty: true })
     } catch (err) {
@@ -679,7 +908,7 @@ export const useStore = create<Store>((set, get) => ({
    * becomes `manual`, which the solver never overwrites, and every clip is
    * re-projected immediately.
    */
-  nudgeSync: (sourceId, deltaSeconds) =>
+  nudgeSync: (sourceId, deltaSeconds, outcome) =>
     set((s) => {
       if (!s.project || deltaSeconds === 0) return {}
       const source = s.project.sources.find((x) => x.id === sourceId)
@@ -695,11 +924,14 @@ export const useStore = create<Store>((set, get) => ({
         vodStartRealTime: start,
         offsetSeconds: roundMs((base?.offsetSeconds ?? 0) + deltaSeconds),
         driftRate: base?.driftRate ?? 0,
-        confidence: 1,
-        method: 'manual' as const,
+        // The measured figure and the method the classifier decided — never a
+        // flat 1. A hand-set offset that is not on a detected peak is an
+        // estimate, and the exporter pads it accordingly.
+        confidence: outcome.confidence,
+        method: outcome.method,
         anchorIds: base?.anchorIds ?? [],
         lastValidatedAt: new Date().toISOString(),
-        warnings: []
+        warnings: outcome.warnings
       }
       const sources = s.project.sources.map((x) =>
         x.id === sourceId ? { ...x, syncMapping: mapping } : x
@@ -748,6 +980,8 @@ export const useStore = create<Store>((set, get) => ({
 
   streamers: [],
   setStreamers: (streamers) => set({ streamers }),
+  setLiveNow: (liveNow) => set({ liveNow }),
+  setStreamerGroups: (streamerGroups) => set({ streamerGroups }),
 
   setSourceWatermark: (sourceId, watermark) =>
     set((s) => {
@@ -1152,6 +1386,27 @@ export const useStore = create<Store>((set, get) => ({
     set({ project: { ...s.project, markers: [...s.project.markers, marker] }, dirty: true })
   },
 
+  addMarkerEverywhere: (label, category) => {
+    const s = get()
+    if (!s.project || !s.activeSourceId) return 0
+    const result = markEverywhere({
+      sources: s.project.sources,
+      fromSourceId: s.activeSourceId,
+      atSeconds: s.currentTime,
+      label: label ?? `Marker ${s.project.markers.length + 1}`,
+      ...(category ? { category } : {})
+    })
+    if (result.markers.length === 0) return 0
+    s.pushHistory()
+    set({
+      project: { ...s.project, markers: [...s.project.markers, ...result.markers] },
+      dirty: true
+    })
+    // The count is what the caller reports, and it counts angles actually
+    // marked — an angle that was not rolling then is not a silent success.
+    return result.markers.length
+  },
+
   deleteMarker: (id) => {
     const s = get()
     if (!s.project) return
@@ -1183,7 +1438,6 @@ export const useStore = create<Store>((set, get) => ({
         dirty: true
       })
       prefetchClipMedia(created, s.project.sources)
-    analyseClipPovs(created, s.project.sources)
     } catch (err) {
       s.toast({
         kind: 'error',
@@ -1208,8 +1462,171 @@ export const useStore = create<Store>((set, get) => ({
   setSequenceIndex: (index) => set({ sequenceIndex: index }),
 
   setTimelinePlayhead: (seconds) => set({ timelinePlayheadSeconds: Math.max(0, roundMs(seconds)) }),
-  selectTimelineItem: (id) => set({ selectedTimelineItemId: id }),
+  selectTimelineItem: (id, mode = 'replace') =>
+    set((s) => {
+      if (id === null) return { selectedTimelineItemIds: [], selectedTimelineItemId: null }
+      const held = s.selectedTimelineItemIds
+      const ids =
+        mode === 'replace'
+          ? [id]
+          : mode === 'add'
+            ? held.includes(id)
+              ? held
+              : [...held, id]
+            : held.includes(id)
+              ? held.filter((x) => x !== id)
+              : [...held, id]
+      // The Inspector follows the item you last touched, not the first one
+      // that happens to be in the set — clicking a second clip should show
+      // that clip's properties.
+      return { selectedTimelineItemIds: ids, selectedTimelineItemId: ids.includes(id) ? id : (ids.at(-1) ?? null) }
+    }),
+
+  selectTimelineItems: (ids) =>
+    set({ selectedTimelineItemIds: ids, selectedTimelineItemId: ids.at(-1) ?? null }),
+
+  selectTimelineItemsInSpan: (startSeconds, endSeconds, trackIds, additive = false) => {
+    const s = get()
+    if (!s.project?.timeline) return
+    const hit = timelineItemsInSpan(s.project.timeline, startSeconds, endSeconds, trackIds)
+    const ids = additive ? [...new Set([...s.selectedTimelineItemIds, ...hit])] : hit
+    set({ selectedTimelineItemIds: ids, selectedTimelineItemId: ids.at(-1) ?? null })
+  },
+
   setTimelineRippleDelete: (value) => set({ timelineRippleDelete: value }),
+  setTimelineSnap: (value) => set({ timelineSnap: value }),
+
+  moveTimelineItems: (moves) => {
+    const s = get()
+    if (!s.project?.timeline || moves.length === 0) return
+    s.pushHistory()
+    set({
+      project: { ...s.project, timeline: moveTimelineItems(s.project.timeline, moves) },
+      dirty: true
+    })
+  },
+
+  nudgeTimelineItems: (ids, deltaSeconds) => {
+    const s = get()
+    if (!s.project?.timeline || ids.length === 0) return
+    const timeline = nudgeTimelineItems(
+      s.project.timeline,
+      withLinkedTimelineItems(s.project.timeline, ids),
+      deltaSeconds
+    )
+    if (timeline === s.project.timeline) return
+    s.pushHistory()
+    set({ project: { ...s.project, timeline }, dirty: true })
+  },
+
+  deleteTimelineItems: (ids, ripple = false) => {
+    const s = get()
+    if (!s.project?.timeline || ids.length === 0) return
+    s.pushHistory()
+    const timeline = deleteTimelineItems(
+      s.project.timeline,
+      withLinkedTimelineItems(s.project.timeline, ids),
+      ripple
+    )
+    set({
+      project: { ...s.project, timeline },
+      selectedTimelineItemIds: [],
+      selectedTimelineItemId: null,
+      dirty: true
+    })
+  },
+
+  duplicateTimelineItems: (ids) => {
+    const s = get()
+    if (!s.project?.timeline || ids.length === 0) return
+    s.pushHistory()
+    let timeline = s.project.timeline
+    const made: string[] = []
+    for (const id of withLinkedTimelineItems(timeline, ids)) {
+      const result = duplicateTimelineItem(timeline, id)
+      timeline = result.timeline
+      if (result.id !== id) made.push(result.id)
+    }
+    set({
+      project: { ...s.project, timeline },
+      selectedTimelineItemIds: made,
+      selectedTimelineItemId: made.at(-1) ?? null,
+      dirty: true
+    })
+  },
+
+  splitTimelineAt: (atTimelineSeconds, ids) => {
+    const s = get()
+    if (!s.project?.timeline) return
+    const scope = ids === undefined ? undefined : withLinkedTimelineItems(s.project.timeline, ids)
+    const timeline = splitTimelineItemsAt(s.project.timeline, atTimelineSeconds, scope)
+    if (timeline === s.project.timeline) return
+    s.pushHistory()
+    set({ project: { ...s.project, timeline }, dirty: true })
+  },
+
+  closeTimelineGap: (trackId, atTimelineSeconds) => {
+    const s = get()
+    if (!s.project?.timeline) return
+    const timeline = closeTimelineGapAt(s.project.timeline, trackId, atTimelineSeconds)
+    if (timeline === s.project.timeline) return
+    s.pushHistory()
+    set({ project: { ...s.project, timeline }, dirty: true })
+  },
+
+  reorderTimelineTrack: (trackId, direction) => {
+    const s = get()
+    if (!s.project?.timeline) return
+    const timeline = reorderTimelineTrackAt(s.project.timeline, trackId, direction)
+    if (timeline === s.project.timeline) return
+    s.pushHistory()
+    set({ project: { ...s.project, timeline }, dirty: true })
+  },
+
+  copyTimelineItems: (ids) => {
+    const s = get()
+    if (!s.project?.timeline) return
+    const wanted = new Set(withLinkedTimelineItems(s.project.timeline, ids))
+    set({ timelineClipboard: s.project.timeline.items.filter((i) => wanted.has(i.id)) })
+  },
+
+  pasteTimelineItems: (atTimelineSeconds) => {
+    const s = get()
+    const clipboard = s.timelineClipboard
+    if (!s.project?.timeline || clipboard.length === 0) return
+    // Everything is placed relative to the earliest copied item, so a group
+    // pasted at the playhead keeps the spacing it was cut with.
+    const anchor = Math.min(...clipboard.map((i) => i.timelineStartSeconds))
+    const trackIds = new Set(s.project.timeline.tracks.map((t) => t.id))
+    s.pushHistory()
+    let timeline = s.project.timeline
+    const made: string[] = []
+    for (const item of clipboard) {
+      // A track that has since been deleted falls back to the first of its own
+      // kind rather than dropping the item on the floor.
+      const trackId = trackIds.has(item.trackId)
+        ? item.trackId
+        : timeline.tracks.filter((t) => t.kind === item.kind).sort((a, b) => a.order - b.order)[0]?.id
+      if (!trackId) continue
+      const offset = item.timelineStartSeconds - anchor
+      const start = Math.max(0, atTimelineSeconds + offset)
+      const { timeline: next, id } = addTimelineItem(timeline, {
+        ...item,
+        trackId,
+        linkedItemId: undefined,
+        timelineStartSeconds: start,
+        timelineEndSeconds: start + (item.timelineEndSeconds - item.timelineStartSeconds)
+      })
+      timeline = next
+      made.push(id)
+    }
+    set({
+      project: { ...s.project, timeline },
+      selectedTimelineItemIds: made,
+      selectedTimelineItemId: made.at(-1) ?? null,
+      dirty: true
+    })
+  },
 
   setView: (start, span) =>
     set((s) => {
@@ -1231,6 +1648,63 @@ export const useStore = create<Store>((set, get) => ({
 
   setPage: (page) => set({ page }),
   setRoute: (route) => set({ route }),
+  setSettingsTab: (settingsTab) => set({ settingsTab }),
+
+  setLive: (snapshot) =>
+    set((s) => {
+      const next: Partial<Store> = {
+        live: snapshot.sources,
+        liveWindowNotice: snapshot.windowNotice
+      }
+      /*
+       * An archive that has just been published is the one piece of live
+       * state worth keeping. Everything else here describes the buffer, which
+       * is gone when the app closes — but which VOD a broadcast became is a
+       * durable fact about the source, and it is what lets a clip marked live
+       * be re-cut precisely from the recording afterwards. Learning it later
+       * is not an option: nothing goes looking once the source stops being
+       * watched.
+       */
+      if (!s.project) return next
+      let changed = false
+      const sources = s.project.sources.map((source) => {
+        let updated = source
+
+        /*
+         * The platform's own recording of a broadcast still in progress, swapped
+         * in as this POV's media.
+         *
+         * This is what makes a live POV clippable from the moment it went live
+         * rather than only across the rolling buffer — it is an ordinary
+         * growing playlist, so the player, the timeline and the exporter all
+         * carry on unchanged and none of them has to learn about live. Only
+         * the media moves across: the id, the title and above all the sync
+         * mapping stay, because every clip already marked against this POV is
+         * anchored to them.
+         */
+        const recording = snapshot.recordings?.[source.id]
+        if (recording && recording.durationSeconds !== updated.durationSeconds) {
+          changed = true
+          updated = {
+            ...updated,
+            durationSeconds: recording.durationSeconds,
+            playbackKind: recording.playbackKind,
+            ...(recording.playbackUrl ? { playbackUrl: recording.playbackUrl } : {}),
+            ...(recording.formats ? { formats: recording.formats } : {}),
+            recordingVodId: recording.vodId
+          }
+        }
+
+        const archived = snapshot.sources[source.id]?.archivedVodId
+        if (archived && updated.archivedVodId !== archived) {
+          changed = true
+          updated = { ...updated, archivedVodId: archived }
+        }
+        return updated
+      })
+      if (!changed) return next
+      return { ...next, project: { ...s.project, sources }, dirty: true }
+    }),
 
   setRailCollapsedByWidth: (collapsed) =>
     set((s) => ({
@@ -1243,6 +1717,15 @@ export const useStore = create<Store>((set, get) => ({
 
   setStreamerGroupFilter: (groupId) => set({ streamerGroupFilter: groupId }),
   setCollectionFilter: (collectionId) => set({ collectionFilter: collectionId }),
+
+  startReviewRun: (clipIds) => set({ reviewRun: clipIds, reviewIndex: 0 }),
+  // Clamped rather than wrapped: running off the end of a queue and landing
+  // back at the start silently is how you review the same clip twice.
+  advanceRun: (delta) =>
+    set((s) => ({
+      reviewIndex: Math.max(0, Math.min(s.reviewRun.length - 1, s.reviewIndex + delta))
+    })),
+  endRun: () => set({ reviewRun: [], reviewIndex: 0 }),
 
   setJobs: (jobs) => set({ jobs }),
 

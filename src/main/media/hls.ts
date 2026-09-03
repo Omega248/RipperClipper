@@ -35,6 +35,22 @@ export interface HlsMasterPlaylist {
 export interface HlsSegment {
   uri: string
   durationSeconds: number
+  /**
+   * This segment's media sequence number.
+   *
+   * The only stable identity a segment has across playlist refreshes. A live
+   * playlist is a sliding window: the same media moves down it and
+   * `startSeconds` is recomputed from the new first segment every poll, so
+   * comparing positions or times across two fetches identifies the wrong
+   * media. Sequence numbers do not move.
+   */
+  sequence: number
+  /**
+   * Wall-clock time of this segment's first frame, from #EXT-X-PROGRAM-DATE-TIME,
+   * in epoch seconds. This is what maps live media onto the event clock — see
+   * shared/live.ts. Absent on playlists that do not carry the tag.
+   */
+  programDateTime?: number
   /** Start time of this segment within the playlist timeline. */
   startSeconds: number
   endSeconds: number
@@ -49,7 +65,13 @@ export interface HlsMediaPlaylist {
   targetDuration: number
   totalDurationSeconds: number
   segments: HlsSegment[]
+  /**
+   * `#EXT-X-ENDLIST` is present: the broadcast is over and this playlist will
+   * not grow again. Its absence is what makes a playlist live.
+   */
   endList: boolean
+  /** #EXT-X-MEDIA-SEQUENCE, the sequence number of the first segment listed. */
+  mediaSequence: number
 }
 
 export type HlsPlaylist = HlsMasterPlaylist | HlsMediaPlaylist
@@ -124,9 +146,23 @@ export function parseMedia(text: string, baseUrl: string): HlsMediaPlaylist {
   let cursor = 0
   let endList = false
   let lastByteEnd = 0
+  let mediaSequence = 0
+  let sequence: number | null = null
+  // Carried forward: PROGRAM-DATE-TIME is usually stamped once and every
+  // following segment's time is implied by the durations since.
+  let clock: number | undefined
 
   for (const line of lines) {
-    if (line.startsWith('#EXT-X-TARGETDURATION:')) {
+    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+      mediaSequence = Number(line.slice('#EXT-X-MEDIA-SEQUENCE:'.length)) || 0
+      if (sequence === null) sequence = mediaSequence
+    } else if (line.startsWith('#EXT-X-PROGRAM-DATE-TIME:')) {
+      const ms = Date.parse(line.slice('#EXT-X-PROGRAM-DATE-TIME:'.length).trim())
+      // A re-stamp resets the clock; drift between the stamp and the
+      // accumulated durations is the platform's, and the stamp is the one to
+      // believe.
+      if (!Number.isNaN(ms)) clock = ms / 1000
+    } else if (line.startsWith('#EXT-X-TARGETDURATION:')) {
       targetDuration = Number(line.slice('#EXT-X-TARGETDURATION:'.length)) || 0
     } else if (line.startsWith('#EXTINF:')) {
       const value = line.slice('#EXTINF:'.length).split(',')[0]
@@ -147,16 +183,21 @@ export function parseMedia(text: string, baseUrl: string): HlsMediaPlaylist {
       endList = true
     } else if (!line.startsWith('#')) {
       const duration = pendingDuration ?? 0
+      if (sequence === null) sequence = mediaSequence
       segments.push({
         uri: resolveUrl(line, baseUrl),
         durationSeconds: duration,
         startSeconds: round(cursor),
         endSeconds: round(cursor + duration),
+        sequence,
+        programDateTime: clock === undefined ? undefined : round(clock),
         byteRange: pendingByteRange,
         discontinuity: pendingDiscontinuity,
         mapUri: currentMap
       })
       cursor += duration
+      if (clock !== undefined) clock += duration
+      sequence += 1
       pendingDuration = null
       pendingByteRange = undefined
       pendingDiscontinuity = false
@@ -168,7 +209,8 @@ export function parseMedia(text: string, baseUrl: string): HlsMediaPlaylist {
     targetDuration,
     totalDurationSeconds: round(cursor),
     segments,
-    endList
+    endList,
+    mediaSequence
   }
 }
 
@@ -237,6 +279,81 @@ export function selectSegments(
 }
 
 /** Rank variants best-first: resolution, then frame rate, then bandwidth. */
+/**
+ * A label a person would recognise for a variant.
+ *
+ * A variant's own NAME is preferred, but Twitch does not put one on
+ * `EXT-X-STREAM-INF` at all — it names the *media group* instead, so the
+ * parser's `NAME ?? VIDEO` fallback yields the group id and the source
+ * rendition ends up labelled "chunked". The human name is right there on the
+ * matching `EXT-X-MEDIA` line, and joining them by group id is what turns
+ * "chunked" back into "1080p60" in a quality picker.
+ *
+ * Falls through to the resolution when neither says anything useful.
+ */
+/**
+ * How long the recording actually is, according to the media itself.
+ *
+ * Platforms report a duration and sometimes that duration is a lie. Kick
+ * returns `duration: 0` for a broadcast it has not finished processing —
+ * measured on a 1.11-hour VOD that was complete, public, and carried
+ * `#EXT-X-ENDLIST`. The app believed the zero, and a zero-length POV is not a
+ * degraded POV: it has no span on the timeline, no coverage row, no window to
+ * sync against, and the decoder gives up on it. One angle of a two-angle event
+ * simply did not work.
+ *
+ * The playlist has always known. Summing `#EXTINF` is what `parseMedia`
+ * already does; this only picks a variant to ask.
+ *
+ * The cheapest rendition, because every variant lists the same segments and
+ * only the duration is wanted — there is no reason to pull the 1080p60 index
+ * to count its rows.
+ *
+ * For a playlist still growing the sum is what has been published so far,
+ * which is the same thing `durationSeconds` already means for a live source:
+ * a floor that moves, not a length.
+ */
+export async function durationFromPlaylist(
+  variants: HlsVariant[],
+  fetchText: (url: string) => Promise<string>
+): Promise<number | undefined> {
+  const cheapest = variants
+    .filter((v) => v.uri)
+    .sort((a, b) => (a.bandwidth || Infinity) - (b.bandwidth || Infinity))[0]
+  if (!cheapest) return undefined
+  try {
+    const media = parseMedia(await fetchText(cheapest.uri), cheapest.uri)
+    return media.totalDurationSeconds > 0 ? media.totalDurationSeconds : undefined
+  } catch {
+    // A duration we could not confirm is not worth failing a resolve over —
+    // the caller keeps whatever the platform said, including zero.
+    return undefined
+  }
+}
+
+export function variantLabel(variant: HlsVariant, media: HlsMedia[]): string | undefined {
+  const named = media.find((m) => m.groupId === variant.name && m.name.trim() !== '')
+  if (named) return named.name
+  if (variant.name && variant.name.trim() !== '') return variant.name
+  if (variant.height) return variant.frameRate && variant.frameRate > 31
+    ? `${variant.height}p${Math.round(variant.frameRate)}`
+    : `${variant.height}p`
+  return undefined
+}
+
+/**
+ * The video (or audio) codec out of an HLS `CODECS` attribute.
+ *
+ * Lives here rather than in each platform because the attribute is HLS's, not
+ * the platform's — it was copied into two adapters before this.
+ */
+export function firstCodec(codecs: string | undefined, kind: 'video' | 'audio'): string | undefined {
+  if (!codecs) return undefined
+  const parts = codecs.split(',').map((c) => c.trim()).filter(Boolean)
+  const isAudio = (c: string): boolean => /^(mp4a|opus|ac-3|ec-3|vorbis)/i.test(c)
+  return parts.find((c) => (kind === 'audio' ? isAudio(c) : !isAudio(c)))
+}
+
 export function sortVariants(variants: HlsVariant[]): HlsVariant[] {
   return [...variants].sort((a, b) => {
     const areaA = (a.width ?? 0) * (a.height ?? 0)

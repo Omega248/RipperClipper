@@ -78,6 +78,20 @@ export interface QueueTask {
   combineName?: string
 }
 
+/**
+ * Ceiling on exports running at once.
+ *
+ * The old ceiling of four was sized for cutting clips out of a broadcast,
+ * where more at once buys nothing — one clip is a handful of segments and the
+ * link is already saturated. Archiving whole VODs is the opposite shape of
+ * work: each job spends almost all of its time waiting on the network, so
+ * running thirty of them together is what actually uses the connection. What
+ * stops that from becoming thirty times the load on the CDN is the segment
+ * limiter in rangeFetcher, which bounds requests in flight across all jobs
+ * together rather than per job.
+ */
+const MAX_CONCURRENCY = 32
+
 const STAGE_WEIGHTS: Record<string, [number, number]> = {
   // stage -> [startFraction, endFraction] of the overall job
   resolving: [0, 0.02],
@@ -88,10 +102,22 @@ const STAGE_WEIGHTS: Record<string, [number, number]> = {
   verifying: [0.96, 1]
 }
 
+/** How often a running job's progress is pushed to the interface. */
+const PROGRESS_EMIT_MS = 250
+
 export class ExportQueue extends EventEmitter {
   private tasks = new Map<string, QueueTask>()
   private order: string[] = []
   private running = new Set<string>()
+
+  /**
+   * Whether anything the person is waiting on is running right now.
+   *
+   * Read by background work that should stand aside — see VodCrawler.
+   */
+  get busy(): boolean {
+    return this.running.size > 0
+  }
   private paused = false
   private concurrency = 2
   private pumping = false
@@ -109,7 +135,7 @@ export class ExportQueue extends EventEmitter {
   }
 
   setConcurrency(value: number): void {
-    this.concurrency = Math.max(1, Math.min(4, Math.round(value)))
+    this.concurrency = Math.max(1, Math.min(MAX_CONCURRENCY, Math.round(value)))
     void this.pump()
   }
 
@@ -405,6 +431,8 @@ export class ExportQueue extends EventEmitter {
     let lastAt = Date.now()
     let speed = 0
 
+    let lastEmitAt = 0
+    let lastStage = ''
     const report = (e: { stage: string; fraction: number; message: string; bytes?: number }): void => {
       const [from, to] = STAGE_WEIGHTS[e.stage] ?? [0, 1]
       const overall = from + (to - from) * Math.max(0, Math.min(1, e.fraction))
@@ -432,7 +460,23 @@ export class ExportQueue extends EventEmitter {
         message: e.message
       }
       task.job.progress = progress
-      this.emitJobs()
+
+      /*
+       * Pushed on a clock, not on every event.
+       *
+       * `onProgress` fires once per segment written — a four-hour window is
+       * ~1,400 of them — and each push rebuilds the whole job list and
+       * structure-clones it across the IPC boundary, times however many
+       * exports are running. Four times a second is faster than the eye and
+       * a fraction of the work. A stage change or a finished job always goes
+       * through immediately, because those are the ones being waited on.
+       */
+      const settled = e.fraction >= 1 || e.stage !== lastStage
+      if (settled || now - lastEmitAt >= PROGRESS_EMIT_MS) {
+        lastStage = e.stage
+        lastEmitAt = now
+        this.emitJobs()
+      }
     }
 
     try {
@@ -563,7 +607,10 @@ export class ExportQueue extends EventEmitter {
       workDir,
       settings: task.settings,
       signal: controller.signal,
-      onProgress: (e) => report({ ...e, fraction: 0.9 })
+      // The exporter reports a real fraction of the combined running time;
+      // this used to overwrite it with a constant, which is why the bar sat at
+      // ~94% for the whole combine.
+      onProgress: report
     })
 
     const total = clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)

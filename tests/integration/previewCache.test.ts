@@ -38,7 +38,7 @@ const source = {
   creator: 'StreamerA',
   durationSeconds: CHUNK_SECONDS * 12,
   playbackKind: 'hls' as const,
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: true
 }
 

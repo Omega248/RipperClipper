@@ -32,6 +32,9 @@ export interface PreviewAsset {
   cached: boolean
 }
 
+/** How long an abandoned half-built preview is left alone before it is swept. */
+const STALE_PARTIAL_MS = 10 * 60_000
+
 export class PreviewMediaService {
   private readonly assets = new Map<string, PreviewAsset>()
   private maxSizeBytes: number
@@ -68,9 +71,34 @@ export class PreviewMediaService {
       const names = await readdir(this.cacheDir)
       entries = []
       for (const name of names) {
-        if (!name.endsWith('.mp4') || name.endsWith('.partial.mp4')) continue
+        if (!name.endsWith('.mp4')) continue
         const info = await stat(join(this.cacheDir, name)).catch(() => null)
-        if (info?.isFile()) entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
+        if (!info?.isFile()) continue
+
+        /*
+         * Abandoned half-built previews are swept, not ignored.
+         *
+         * A preview is staged as `.partial.mp4` and renamed on success, so
+         * one still sitting there means the build failed, was cancelled — the
+         * normal case, since scrubbing to a new range abandons the last one —
+         * or the app died mid-write. They were excluded from the size sum and
+         * deleted by nothing, so they accumulated invisibly and the cache
+         * budget quietly understated what was on disk.
+         *
+         * Age is the only safe test: a partial being written right now is
+         * seconds old, and one from a build that is long gone is not.
+         */
+        if (name.endsWith('.partial.mp4')) {
+          if (Date.now() - info.mtimeMs > STALE_PARTIAL_MS) {
+            await rm(join(this.cacheDir, name), { force: true }).catch(() => undefined)
+          } else {
+            // Counts against the budget while it is still being written.
+            entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
+          }
+          continue
+        }
+
+        entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
       }
     } catch {
       return
@@ -82,6 +110,10 @@ export class PreviewMediaService {
     let removed = 0
     for (const entry of entries) {
       if (total <= this.maxSizeBytes * 0.9) break
+      // A partial young enough to still be in flight is counted but not
+      // deleted — pulling the file out from under a running ffmpeg is worse
+      // than being briefly over budget.
+      if (entry.name.endsWith('.partial.mp4')) continue
       const id = entry.name.replace(/\.mp4$/, '')
       await rm(join(this.cacheDir, entry.name), { force: true }).catch(() => undefined)
       this.assets.delete(id)
@@ -258,6 +290,8 @@ export class PreviewMediaService {
       await this.ffmpeg.exec(args, {
         signal: req.signal,
         label: `preview ${transcoding ? 'transcode' : 'remux'}`,
+        // The person is watching this one appear, so it outranks a filmstrip.
+        priority: 'background',
         onProgress: (p) =>
           req.onProgress?.(
             0.55 + Math.min(1, p.outTimeSeconds / Math.max(0.1, duration)) * 0.4,
@@ -272,7 +306,7 @@ export class PreviewMediaService {
         this.log.warn('preview', 'Copy failed; re-encoding the preview instead')
         await this.ffmpeg.exec(
           [...common, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-movflags', '+faststart', staged],
-          { signal: req.signal, label: 'preview transcode fallback' }
+          { signal: req.signal, label: 'preview transcode fallback', priority: 'background' }
         )
       } else {
         throw err

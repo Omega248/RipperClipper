@@ -1,16 +1,9 @@
-import type { VodSource } from '@shared/types'
-
 /**
- * Where the application player fetches a POV from.
+ * Kept as a re-export: the rule itself moved to `shared/playbackSrc.ts`.
  *
- * Always through the app's own loopback proxy: platform CDNs do not reliably
- * send CORS headers, and same-origin media is also what lets several POVs play
- * at once without each one re-negotiating.
+ * It has to be reachable from a main-process test, because the thing worth
+ * asserting is that the URL this builds is one the proxy will actually serve —
+ * and those two halves drifting apart is exactly what turned every POV black
+ * once already.
  */
-export function playbackSrc(source: VodSource, mediaProxyBase: string | undefined): string | null {
-  if (!source.playbackUrl) return null
-  if (source.playbackKind !== 'hls' && source.playbackKind !== 'progressive') return null
-  if (!mediaProxyBase) return source.playbackUrl
-  const kind = source.playbackKind === 'hls' ? 'manifest' : 'segment'
-  return `${mediaProxyBase}/media/${kind}?u=${encodeURIComponent(source.playbackUrl)}`
-}
+export { playbackSrc } from '@shared/playbackSrc'

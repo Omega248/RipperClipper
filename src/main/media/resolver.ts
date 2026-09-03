@@ -1,6 +1,7 @@
-import { Errors, serializeError } from '../../shared/errors.js'
+import { AppError, Errors, serializeError } from '../../shared/errors.js'
 import type { MediaProtocol, ResolverInfo, StreamInfo } from '../../shared/types.js'
 import { run, runChecked } from '../services/process.js'
+import type { ProcessPriority } from '../services/process.js'
 import type { Logger } from '../services/logger.js'
 import { locateExecutable } from '../services/locate.js'
 
@@ -40,6 +41,16 @@ export interface RawInfo {
   release_timestamp?: number
   thumbnail?: string
   is_live?: boolean
+  /**
+   * This recording is still being written — the broadcast is on air now.
+   *
+   * Distinct from `is_live`, deliberately. A live channel is opened as the VOD
+   * the platform is already making, so the media is an ordinary recording and
+   * `is_live` is false: it seeks, it exports, it needs no rolling buffer. But
+   * it is still *growing*, and the parts of the app that reason about "where is
+   * this angle right now" have to know that its length is a floor, not a limit.
+   */
+  still_recording?: boolean
   extractor_key?: string
   webpage_url?: string
   /** Platform tags, when the extractor reports them — used to score event relevance. */
@@ -52,8 +63,32 @@ export interface RawInfo {
   ext?: string
 }
 
+/**
+ * Which failure a yt-dlp exit actually was.
+ *
+ * Exported and pure so the ordering can be tested: it is the whole point.
+ * DRM messages mention signing in, so DRM has to be decided first — otherwise
+ * a DRM-protected video tells people to go and set up browser cookies for
+ * something no cookie will ever unlock, which is worse than saying nothing.
+ */
+export function resolveFailure(stderr: string, platform: string, exitCode: number | null): AppError {
+  if (/drm|widevine|playready|protected content/i.test(stderr)) {
+    return Errors.drmProtected(stderr.slice(-800))
+  }
+  if (/private|members-only|sign in|log in|account/i.test(stderr)) {
+    return Errors.authRequired(platform, stderr.slice(-800))
+  }
+  if (/unavailable|not exist|removed|deleted|404|410/i.test(stderr)) {
+    return Errors.vodUnavailable(stderr.slice(-800))
+  }
+  return Errors.resolverFailed(stderr.slice(-1200) || `exit code ${exitCode}`)
+}
+
 export class ResolverService {
   private info: ResolverInfo = { available: false, path: null, version: null, error: null }
+
+  /** The override path the current `info` was worked out from. */
+  private detectedFor: string | null = null
 
   constructor(private readonly log: Logger) {}
 
@@ -61,7 +96,17 @@ export class ResolverService {
     return this.info
   }
 
-  async detect(overridePath?: string | null, bundledDir?: string | null): Promise<ResolverInfo> {
+  /**
+   * Locate + validate yt-dlp. Remembered against the paths it was worked out
+   * from, for the same reason as FFmpeg's — see `FfmpegService.detect`.
+   */
+  async detect(
+    overridePath?: string | null,
+    bundledDir?: string | null,
+    opts: { force?: boolean } = {}
+  ): Promise<ResolverInfo> {
+    const signature = JSON.stringify([overridePath ?? null, bundledDir ?? null])
+    if (!opts.force && this.info.available && this.detectedFor === signature) return this.info
     try {
       const found = await locateYtDlp(overridePath, bundledDir)
       if (!found.path) {
@@ -73,6 +118,7 @@ export class ResolverService {
       const result = await runChecked(found.path, ['--version'])
       const version = result.stdout.trim().split('\n')[0] ?? 'unknown'
       this.info = { available: true, path: found.path, version, error: null }
+      this.detectedFor = signature
       this.log.info('resolver', 'yt-dlp detected', { path: found.path, version })
     } catch (err) {
       this.info = {
@@ -81,6 +127,7 @@ export class ResolverService {
         version: null,
         error: serializeError(err instanceof Error ? err : Errors.resolverMissing())
       }
+      this.detectedFor = null
       this.log.warn('resolver', 'yt-dlp not available', err)
     }
     return this.info
@@ -97,7 +144,15 @@ export class ResolverService {
    */
   async resolve(
     url: string,
-    opts: { signal?: AbortSignal; cookiesFromBrowser?: string | null } = {}
+    opts: {
+      signal?: AbortSignal
+      cookiesFromBrowser?: string | null
+      /**
+       * How much of the machine this lookup may take. Background crawling
+       * asks for `idle`: nobody is waiting on it, and it runs for hours.
+       */
+      priority?: ProcessPriority
+    } = {}
   ): Promise<RawInfo> {
     const bin = this.require()
     const args = [
@@ -110,19 +165,17 @@ export class ResolverService {
     if (opts.cookiesFromBrowser) args.push('--cookies-from-browser', opts.cookiesFromBrowser)
     args.push('--', url)
 
-    const result = await run(bin, args, { signal: opts.signal, idleTimeoutMs: 120_000 })
+    const result = await run(bin, args, {
+      signal: opts.signal,
+      idleTimeoutMs: 120_000,
+      ...(opts.priority ? { priority: opts.priority } : {})
+    })
     if (result.aborted) throw Errors.cancelled()
 
     if (result.code !== 0) {
       const stderr = result.stderr
       this.log.warn('resolver', 'yt-dlp resolve failed', { code: result.code, stderr })
-      if (/private|members-only|sign in|log in|account/i.test(stderr)) {
-        throw Errors.authRequired(guessPlatformName(url), stderr.slice(-800))
-      }
-      if (/unavailable|not exist|removed|deleted|404|410/i.test(stderr)) {
-        throw Errors.vodUnavailable(stderr.slice(-800))
-      }
-      throw Errors.resolverFailed(stderr.slice(-1200) || `exit code ${result.code}`)
+      throw resolveFailure(stderr, guessPlatformName(url), result.code)
     }
 
     try {
@@ -139,7 +192,7 @@ export class ResolverService {
    */
   async flatPlaylist(
     url: string,
-    opts: { signal?: AbortSignal; limit?: number } = {}
+    opts: { signal?: AbortSignal; limit?: number; priority?: ProcessPriority } = {}
   ): Promise<unknown> {
     const bin = this.require()
     const args = [
@@ -154,13 +207,27 @@ export class ResolverService {
       url
     ]
 
-    const result = await run(bin, args, { signal: opts.signal, idleTimeoutMs: 120_000 })
+    const result = await run(bin, args, {
+      signal: opts.signal,
+      idleTimeoutMs: 120_000,
+      ...(opts.priority ? { priority: opts.priority } : {})
+    })
     if (result.aborted) throw Errors.cancelled()
     if (result.code !== 0) {
       this.log.warn('resolver', 'yt-dlp channel listing failed', {
         code: result.code,
         stderr: result.stderr
       })
+      /*
+       * "This channel does not have a streams tab" is not a failure — it is
+       * the answer. A YouTube channel that has never gone live has no streams
+       * tab, and treating that as an error marked the channel as broken and
+       * had the crawl come back to it every ten minutes forever. An empty
+       * listing is the truth.
+       */
+      if (/does not have a \w+ tab|this channel has no videos/i.test(result.stderr)) {
+        return { entries: [] }
+      }
       if (/private|sign in|log in|account|bot/i.test(result.stderr)) {
         throw Errors.authRequired('this channel', result.stderr.slice(-800))
       }

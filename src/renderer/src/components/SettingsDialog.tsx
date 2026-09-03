@@ -1,12 +1,11 @@
 import { useEffect, useState } from 'react'
 import { formatBytes } from '@shared/errors'
-import { DEFAULT_SHORTCUTS } from '@shared/defaults'
+import { DEFAULT_SHORTCUTS, normalizeAngleCeiling } from '@shared/defaults'
 import type { AppSettings, LogLevel, ThemeMode } from '@shared/types'
 import type { CacheStats } from '@shared/ipc'
 import { useStore } from '../store.js'
-import { message, title } from './QualityPanel.js'
+import type { SettingsTab } from '../store.js'
 import SetupPanel from './SetupPanel.js'
-import SpeechModels from './SpeechModels.js'
 import {
   Button,
   Checkbox,
@@ -35,23 +34,14 @@ interface Props {
  * plain.
  */
 
-type Category =
-  | 'appearance'
-  | 'export'
-  | 'downloads'
-  | 'storage'
-  | 'shortcuts'
-  | 'setup'
-  | 'diagnostics'
-
-const CATEGORIES: Array<{ id: Category; label: string; icon: IconName }> = [
+const CATEGORIES: Array<{ id: SettingsTab; label: string; icon: IconName }> = [
   { id: 'appearance', label: 'Appearance', icon: 'sun' },
   { id: 'export', label: 'Export', icon: 'download' },
   { id: 'downloads', label: 'Downloads', icon: 'folder' },
   { id: 'storage', label: 'Storage', icon: 'file' },
   { id: 'shortcuts', label: 'Keyboard', icon: 'settings' },
   { id: 'setup', label: 'Setup', icon: 'refresh' },
-  { id: 'diagnostics', label: 'Diagnostics', icon: 'help' }
+  { id: 'diagnostics', label: 'Diagnostics', icon: 'activity' }
 ]
 
 /**
@@ -64,13 +54,15 @@ const CATEGORIES: Array<{ id: Category; label: string; icon: IconName }> = [
 export function SettingsBody(): JSX.Element {
   const settings = useStore((s) => s.settings)
   const env = useStore((s) => s.env)
-  const setSettings = useStore((s) => s.setSettings)
+  const patchSettings = useStore((s) => s.patchSettings)
   const setEnv = useStore((s) => s.setEnv)
   const toast = useStore((s) => s.toast)
   const updateStatus = useStore((s) => s.updateStatus)
   const [cache, setCache] = useState<CacheStats | null>(null)
   const [logs, setLogs] = useState('')
-  const [category, setCategory] = useState<Category>('appearance')
+  // Navigation state, so the rail and the palette can deep-link a category.
+  const category = useStore((s) => s.settingsTab)
+  const setCategory = useStore((s) => s.setSettingsTab)
 
   useEffect(() => {
     void window.api.cacheStats().then(setCache)
@@ -78,15 +70,10 @@ export function SettingsBody(): JSX.Element {
 
   if (!settings) return <></>
 
-  const save = async (patch: Partial<AppSettings>): Promise<void> => {
-    try {
-      const next = await window.api.updateSettings(patch)
-      setSettings(next)
-      setEnv(await window.api.env())
-    } catch (err) {
-      toast({ kind: 'error', title: title(err, 'Could not save that'), message: message(err) })
-    }
-  }
+  // Shows the change immediately and reconciles with what was actually
+  // written; it also refreshes the environment only when a tool path moved,
+  // rather than after every keystroke in here.
+  const save = (patch: Partial<AppSettings>): Promise<void> => patchSettings(patch)
 
   return (
       <div className="settings-layout">
@@ -134,6 +121,28 @@ export function SettingsBody(): JSX.Element {
                     label="Scroll the timeline to follow the playhead"
                     onChange={(checked) =>
                       void save({ ui: { ...settings.ui, timelineFollowPlayhead: checked } })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Angles at once"
+                  htmlFor="max-live-povs"
+                  hint="How many tiles decode at the same time. Angles past this get a tile that says so rather than a picture, so it is worth leaving high — the wall already shrinks the decoded size as angles are added, and lowers its quality further if tiles cannot keep up. Which angles are on screen at all is the Angles button above the wall."
+                >
+                  <Select
+                    id="max-live-povs"
+                    block
+                    value={String(normalizeAngleCeiling(settings.ui.maxLivePovs))}
+                    options={[
+                      { value: '4', label: 'At most 4' },
+                      { value: '6', label: 'At most 6' },
+                      { value: '8', label: 'At most 8', hint: 'Fits one screen' },
+                      { value: '12', label: 'At most 12' },
+                      { value: '16', label: 'At most 16', hint: 'Default' },
+                      { value: '24', label: 'At most 24', hint: 'More than most machines enjoy' }
+                    ]}
+                    onChange={(value) =>
+                      void save({ ui: { ...settings.ui, maxLivePovs: Number(value) } })
                     }
                   />
                 </Field>
@@ -192,6 +201,18 @@ export function SettingsBody(): JSX.Element {
                     }
                   />
                 </Field>
+                <Field
+                  label="Name badge on every angle"
+                  hint="Exported angles arrive already labelled, so nothing has to be positioned by hand later. A redrawn frame cannot be stream-copied, so this does mean an encode — composited on the graphics card where one is available. Turn it off and a clip that needs no other change is copied instead of encoded."
+                >
+                  <Checkbox
+                    checked={settings.ui.autoNameBadge !== false}
+                    label="Stamp each loaded POV with a badge naming whose angle it is"
+                    onChange={(checked) =>
+                      void save({ ui: { ...settings.ui, autoNameBadge: checked } })
+                    }
+                  />
+                </Field>
               </div>
               <div className="hint">
                 Quality, file type, folders and filenames are set per project on the Export page,
@@ -221,13 +242,13 @@ export function SettingsBody(): JSX.Element {
                 <Field
                   label="At once"
                   htmlFor="conc"
-                  hint="More at once does not make any single clip faster, and puts more load on the platform. Two is a good default."
+                  hint="More at once does not make any single clip faster. For a few short clips two is a good default; for a batch of long VODs, where each export spends most of its time waiting on the network, a higher figure finishes the batch sooner."
                 >
                   <Select
                     id="conc"
                     block
                     value={String(settings.concurrency)}
-                    options={[1, 2, 3, 4].map((n) => ({
+                    options={[1, 2, 3, 4, 6, 8, 12, 16, 24, 32].map((n) => ({
                       value: String(n),
                       label: `${n} export${n === 1 ? '' : 's'} at a time`
                     }))}
@@ -319,10 +340,7 @@ export function SettingsBody(): JSX.Element {
           )}
 
           {category === 'setup' && (
-            <>
-              <SetupPanel />
-              <SpeechModels />
-            </>
+            <SetupPanel />
           )}
 
           {category === 'diagnostics' && (
@@ -407,6 +425,36 @@ export function SettingsBody(): JSX.Element {
                     if (path) void save({ advanced: { ...settings.advanced, ytDlpPath: path } })
                   }}
                 />
+              </div>
+
+              <h3 style={{ marginTop: 'var(--space-4)' }}>Restricted VODs</h3>
+              <div className="rows">
+                <Field
+                  label="Sign-in cookies"
+                  htmlFor="cookies-from-browser"
+                  hint="Subscriber-only, members-only and age-restricted VODs are only readable by an account that is allowed to watch them. Pick the browser you are already signed in with and the VOD reader borrows its cookies for the lookup. Nothing is copied or stored by Ripper Clipper, and no password is ever asked for."
+                >
+                  <Select
+                    id="cookies-from-browser"
+                    block
+                    value={settings.advanced.cookiesFromBrowser ?? ''}
+                    options={[
+                      { value: '', label: 'Do not use cookies', hint: 'Public VODs only' },
+                      { value: 'chrome', label: 'Google Chrome' },
+                      { value: 'edge', label: 'Microsoft Edge' },
+                      { value: 'firefox', label: 'Firefox' },
+                      { value: 'brave', label: 'Brave' },
+                      { value: 'opera', label: 'Opera' },
+                      { value: 'vivaldi', label: 'Vivaldi' },
+                      { value: 'chromium', label: 'Chromium' }
+                    ]}
+                    onChange={(value) =>
+                      void save({
+                        advanced: { ...settings.advanced, cookiesFromBrowser: value || null }
+                      })
+                    }
+                  />
+                </Field>
               </div>
 
               <h3 style={{ marginTop: 'var(--space-4)' }}>Hardware</h3>

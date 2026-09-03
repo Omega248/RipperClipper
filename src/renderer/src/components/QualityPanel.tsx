@@ -237,6 +237,22 @@ export default function QualityPanel(): JSX.Element {
             />
           </Field>
           <Field
+            label="Exact cuts"
+            htmlFor="smartcut"
+            hint="An exact cut only has to re-encode the frames between your mark and the next keyframe. Splicing re-encodes just those and copies the rest, which is far faster and leaves most of the clip untouched."
+          >
+            <Select
+              id="smartcut"
+              block
+              value={settings.smartCut === false ? 'off' : 'on'}
+              options={[
+                { value: 'on', label: 'Splice', hint: 'Re-encode only the start' },
+                { value: 'off', label: 'Re-encode whole clip', hint: 'Slower, one pass' }
+              ]}
+              onChange={(value) => patch({ smartCut: value === 'on' })}
+            />
+          </Field>
+          <Field
             label="Cut tolerance"
             htmlFor="tol"
             hint="How far a copied cut may land from where you marked it, in seconds."

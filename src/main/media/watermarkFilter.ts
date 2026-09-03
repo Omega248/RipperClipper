@@ -34,6 +34,8 @@ export function buildWatermarkFilter(
     videoLabel: string
     imageLabel: string
     outputLabel: string
+    /** Composite on the GPU: the video label is a CUDA surface, not a frame. */
+    cuda?: boolean
   }
 ): WatermarkFilterPlan {
   const { config, imageWidth, imageHeight } = watermark
@@ -73,6 +75,30 @@ export function buildWatermarkFilter(
     const grownHeight = Math.abs(width * Math.sin(radians)) + Math.abs(height * Math.cos(radians))
     left -= Math.round((grownWidth - width) / 2)
     top -= Math.round((grownHeight - height) / 2)
+  }
+
+  /*
+   * On the GPU, the frames never come down.
+   *
+   * The badge is a still: it is scaled, tinted and rotated once on the CPU —
+   * microseconds, on one image — then uploaded to CUDA once and composited
+   * there for every frame of the clip. What that buys is the whole chain
+   * staying in VRAM: NVDEC decodes into a CUDA surface, `overlay_cuda` draws
+   * onto it, NVENC encodes it. The CPU path is identical except that every
+   * single frame is copied out of the GPU and back again, which is most of
+   * what a watermarked export was actually spending its time on.
+   *
+   * `overlay_cuda` has no `shortest`, so nothing here stops the looped still:
+   * the export's own `-t` is what ends the output, and it is always present on
+   * this path. `format=yuva420p` before the upload is what carries the alpha
+   * into the CUDA surface — skip it and the badge arrives as an opaque
+   * rectangle with the picture behind it gone.
+   */
+  if (opts.cuda) {
+    const filterComplex =
+      `[${opts.imageLabel}]${chain.join(',')},format=yuva420p,hwupload[wmimg];` +
+      `[${opts.videoLabel}][wmimg]overlay_cuda=${left}:${top}[${opts.outputLabel}]`
+    return { filterComplex, outputLabel: opts.outputLabel }
   }
 
   const filterComplex =

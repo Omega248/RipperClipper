@@ -68,6 +68,15 @@ export const Errors = {
       detail: url
     }),
 
+  unknownChannel: (handle: string) =>
+    new AppError({
+      code: 'unknown-channel',
+      title: 'No channel by that name',
+      message:
+        'Nothing on Twitch, Kick or YouTube answers to that name. Check the spelling, or paste the channel address — twitch.tv/name, kick.com/name, youtube.com/@name.',
+      detail: handle
+    }),
+
   invalidUrl: (url: string) =>
     new AppError({
       code: 'invalid-url',
@@ -89,7 +98,23 @@ export const Errors = {
     new AppError({
       code: 'auth-required',
       title: 'Sign-in required',
-      message: `This ${platform} broadcast is only available to signed-in viewers. Sign in to ${platform} in your browser, then load it again.`,
+      message: `This ${platform} broadcast is only available to signed-in viewers. Sign in to ${platform} in a browser, then pick that browser under Settings → Setup → Restricted VODs and load it again.`,
+      detail
+    }),
+
+  /**
+   * The platform will only serve this under DRM.
+   *
+   * Its own answer, not a guess: yt-dlp says so explicitly. Worth its own code
+   * because it is the one failure no setting, sign-in or retry will fix, and
+   * saying "resolve failed" would send people round that loop for nothing.
+   */
+  drmProtected: (detail?: string) =>
+    new AppError({
+      code: 'drm-protected',
+      title: 'This video is DRM protected',
+      message:
+        'The platform will only serve this one through its own player, so it cannot be downloaded or exported. Nothing in Settings changes that.',
       detail
     }),
 
@@ -170,6 +195,21 @@ export const Errors = {
       message: `${platform} does not expose a way to download an arbitrary time range for this VOD. ${why}`
     }),
 
+  liveUnsupported: (platform: string) =>
+    new AppError({
+      code: 'live-unsupported',
+      title: 'This live stream cannot be buffered',
+      message: `${platform} is not serving this broadcast as a segmented stream, so there is no rolling buffer to clip from. The VOD will still be clippable once the broadcast is archived.`
+    }),
+
+  liveRangeGone: (why: string) =>
+    new AppError({
+      code: 'live-range-gone',
+      title: 'That moment is no longer held',
+      message: `A live clip is cut from the media the app is still holding in memory, and this range has already aged out of the buffer. ${why}`,
+      retryable: false
+    }),
+
   invalidRange: (reason: string) =>
     new AppError({
       code: 'invalid-range',
@@ -226,4 +266,28 @@ export function formatBytes(bytes: number): string {
     unit++
   }
   return `${value >= 100 || unit === 0 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
+/**
+ * Did the platform refuse *us*, rather than this particular recording?
+ *
+ * The distinction is not pedantic — it decides whether a failed lookup is
+ * worth repeating. "This VOD was deleted" is final and should be recorded so
+ * nothing asks again. "Sign in to confirm you're not a bot" is about the
+ * requester, applies to everything on that platform at once, and clears on
+ * its own; recording it as an answer marks a whole back catalogue permanently
+ * undateable because of one bad ten minutes.
+ *
+ * Deliberately matches on the platform's own words as well as the code, since
+ * a rate limit arrives as a generic resolver failure carrying a 429.
+ */
+export function isPlatformRefusal(error: unknown): boolean {
+  const code = error instanceof AppError ? error.code : ''
+  if (code === 'auth-required' || code === 'rate-limited') return true
+  const text = `${error instanceof Error ? error.message : String(error)} ${
+    error instanceof AppError ? (error.detail ?? '') : ''
+  }`
+  return /confirm .*not a bot|too many requests|rate.?limit|\b429\b|try again later|temporarily blocked/i.test(
+    text
+  )
 }
