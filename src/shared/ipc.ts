@@ -571,7 +571,6 @@ export interface EnqueueRequest {
    */
   watermark?: ResolvedWatermark
   /** Bleep tone, so what was previewed is what gets written. */
-  bleep?: { hz: number; amplitude: number }
 }
 
 export interface CombineRequest extends EnqueueRequest {
@@ -613,7 +612,6 @@ export interface TimelineExportRequest {
   settings: ExportSettings
   outputDirectory: string
   outputName: string
-  bleep?: { hz: number; amplitude: number }
 }
 
 export interface ToastEvent {

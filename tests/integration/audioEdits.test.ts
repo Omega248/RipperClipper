@@ -173,16 +173,18 @@ describe('hand-drawn audio edits change the exported audio', () => {
       source: SOURCE,
       streams: streams(),
       audioEdits: edits,
-      bleep: { hz: 1000, amplitude: 0.3 },
       settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'copy' },
       outputPath,
       workDir,
       onProgress: () => {}
     })
 
-    // A bleep mutes the original and mixes in a generated tone at the
-    // configured amplitude — clearly audible, well above what the mute test
-    // above measured for the same underlying gate with no tone added.
+    // A bleep mutes the original and mixes in a generated tone — clearly
+    // audible, well above what the mute test above measured for the same
+    // underlying gate with no tone added. The tone is DEFAULT_BLEEP_HZ at
+    // BLEEP_AMPLITUDE: there is one source for it, and this used to pass
+    // those same two numbers back in through a `bleep` option that nothing
+    // in the app ever set.
     const bleeped = audioEnergy(result.outputPath, 2.1, 3.9)
     expect(bleeped).toBeGreaterThan(0.05)
   }, 120_000)

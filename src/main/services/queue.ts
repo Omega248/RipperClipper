@@ -35,6 +35,8 @@ export interface QueueClipInput {
     stream: StreamInfo
     startSeconds: number
     endSeconds: number
+    /** Set when that POV is live, so its media is asked of the buffer by id. */
+    liveSourceId?: string
   }
   /** Hand-drawn mute/bleep/duck ranges, in the clip's own timeline. */
   audioEdits?: AudioEdit[]
@@ -70,8 +72,6 @@ export interface QueueTask {
   streams: SelectedStreams
   settings: ExportSettings
   outputDirectory: string
-  /** Bleep tone, so what was previewed is what gets written. */
-  bleep?: { hz: number; amplitude: number }
   controller: AbortController | null
   /** For combined exports: the clips to join once the parts are ready. */
   combineOf?: string[]
@@ -261,8 +261,6 @@ export class ExportQueue extends EventEmitter {
     settings: ExportSettings
     /** The POV's watermark, so a combined file is marked like a single clip. */
     watermark?: ResolvedWatermark
-    /** Bleep tone, so what was previewed is what gets written. */
-    bleep?: { hz: number; amplitude: number }
     outputDirectory: string
     outputName: string
     projectName?: string
@@ -316,7 +314,6 @@ export class ExportQueue extends EventEmitter {
       streams: input.streams,
       settings: input.settings,
       watermark: input.watermark,
-      bleep: input.bleep,
       outputDirectory: directory,
       controller: null,
       combineOf: input.clips.map((c) => c.id),
@@ -549,7 +546,6 @@ export class ExportQueue extends EventEmitter {
           streams: task.streams,
           audioOverride: task.clip.audioOverride,
           audioEdits: task.clip.audioEdits,
-          bleep: task.bleep,
           watermark: task.watermark,
           settings: task.settings,
           outputPath: task.job.outputPath!,
@@ -635,7 +631,6 @@ export class ExportQueue extends EventEmitter {
         streams: clip.streams ?? task.streams,
         audioOverride: clip.audioOverride,
         audioEdits: clip.audioEdits,
-        bleep: task.bleep,
         watermark: clip.watermark ?? task.watermark,
         transform: clip.transform,
         opacity: clip.opacity,

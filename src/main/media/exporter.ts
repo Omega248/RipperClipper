@@ -47,6 +47,15 @@ export interface ExportClipRequest {
     stream: StreamInfo
     startSeconds: number
     endSeconds: number
+    /**
+     * The live source the sound belongs to, when it is one.
+     *
+     * A live POV's media is not on any server yet, so it cannot be fetched by
+     * URL like the stream above — it has to be asked of the buffer by id, the
+     * same way the picture is. Absent for an ordinary VOD, where `stream` is
+     * all that is needed.
+     */
+    liveSourceId?: string
   }
   /**
    * The watermark belonging to the POV supplying the picture. Drawing one means
@@ -83,8 +92,6 @@ export interface ExportClipRequest {
   audioEdits?: AudioEdit[]
   /** Flat volume multiplier for the whole clip's sound. 1 = unchanged. */
   audioGain?: number
-  /** Bleep tone, so what was previewed is what gets written. */
-  bleep?: { hz: number; amplitude: number }
   settings: ExportSettings
   /** Absolute path of the file to create (extension may be corrected). */
   outputPath: string
@@ -216,6 +223,12 @@ export class Exporter {
       let totalSegments = 0
 
       let videoWindow: Awaited<ReturnType<RangeFetcher['fetchWindow']>> | null = null
+      /*
+       * Declared alongside the picture because the live branch below can fill
+       * it too: a live clip whose sound comes from another POV reads that
+       * POV's held media before the ordinary fetch is even considered.
+       */
+      let audioWindow: Awaited<ReturnType<RangeFetcher['fetchWindow']>> | null = null
 
       /*
        * A live clip is cut from what the app is holding, not from the
@@ -233,55 +246,47 @@ export class Exporter {
       if (req.source.isLive) {
         if (!this.liveMedia) throw Errors.liveUnsupported(req.source.platform)
         req.onProgress({ stage: 'downloading-video', fraction: 0, message: 'Reading held media…' })
-        const held = await this.liveMedia.writeRange(
-          req.source.id,
-          req.startSeconds,
-          req.endSeconds,
-          join(work, 'live-held.ts')
-        )
-        if (!held) {
-          throw Errors.liveRangeGone(
-            `Clip it sooner, or wait for ${req.source.creator}'s broadcast to be archived and cut it from the VOD.`
-          )
-        }
+        videoWindow = await this.heldWindow({
+          sourceId: req.source.id,
+          startEpoch: req.startSeconds,
+          endEpoch: req.endSeconds,
+          work,
+          name: 'live.mkv',
+          label: `live window ${req.clipName}`,
+          signal: req.signal
+        })
+        bytesDownloaded += videoWindow.bytes
 
         /*
-         * Rebuild the timeline before cutting anything.
+         * Sound from another live POV.
          *
-         * The buffer holds whole broadcast segments and writes them out end to
-         * end, which is the right thing for it to do — but each of those
-         * segments was muxed independently by the broadcaster's encoder and
-         * carries its own PCR and program tables. Run together in one MPEG-TS
-         * file, FFmpeg cannot build a coherent index across the joins, and
-         * every seek into it lands about a second late and snapped to the
-         * wrong keyframe. Measured on a fixture broadcast: asking for one
-         * second in returned the frame from three seconds in.
+         * The audio fetch below is skipped for a live source on the grounds
+         * that a live segment is muxed, so its sound arrived with its
+         * picture. That is true of the POV supplying the picture and false of
+         * any other one — and with `audioWindow` left null, `muxed` resolved
+         * to true and the cut mapped the *picture* POV's own audio. So asking
+         * for the commentary from another angle silently wrote this angle's
+         * instead: no note, no error, and `verify` compares durations rather
+         * than content, so the job finished green. It was discoverable only
+         * by listening to the file.
          *
-         * Matroska carries an explicit timestamp on every frame and an index
-         * of its own, so a stream copy into it — no re-encode, a fraction of a
-         * second for a clip-sized window — produces a file whose seeks land
-         * exactly. Everything downstream then treats live media the same way
-         * it treats a fetched VOD window, which is the only reason the cut,
-         * the smart splice and the verify need to know nothing about live.
+         * The buffer holds every watched POV, so the sound is asked of it by
+         * id exactly as the picture was.
          */
-        const normalised = join(work, 'live.mkv')
-        await this.ffmpeg.exec(
-          ['-y', '-fflags', '+genpts', '-i', held.file, '-map', '0', '-c', 'copy', '-f', 'matroska', normalised],
-          { signal: req.signal, label: `live window ${req.clipName}`, priority: 'background' }
-        )
-        await rm(held.file, { force: true }).catch(() => undefined)
-
-        const heldBytes = await stat(normalised).then((f) => f.size).catch(() => 0)
-        videoWindow = {
-          file: normalised,
-          windowStartSeconds: held.windowStartEpoch,
-          windowEndSeconds: held.windowEndEpoch,
-          bytes: heldBytes,
-          // Nothing was transferred: the media was already here.
-          cachedSegments: 0,
-          totalSegments: 0
+        if (req.audioOverride?.liveSourceId) {
+          req.onProgress({ stage: 'downloading-audio', fraction: 0, message: 'Reading held sound…' })
+          audioWindow = await this.heldWindow({
+            sourceId: req.audioOverride.liveSourceId,
+            startEpoch: audioStart,
+            endEpoch: audioEnd,
+            work,
+            name: 'live-audio.mkv',
+            label: `live sound ${req.clipName}`,
+            signal: req.signal
+          })
+          bytesDownloaded += audioWindow.bytes
+          req.onProgress({ stage: 'downloading-audio', fraction: 1, message: 'Reading held sound…' })
         }
-        bytesDownloaded += heldBytes
         req.onProgress({ stage: 'downloading-video', fraction: 1, message: 'Reading held media…' })
       } else if (videoStream) {
         req.onProgress({ stage: 'downloading-video', fraction: 0, message: 'Downloading video…' })
@@ -305,8 +310,6 @@ export class Exporter {
       }
 
       // ---------------------------------------------------- fetch audio ----
-      // A live segment is muxed, so its sound came with the picture above.
-      let audioWindow: Awaited<ReturnType<RangeFetcher['fetchWindow']>> | null = null
       if (audioStream && !req.source.isLive) {
         req.onProgress({ stage: 'downloading-audio', fraction: 0, message: 'Downloading audio…' })
         audioWindow = await this.fetcher.fetchWindow({
@@ -511,8 +514,6 @@ export class Exporter {
           frameHeight: realVideo?.height,
           audioEdits: editingAudio ? req.audioEdits : undefined,
           audioGain: editingAudio ? req.audioGain : undefined,
-          bleepHz: req.bleep?.hz,
-          bleepAmplitude: req.bleep?.amplitude,
           faststart
         })
 
@@ -699,6 +700,70 @@ export class Exporter {
       }
     } finally {
       await rm(work, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * A stretch of a live POV's held media, as a file the rest of the export
+   * can treat exactly like a fetched VOD window.
+   *
+   * Rebuilds the timeline on the way, which is the part that matters. The
+   * buffer holds whole broadcast segments and writes them end to end, and
+   * each of those was muxed independently by the broadcaster's encoder with
+   * its own PCR and program tables. Run together in one MPEG-TS file FFmpeg
+   * cannot build a coherent index across the joins, and every seek lands
+   * about a second late and on the wrong keyframe — measured on a fixture
+   * broadcast, asking for one second in returned the frame from three
+   * seconds in. Matroska carries an explicit timestamp on every frame and an
+   * index of its own, so a stream copy into it — no re-encode, a fraction of
+   * a second for a clip-sized window — produces a file whose seeks land
+   * exactly.
+   *
+   * Extracted so the sound can come from a different live POV than the
+   * picture: both are the same question asked of the buffer with a different
+   * id.
+   */
+  private async heldWindow(req: {
+    sourceId: string
+    startEpoch: number
+    endEpoch: number
+    work: string
+    name: string
+    label: string
+    signal?: AbortSignal
+  }): Promise<{
+    file: string
+    windowStartSeconds: number
+    windowEndSeconds: number
+    bytes: number
+    cachedSegments: number
+    totalSegments: number
+  }> {
+    if (!this.liveMedia) throw Errors.liveUnsupported('live')
+    const raw = join(req.work, `${req.name}.held.ts`)
+    const held = await this.liveMedia.writeRange(req.sourceId, req.startEpoch, req.endEpoch, raw)
+    if (!held) {
+      throw Errors.liveRangeGone(
+        'Clip it sooner, or wait for the broadcast to be archived and cut it from the VOD.'
+      )
+    }
+
+    const normalised = join(req.work, req.name)
+    await this.ffmpeg.exec(
+      ['-y', '-fflags', '+genpts', '-i', held.file, '-map', '0', '-c', 'copy', '-f', 'matroska', normalised],
+      { signal: req.signal, label: req.label, priority: 'background' }
+    )
+    await rm(held.file, { force: true }).catch(() => undefined)
+
+    const bytes = await stat(normalised).then((f) => f.size).catch(() => 0)
+    return {
+      file: normalised,
+      windowStartSeconds: held.windowStartEpoch,
+      windowEndSeconds: held.windowEndEpoch,
+      bytes,
+      // Nothing was transferred: the media was already here.
+      cachedSegments: 0,
+      totalSegments: 0
     }
   }
 
@@ -1022,8 +1087,6 @@ export class Exporter {
     frameHeight?: number
     audioEdits?: AudioEdit[]
     audioGain?: number
-    bleepHz?: number
-    bleepAmplitude?: number
     /** Write the mp4 index at the front, at the cost of rewriting the file. */
     faststart: boolean
   }): { args: string[]; videoEncoding: string } {
@@ -1200,8 +1263,6 @@ export class Exporter {
           {
             inputLabel: audioSourceLabel!,
             durationSeconds: preroll + effectiveDuration,
-            bleepHz: opts.bleepHz,
-            bleepAmplitude: opts.bleepAmplitude,
             gain: opts.audioGain
           }
         )

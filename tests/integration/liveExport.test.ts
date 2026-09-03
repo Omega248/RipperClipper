@@ -96,8 +96,39 @@ function streams(): SelectedStreams {
   return { video: liveStream(), audio: null, muxed: true, notes: [] }
 }
 
+/**
+ * A second angle, on air at the same instants as the first.
+ *
+ * Built from the very same segment files, offset by `ALT_SHIFT` — so at any
+ * given moment this POV is broadcasting a different colour and a different
+ * tone than SOURCE is. That is the whole point: it makes "which POV did the
+ * sound come from" a question the output can actually answer, without
+ * encoding a second fixture.
+ */
+const ALT_SHIFT = 3
+
+const ALT_SOURCE: VodSource = {
+  ...SOURCE,
+  id: 'live:fixture-b',
+  vodId: 'fixturechannelb',
+  url: 'https://www.twitch.tv/fixturechannelb',
+  title: 'Second angle is live',
+  creator: 'Second'
+}
+
+function altStream(): StreamInfo {
+  return { ...liveStream(), id: 'live-b', url: `${originUrl}/alt.m3u8` }
+}
+
+/** Which segment the second angle was broadcasting at an instant. */
+function altSegmentAt(epoch: number): (typeof SEGMENTS)[number] {
+  const index = Math.floor((epoch - EPOCH) / SEGMENT_SECONDS)
+  const shifted = (Math.min(SEGMENTS.length - 1, Math.max(0, index)) + ALT_SHIFT) % SEGMENTS.length
+  return SEGMENTS[shifted]
+}
+
 /** The whole broadcast, as a live playlist that never ends. */
-function playlist(): string {
+function playlist(prefix = ''): string {
   const lines = [
     '#EXTM3U',
     '#EXT-X-VERSION:6',
@@ -106,7 +137,7 @@ function playlist(): string {
     `#EXT-X-PROGRAM-DATE-TIME:${new Date(EPOCH * 1000).toISOString()}`
   ]
   for (let i = 0; i < media.length; i++) {
-    lines.push(`#EXTINF:${SEGMENT_SECONDS}.000,`, `${i}.ts`)
+    lines.push(`#EXTINF:${SEGMENT_SECONDS}.000,`, `${prefix}${i}.ts`)
   }
   // No ENDLIST: this broadcast is still going.
   return lines.join('\n') + '\n'
@@ -188,7 +219,9 @@ beforeAll(async () => {
   server = createServer((req, res) => {
     const path = (req.url ?? '').split('?')[0]
     if (path.endsWith('.m3u8')) {
-      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' }).end(playlist())
+      const alt = path.includes('alt')
+      const body = alt ? playlist('alt/') : playlist()
+      res.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' }).end(body)
       return
     }
     const index = Number(/(\d+)\.ts$/.exec(path)?.[1])
@@ -196,7 +229,10 @@ beforeAll(async () => {
       res.writeHead(404).end('no such segment')
       return
     }
-    res.writeHead(200, { 'content-type': 'video/mp2t' }).end(media[index])
+    // The second angle serves the same files, rotated, so the two POVs are
+    // never showing the same thing at the same instant.
+    const which = path.includes('/alt/') ? (index + ALT_SHIFT) % media.length : index
+    res.writeHead(200, { 'content-type': 'video/mp2t' }).end(media[which])
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -212,11 +248,13 @@ beforeAll(async () => {
 
   // Hold the broadcast, and wait for the whole fixture to be in the buffer.
   await live.watch(SOURCE, liveStream())
+  await live.watch(ALT_SOURCE, altStream())
   const deadline = Date.now() + 20_000
+  const wanted = EPOCH + media.length * SEGMENT_SECONDS - 0.5
   while (Date.now() < deadline) {
     // Whatever was actually segmented, less a moment at the end: the last
     // segment may be short.
-    if (live.covers(SOURCE.id, EPOCH, EPOCH + media.length * SEGMENT_SECONDS - 0.5)) break
+    if (live.covers(SOURCE.id, EPOCH, wanted) && live.covers(ALT_SOURCE.id, EPOCH, wanted)) break
     await new Promise((r) => setTimeout(r, 100))
   }
 }, 300_000)
@@ -273,6 +311,64 @@ describe('clipping a live broadcast', () => {
     for (const at of [0.5, 3.5, 5.5]) {
       const freq = await sampleFrequency(result.outputPath, at)
       expect(freq).toBeCloseTo(segmentAt(startEpoch + at).freq, -1)
+    }
+  }, 120_000)
+
+  it('takes the sound from the live POV asked for, not the one supplying the picture', async () => {
+    /*
+     * Two angles are live at once and neither is showing what the other is.
+     * The export asks for this angle's picture and the other one's sound, and
+     * the file has to carry exactly that.
+     *
+     * It did not. The audio fetch is skipped for a live source because a live
+     * segment is muxed and its sound arrives with its picture — true of the
+     * POV supplying the picture, false of any other. With no audio window,
+     * `muxed` resolved to true and the cut mapped the picture POV's own
+     * audio, so the commentary from another angle was silently replaced by
+     * this one's. Nothing reported it: there is no note, and `verify`
+     * compares durations rather than content, so the job finished green.
+     */
+    const startEpoch = EPOCH + 5
+    const endEpoch = EPOCH + 11
+
+    const result = await exporter.exportClip({
+      clipId: 'live-audio-pov',
+      clipName: 'Live Audio POV',
+      startSeconds: startEpoch,
+      endSeconds: endEpoch,
+      source: SOURCE,
+      streams: streams(),
+      audioOverride: {
+        stream: altStream(),
+        startSeconds: startEpoch,
+        endSeconds: endEpoch,
+        liveSourceId: ALT_SOURCE.id
+      },
+      settings: { ...DEFAULT_EXPORT_SETTINGS, cutMode: 'smart', keyframeToleranceSeconds: 0.2 },
+      outputPath: join(outDir, 'Live Audio POV.mp4'),
+      workDir,
+      onProgress: () => undefined
+    })
+
+    expect(result.verification.problems).toEqual([])
+    expect(result.verification.video.present).toBe(true)
+    expect(result.verification.audio.present).toBe(true)
+
+    for (const at of [0.5, 3.5, 5.5]) {
+      // The picture is still this angle's.
+      const [r, g, b] = await sampleColor(result.outputPath, at)
+      const want = segmentAt(startEpoch + at).rgb
+      expect(Math.abs(r - want[0]), `picture at ${at}s`).toBeLessThanOrEqual(24)
+      expect(Math.abs(g - want[1]), `picture at ${at}s`).toBeLessThanOrEqual(24)
+      expect(Math.abs(b - want[2]), `picture at ${at}s`).toBeLessThanOrEqual(24)
+
+      // And the sound is the other one's — a different tone at every instant.
+      const freq = await sampleFrequency(result.outputPath, at)
+      expect(freq, `sound at ${at}s`).toBeCloseTo(altSegmentAt(startEpoch + at).freq, -1)
+      expect(freq, `sound at ${at}s must not be the picture POV's`).not.toBeCloseTo(
+        segmentAt(startEpoch + at).freq,
+        -1
+      )
     }
   }, 120_000)
 

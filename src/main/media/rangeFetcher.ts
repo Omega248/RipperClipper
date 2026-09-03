@@ -139,6 +139,27 @@ export class RangeFetcher {
    */
   private readonly playlists = new Map<string, { playlist: HlsMediaPlaylist; url: string }>()
 
+  /**
+   * How many finished playlists to keep.
+   *
+   * The map had no bound at all, and this service is one long-lived instance:
+   * every window request routes through it, including the ones ordinary
+   * browsing makes — filmstrips, waveforms, scene marks, previews — not just
+   * exports. A four-hour rendition parses to well over a thousand segment
+   * objects, each holding a long signed CDN URL, so roughly a megabyte of
+   * retained heap per playlist that was never released for the life of the
+   * session.
+   *
+   * It could not converge either: the key is the media-playlist URL, which
+   * Twitch and Kick sign freshly on every resolve, so re-opening the same VOD
+   * added a second entry for identical media rather than hitting the first.
+   *
+   * Sixteen keeps what the cache is actually for — one export reads the same
+   * playlist for its video pass, its audio pass, the filmstrip and the
+   * waveform — while putting a ceiling on a session that browses a library.
+   */
+  private static readonly MAX_PLAYLISTS = 16
+
   private async resolveMediaPlaylist(stream: StreamInfo): Promise<{
     playlist: HlsMediaPlaylist
     url: string
@@ -147,7 +168,15 @@ export class RangeFetcher {
     if (cached) return cached
 
     const resolved = await this.readMediaPlaylist(stream)
-    if (resolved.playlist.endList) this.playlists.set(stream.url, resolved)
+    if (resolved.playlist.endList) {
+      this.playlists.set(stream.url, resolved)
+      // Map iteration is insertion-ordered, so the first key is the oldest.
+      while (this.playlists.size > RangeFetcher.MAX_PLAYLISTS) {
+        const oldest = this.playlists.keys().next().value
+        if (oldest === undefined) break
+        this.playlists.delete(oldest)
+      }
+    }
     return resolved
   }
 

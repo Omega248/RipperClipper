@@ -911,7 +911,10 @@ async function withAudioPovStreams(req: EnqueueRequest): Promise<QueueClipInput[
       audioOverride: {
         stream,
         startSeconds: audio.startSeconds,
-        endSeconds: audio.endSeconds
+        endSeconds: audio.endSeconds,
+        // Only meaningful for a broadcast still in progress: its media is in
+        // the buffer, not on a server, so the exporter asks for it by id.
+        ...(audio.source.isLive ? { liveSourceId: audio.source.id } : {})
       }
     })
   }
@@ -1579,7 +1582,12 @@ function registerIpc(): void {
         const audioStreams = streamsByPov.get(seg.audioSource.id)!
         const stream = audioStreams.audio ?? (audioStreams.muxed ? audioStreams.video : null)
         if (stream) {
-          audioOverride = { stream, startSeconds: seg.audioStartSeconds, endSeconds: seg.audioEndSeconds }
+          audioOverride = {
+            stream,
+            startSeconds: seg.audioStartSeconds,
+            endSeconds: seg.audioEndSeconds,
+            ...(seg.audioSource.isLive ? { liveSourceId: seg.audioSource.id } : {})
+          }
         } else {
           log.warn('export', 'Audio POV has no usable audio stream; keeping the video POV sound', {
             source: seg.audioSource.title
@@ -1622,7 +1630,6 @@ function registerIpc(): void {
       streams: streamsByPov.get(primary.id)!,
       projectName: req.projectName,
       clips,
-      bleep: req.bleep,
       settings: req.settings,
       watermark: req.segments[0].watermark,
       outputDirectory: req.outputDirectory,
