@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { Errors } from '../../shared/errors.js'
 import { DEFAULT_EXPORT_SETTINGS } from '../../shared/defaults.js'
@@ -286,7 +286,25 @@ export async function atomicWriteJson(path: string, value: unknown): Promise<voi
    * itself was always atomic; the staging was not.
    */
   const tmp = `${path}.${process.pid}.${atomicWriteSeq++}.tmp`
-  await writeFile(tmp, JSON.stringify(value, null, 2), 'utf8')
+  /*
+   * Flushed to the device before it is published.
+   *
+   * `writeFile` returns once the bytes are in the page cache, not once they
+   * are on the disk, and NTFS journals metadata rather than file contents. So
+   * a rename could become durable while the data behind it had not — losing
+   * power in that window leaves a project, or the streamer library, as a
+   * present but zero-length file. Temp-and-rename on its own only protects
+   * against the process dying, which is the easier half.
+   *
+   * One fsync per save, on a file this app writes at human speed.
+   */
+  const handle = await open(tmp, 'w')
+  try {
+    await handle.writeFile(JSON.stringify(value, null, 2), 'utf8')
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
   await publish(tmp, path)
 }
 
