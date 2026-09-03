@@ -710,6 +710,26 @@ async function createWindow(): Promise<void> {
   // window actually goes; windowConfirmClose is how it says "go ahead".
   mainWindow.on('close', (event) => {
     if (allowClose) return
+    /*
+     * Nobody left to ask.
+     *
+     * The veto hands the decision to the renderer and waits for it to call
+     * back. If the render process has died — an out-of-memory on a long
+     * timeline, a decoder crash — the BrowserWindow object survives and is
+     * not `isDestroyed()`, so the message is sent into a dead frame and no
+     * answer ever comes. The window then could not be closed by the titlebar,
+     * Alt+F4 or the tray, and the only way out was Task Manager: the abrupt
+     * kill that orphans ffmpeg and leaves scratch behind, which is precisely
+     * what the shutdown path exists to prevent.
+     *
+     * There is also nothing to lose by going: an unsaved project lives in the
+     * renderer that just died. The React error boundary covers a throw inside
+     * a live renderer, not the process itself dying.
+     */
+    if (mainWindow?.webContents.isCrashed()) {
+      log.warn('app', 'Closing without the usual check: the window process is not responding')
+      return
+    }
     event.preventDefault()
     toWindow(IPC.evtBeforeClose)
   })
@@ -839,37 +859,42 @@ function handle<T>(channel: string, fn: (...args: never[]) => Promise<T> | T): v
 async function withAudioPovStreams(req: EnqueueRequest): Promise<QueueClipInput[]> {
   const out: QueueClipInput[] = []
   for (const clip of req.clips) {
-    if (!clip.audio) {
-      out.push(clip)
+    /*
+     * `audio` is separated from everything else the clip carries, because it
+     * is the one field that does not travel: it is resolved into
+     * `audioOverride` below. Everything else travels by spreading `carried`.
+     *
+     * Both pushes used to hand-list the four fields they passed on, so any
+     * other field was dropped exactly when a clip had an audio POV — and the
+     * field that mattered was `audioEdits`, in the case the feature is most
+     * useful in: you mute the POV whose mic caught the thing that cannot go
+     * out. A field added to the request type now travels by default instead
+     * of having to be remembered here.
+     */
+    const { audio, ...carried } = clip
+    if (!audio) {
+      out.push(carried)
       continue
     }
-    const formats = clip.audio.source.formats?.length
-      ? clip.audio.source.formats
-      : await sources.inspectFormats(clip.audio.source)
+    const formats = audio.source.formats?.length
+      ? audio.source.formats
+      : await sources.inspectFormats(audio.source)
     const selected = selectStreams(formats, req.settings.quality)
     const stream = selected.audio ?? (selected.muxed ? selected.video : null)
     if (!stream) {
       log.warn('export', 'Audio POV has no usable audio stream; keeping the video POV sound', {
         clip: clip.name,
-        source: clip.audio.source.title
+        source: audio.source.title
       })
-      out.push({
-        id: clip.id,
-        name: clip.name,
-        startSeconds: clip.startSeconds,
-        endSeconds: clip.endSeconds
-      })
+      out.push(carried)
       continue
     }
     out.push({
-      id: clip.id,
-      name: clip.name,
-      startSeconds: clip.startSeconds,
-      endSeconds: clip.endSeconds,
+      ...carried,
       audioOverride: {
         stream,
-        startSeconds: clip.audio.startSeconds,
-        endSeconds: clip.audio.endSeconds
+        startSeconds: audio.startSeconds,
+        endSeconds: audio.endSeconds
       }
     })
   }
@@ -1854,7 +1879,25 @@ if (!singleInstance) {
     ])
   }
 
-  app.on('before-quit', (event) => {
+  /*
+   * `will-quit`, not `before-quit` — the difference is the whole point.
+   *
+   * Electron emits `before-quit` *before* it starts closing windows, and the
+   * window's own `close` handler is what asks the renderer whether there is
+   * unsaved work. Doing the teardown there meant every irreversible step ran
+   * before the person had been asked anything: the export they were told they
+   * could keep was already aborted and its part-written file already deleted
+   * when the dialog finally appeared, saying it was about to do exactly that.
+   *
+   * And answering "Cancel" then left the app running but gutted — the queue's
+   * `stopping` flag is one-way, the crawler is never restarted, the local
+   * server the renderer is *served from* was closed, and the log stream was
+   * shut. None of it recovers without a restart.
+   *
+   * `will-quit` fires only once every window has actually closed, which is
+   * after the veto point, so by the time this runs quitting is settled.
+   */
+  app.on('will-quit', (event) => {
     if (shuttingDown) return
     shuttingDown = true
     event.preventDefault()

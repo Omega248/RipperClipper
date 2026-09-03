@@ -12,6 +12,9 @@ import type {
   TimelineExportSegment
 } from '@shared/ipc'
 import { planExport } from '@shared/povMapping'
+import type { ExportPart } from '@shared/povMapping'
+import { editsForPov } from '@shared/audioEdits'
+import type { AudioEdit } from '@shared/audioEdits'
 import { computeExportSegments } from '@shared/timeline'
 import { crossCheckByAudio, hasAudioAnchor, strongestSyncedSibling } from './sync/audioCrossCheck.js'
 import { stripHtml } from '@shared/htmlToText'
@@ -1054,7 +1057,8 @@ export default function App(): JSX.Element {
                 startSeconds: plan.audio.startSeconds,
                 endSeconds: plan.audio.endSeconds
               }
-            : undefined
+            : undefined,
+          audioEdits: editsToExport(clip, plan.audio ?? plan.video)
         })
         byPov.set(plan.video.source.id, group)
       }
@@ -2243,6 +2247,44 @@ export default function App(): JSX.Element {
 }
 
 /** A saved project's own name for the Project menu's recent list — no path, no extension. */
+/**
+ * A clip's hand-drawn audio edits, as the export needs them.
+ *
+ * These were simply never sent. `EnqueueRequest.clips[].audioEdits` is
+ * declared, and the whole main-side chain — `withAudioPovStreams`,
+ * `QueueClipInput`, `exportClip`'s `editingAudio`, `buildAudioFilter` —
+ * supports it, but the request literal in `exportClips` listed its fields by
+ * hand and this one was not among them. So every mute, bleep and duck placed
+ * from Properties was dropped on the ordinary Export path, and the file was
+ * written with `-c:a copy` and the unedited sound. Nothing said so: the notes
+ * that would have mentioned the audio are skipped too when there are no edits.
+ * Only the Timeline sequence export passed them, which is why the feature
+ * looked like it worked. This is what the feature exists to prevent — the
+ * ranges people mute are the ones that cannot be published.
+ *
+ * Two corrections the raw list needs before it can be used:
+ *
+ * - **Whose edits.** An edit records the POV it was drawn against, because its
+ *   times are relative to *that* POV's cut. `editsForPov` is what Properties
+ *   itself filters with, so exporting through it writes exactly what was
+ *   drawn on the POV now supplying the sound.
+ * - **Which zero.** Edit times are clip-relative, but a POV whose alignment is
+ *   uncertain is exported with a safety margin, and the file then starts
+ *   `paddingSeconds` *before* the clip does. Unshifted, every gate lands that
+ *   much early — on a padded clip the mute misses the words it was drawn over.
+ */
+function editsToExport(clip: ClipSegment, sound: ExportPart): AudioEdit[] | undefined {
+  const mine = editsForPov(clip.audioEdits, sound.source.id, sound.source.id)
+  if (mine.length === 0) return undefined
+  const pad = sound.paddingSeconds
+  if (pad <= 0) return mine
+  return mine.map((edit) => ({
+    ...edit,
+    startSeconds: edit.startSeconds + pad,
+    endSeconds: edit.endSeconds + pad
+  }))
+}
+
 function projectFileName(path: string): string {
   const base = path.split(/[\\/]/).pop() ?? path
   return base.replace(/\.cookieclip$/i, '')
