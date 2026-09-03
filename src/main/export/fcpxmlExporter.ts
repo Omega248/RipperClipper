@@ -106,8 +106,24 @@ function safeName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '-').trim() || 'project'
 }
 
+/**
+ * A string as XML character data.
+ *
+ * The five entities are the obvious half. The other half is that XML 1.0
+ * cannot carry most control characters *at all* — `&#x1;` is exactly as
+ * illegal as the raw byte, so there is nothing to escape them into and the
+ * only correct thing is to drop them. Left in, Final Cut rejects the whole
+ * document with a parse error, which reads to the person as Ripper Clipper
+ * having produced a broken export. Tab, newline and carriage return are the
+ * three that are legal and are kept.
+ *
+ * Reachable because names are not this app's own: a `.rcpkg` package is
+ * shape-checked rather than sanitised, so any byte can arrive in a project or
+ * clip name.
+ */
 export function xmlEscape(value: string): string {
   return value
+    .replace(/[\u0000-\u0008\u000B-\u000C\u000E-\u001F\uFFFE-\uFFFF]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

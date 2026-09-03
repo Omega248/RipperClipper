@@ -103,6 +103,24 @@ if (__CHANNEL__ !== 'stable') {
 }
 
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Push to the window, if there is still a window to push to.
+ *
+ * `mainWindow` is null only before the first window exists. Between `close`
+ * and that, it is non-null but *destroyed*, and `webContents.send` on a
+ * destroyed window throws — so the optional chain these calls used was
+ * guarding the wrong half of the lifetime.
+ *
+ * It matters because every push here is a notification about background work,
+ * and background work does not stop the instant the window goes: aborting the
+ * export queue during shutdown emits a job update per cancelled job, all of
+ * them after the window has been destroyed.
+ */
+function toWindow(channel: string, ...args: unknown[]): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send(channel, ...args)
+}
 /** Set once the renderer has confirmed it's fine to lose whatever isn't saved. */
 let allowClose = false
 let localServer: LocalServer | null = null
@@ -151,7 +169,7 @@ const vodCrawler = new VodCrawler(
   streamers,
   vodLibrary,
   () => queue.busy,
-  (progress) => mainWindow?.webContents.send(IPC.evtVodCrawl, progress)
+  (progress) => toWindow(IPC.evtVodCrawl, progress)
 )
 // Where a channel's broadcasts come from, once the crawl has read them: the
 // shelf, not a fresh listing per caller. See StreamerService.vods.
@@ -193,7 +211,7 @@ const live = new LiveService(
     if (state.recordingVodId && !state.archivedVodId) {
       void keepRecordingCurrent(sourceId, state.recordingVodId)
     }
-    mainWindow?.webContents.send(IPC.evtLive, {
+    toWindow(IPC.evtLive, {
       sources: live.states(),
       windowNotice: live.windowNotice,
       recordings: Object.fromEntries(liveRecordings)
@@ -566,7 +584,7 @@ async function installTools(ids: ToolId[]): Promise<void> {
   }
   installing = new AbortController()
   const send = (progress: InstallProgress): void => {
-    mainWindow?.webContents.send(IPC.evtDeps, progress)
+    toWindow(IPC.evtDeps, progress)
   }
   try {
     for (const id of ids) {
@@ -584,7 +602,7 @@ async function installTools(ids: ToolId[]): Promise<void> {
           totalBytes: null,
           message: serialized.message
         })
-        mainWindow?.webContents.send(IPC.evtToast, {
+        toWindow(IPC.evtToast, {
           kind: 'error',
           title: serialized.title,
           message: serialized.message
@@ -594,7 +612,7 @@ async function installTools(ids: ToolId[]): Promise<void> {
   } finally {
     installing = null
     await detectEnvironment(true)
-    mainWindow?.webContents.send(IPC.evtDeps, {
+    toWindow(IPC.evtDeps, {
       id: 'ffmpeg',
       label: 'Setup',
       stage: 'done',
@@ -633,7 +651,7 @@ async function autoInstallMissing(): Promise<void> {
   if (wanted.length === 0) return
 
   log.info('deps', 'Setting up automatically', { tools: wanted })
-  mainWindow?.webContents.send(IPC.evtToast, {
+  toWindow(IPC.evtToast, {
     kind: 'info',
     title: 'Setting up',
     message:
@@ -645,13 +663,13 @@ async function autoInstallMissing(): Promise<void> {
 
 function wireQueue(): void {
   queue.on('jobs', (jobs) => {
-    mainWindow?.webContents.send(IPC.evtJobs, jobs)
+    toWindow(IPC.evtJobs, jobs)
   })
 }
 
 function wireUpdater(): void {
   updater.on('status', (status) => {
-    mainWindow?.webContents.send(IPC.evtUpdate, status)
+    toWindow(IPC.evtUpdate, status)
   })
 }
 
@@ -693,15 +711,17 @@ async function createWindow(): Promise<void> {
   mainWindow.on('close', (event) => {
     if (allowClose) return
     event.preventDefault()
-    mainWindow?.webContents.send(IPC.evtBeforeClose)
+    toWindow(IPC.evtBeforeClose)
   })
 
   // The renderer draws its own maximize/restore icon; it has to be told
   // when the real state changes, including from a source that isn't its own
   // button — double-clicking the drag region, Aero Snap, the Windows key
   // shortcuts.
-  const sendMaximized = (): void =>
-    mainWindow?.webContents.send(IPC.evtWindowMaximized, mainWindow.isMaximized())
+  const sendMaximized = (): void => {
+    if (!mainWindow) return
+    toWindow(IPC.evtWindowMaximized, mainWindow.isMaximized())
+  }
   mainWindow.on('maximize', sendMaximized)
   mainWindow.on('unmaximize', sendMaximized)
 
@@ -1052,9 +1072,30 @@ function registerIpc(): void {
   })
   handle(IPC.liveUnwatch, (sourceId: string) => {
     archiveBaseline.delete(sourceId)
+    /*
+     * The recording goes with the source it belongs to.
+     *
+     * These two were left behind on unwatch, and neither is inert. The
+     * resolved recording keeps being pushed to the renderer in every
+     * subsequent `evtLive` payload, and its media URLs are signed and
+     * short-lived — so watching the same channel again picked up a stale
+     * recording whose links had expired, and `recordingReadAt` then held the
+     * refresh off for up to a minute, because as far as it was concerned this
+     * source had just been read. A clip cut in that window failed on a dead
+     * URL rather than on anything the person did.
+     */
+    liveRecordings.delete(sourceId)
+    recordingReadAt.delete(sourceId)
     live.unwatch(sourceId)
   })
-  handle(IPC.liveStates, () => ({ sources: live.states(), windowNotice: live.windowNotice }))
+  // The same shape the push sends: a renderer that reloads mid-broadcast must
+  // not lose the recording (and with it the ability to cut the whole session)
+  // until the next state change happens to arrive.
+  handle(IPC.liveStates, () => ({
+    sources: live.states(),
+    windowNotice: live.windowNotice,
+    recordings: Object.fromEntries(liveRecordings)
+  }))
   handle(IPC.liveCovers, (req: { sourceId: string; startEpoch: number; endEpoch: number }) =>
     live.covers(req.sourceId, req.startEpoch, req.endEpoch)
   )
@@ -1643,7 +1684,7 @@ if (!singleInstance) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const path = startupProjectPath(argv)
-    if (path) mainWindow?.webContents.send(IPC.evtOpenProject, path)
+    if (path) toWindow(IPC.evtOpenProject, path)
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.focus()
@@ -1735,23 +1776,64 @@ if (!singleInstance) {
     if (process.platform !== 'darwin') app.quit()
   })
 
-  app.on('before-quit', () => {
+  /**
+   * Shutdown, in an order that matters, awaited.
+   *
+   * This used to be two synchronous listeners that started asynchronous work
+   * and did not wait for it — `void rm(…)`, `void vodLibrary.flush()` — which
+   * on a fast exit is the same as not doing it. Three things went wrong as a
+   * result:
+   *
+   * - **Exports outlived the app.** A running job's ffmpeg is a spawned child,
+   *   and on Windows a child is not killed when its parent exits. It carried
+   *   on encoding into a scratch directory the app was deleting at that exact
+   *   moment, and left a half-written file in the person's output folder that
+   *   nothing ever marked as failed. The abort path is also where the exporter
+   *   deletes its partial output and work directory, and none of that can run
+   *   after the process is gone.
+   * - **The crawl's work was thrown away.** `flush()` writes what the VOD
+   *   crawl learned this session; unawaited, it lost the race with exit. That
+   *   is minutes of channel listings to re-learn.
+   * - **Scratch space leaked**, for the same reason.
+   *
+   * So: stop taking on new work, abort what is in flight and wait for it to
+   * unwind, flush state, then sweep. Every step is bounded — a shutdown that
+   * hangs is worse than one that leaves a temp file — and `finally` guarantees
+   * the second `app.quit()` regardless of what failed.
+   */
+  let shuttingDown = false
+
+  async function shutdown(): Promise<void> {
+    log.info('app', 'Shutting down')
     // Live buffers hold media in memory and a poll timer each. Nothing about
     // them should outlive the window.
     live.stopAll()
     // Whatever the crawl learned since its last settle would otherwise be
     // thrown away, and it is expensive to learn again.
     vodCrawler.stop()
-    void vodLibrary.flush()
-    log.info('app', 'Shutting down')
-  })
 
-  app.on('will-quit', () => {
-    void localServer?.close()
-    // Best-effort cleanup of job scratch space; cached segments are kept.
-    void rm(join(tempRoot, 'jobs'), { recursive: true, force: true }).catch(() => undefined)
-    void rm(join(tempRoot, 'previews'), { recursive: true, force: true }).catch(() => undefined)
-    void rm(join(tempRoot, 'previews-work'), { recursive: true, force: true }).catch(() => undefined)
-    log.close()
+    // Exports first: this is the one that owns child processes.
+    await queue.stopAll().catch((err) => log.warn('app', 'Exports did not stop cleanly', err))
+    await vodLibrary.flush().catch((err) => log.warn('app', 'Could not flush the VOD library', err))
+    await localServer?.close().catch(() => undefined)
+
+    // Job scratch and preview work only; cached segments are deliberately kept.
+    await Promise.allSettled([
+      rm(join(tempRoot, 'jobs'), { recursive: true, force: true }),
+      rm(join(tempRoot, 'previews'), { recursive: true, force: true }),
+      rm(join(tempRoot, 'previews-work'), { recursive: true, force: true })
+    ])
+  }
+
+  app.on('before-quit', (event) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    event.preventDefault()
+    void shutdown()
+      .catch((err) => log.error('app', 'Shutdown failed', err))
+      .finally(() => {
+        log.close()
+        app.quit()
+      })
   })
 }

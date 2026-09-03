@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { formatBytes } from '@shared/errors'
+import { isSettled } from '@shared/jobs'
 import { jobStatus, STATUS } from '@shared/status'
 import { formatDuration } from '@shared/time'
 import type { ExportJob } from '@shared/types'
@@ -198,6 +199,5 @@ function JobRow({ job, index, total }: { job: ExportJob; index: number; total: n
 }
 
 function isFinished(job: ExportJob): boolean {
-  const s = job.progress.stage
-  return s === 'complete' || s === 'failed' || s === 'cancelled'
+  return isSettled(job.progress.stage)
 }

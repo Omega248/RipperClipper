@@ -62,6 +62,7 @@ import { useShortcuts } from './hooks/useShortcuts.js'
 import { usePanelSize } from './usePanelSize.js'
 import { ensureNameBadge } from './media/ensureNameBadge.js'
 import { oneAnglePerStreamer, personKey } from '@shared/povPriority'
+import { isInFlight } from '@shared/jobs'
 import {
   Button,
   ConfirmDialog,
@@ -210,7 +211,8 @@ export default function App(): JSX.Element {
   const [showWatermark, setShowWatermark] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
-  const [confirmQuit, setConfirmQuit] = useState(false)
+  /** What quitting would cost, when it would cost anything. Null = just go. */
+  const [confirmQuit, setConfirmQuit] = useState<{ dirty: boolean; running: number } | null>(null)
   // Carries the version/notes across 'available' -> 'downloading' ->
   // 'downloaded' so the popup keeps showing them even once the status
   // itself stops repeating them.
@@ -402,7 +404,18 @@ export default function App(): JSX.Element {
   // the taskbar) ends up here with a chance to check for unsaved work first.
   useEffect(() => {
     return window.api.onBeforeClose(() => {
-      if (useStore.getState().dirty) setConfirmQuit(true)
+      const state = useStore.getState()
+      /*
+       * Running exports count as work in progress too.
+       *
+       * This asked about the project only, so quitting with exports running
+       * closed the window without a word — and quitting genuinely stops them
+       * now (the main process aborts the queue on the way out, which is what
+       * keeps ffmpeg from outliving the app). Something the person waited ten
+       * minutes for should not end silently.
+       */
+      const running = state.jobs.filter((j) => isInFlight(j.progress.stage)).length
+      if (state.dirty || running > 0) setConfirmQuit({ dirty: state.dirty, running })
       else void window.api.confirmClose()
     })
   }, [])
@@ -731,10 +744,8 @@ export default function App(): JSX.Element {
   useEffect(() => {
     const off = window.api.onJobs((jobs) => {
       const previous = useStore.getState().jobs
-      const isSettled = (stage: JobStage): boolean =>
-        stage === 'complete' || stage === 'failed' || stage === 'cancelled'
-      const activeBefore = previous.some((j) => !isSettled(j.progress.stage))
-      const activeAfter = jobs.some((j) => !isSettled(j.progress.stage))
+      const activeBefore = previous.some((j) => isInFlight(j.progress.stage))
+      const activeAfter = jobs.some((j) => isInFlight(j.progress.stage))
       useStore.setState({ jobs })
       const state = useStore.getState()
       if (!state.project) return
@@ -2134,13 +2145,32 @@ export default function App(): JSX.Element {
       )}
       {confirmQuit && (
         <ConfirmDialog
-          title="Quit with unsaved changes?"
-          description={`"${store.project?.name}" has unsaved changes. They will be lost.`}
-          confirmLabel="Quit without saving"
+          title={
+            confirmQuit.running > 0 && !confirmQuit.dirty
+              ? confirmQuit.running === 1
+                ? 'Quit while an export is running?'
+                : 'Quit while exports are running?'
+              : 'Quit with unsaved changes?'
+          }
+          description={[
+            confirmQuit.dirty
+              ? `"${store.project?.name}" has unsaved changes. They will be lost.`
+              : null,
+            confirmQuit.running > 0
+              ? `${confirmQuit.running} export${confirmQuit.running === 1 ? '' : 's'} ${
+                  confirmQuit.running === 1 ? 'is' : 'are'
+                } still running. Quitting stops ${
+                  confirmQuit.running === 1 ? 'it' : 'them'
+                } and removes the part-written file${confirmQuit.running === 1 ? '' : 's'}.`
+              : null
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          confirmLabel={confirmQuit.dirty ? 'Quit without saving' : 'Quit and stop exports'}
           destructive
-          onCancel={() => setConfirmQuit(false)}
+          onCancel={() => setConfirmQuit(null)}
           onConfirm={() => {
-            setConfirmQuit(false)
+            setConfirmQuit(null)
             void window.api.confirmClose()
           }}
         />

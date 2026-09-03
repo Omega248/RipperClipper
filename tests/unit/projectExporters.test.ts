@@ -165,8 +165,17 @@ describe('the Resolve adapter', () => {
   })
 
   it('escapes a Windows path safely', () => {
-    expect(py('C:\\Users\\reece\\a b.mp4')).toBe("'C:\\\\Users\\\\reece\\\\a b.mp4'")
-    expect(py("it's.mp4")).toBe("'it\\'s.mp4'")
+    /*
+     * Asserted as a property rather than as exact text: what matters is that
+     * every backslash survives into the literal and that no quote character
+     * can end it early. These two used to pin the literal spelling, which
+     * meant they passed for a `py()` that emitted raw newlines — see
+     * generatedProjectEscaping.test.ts, which runs the output through Python.
+     */
+    const path = 'C:\\Users\\reece\\a b.mp4'
+    expect(JSON.parse(py(path))).toBe(path)
+    expect(JSON.parse(py("it's.mp4"))).toBe("it's.mp4")
+    expect(py(path)).toContain('\\\\Users')
   })
 
   it('writes a script that imports every angle and positions the watermark', async () => {

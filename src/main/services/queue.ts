@@ -121,6 +121,10 @@ export class ExportQueue extends EventEmitter {
   private paused = false
   private concurrency = 2
   private pumping = false
+  /** Set once shutdown has begun, so nothing new starts on the way out. */
+  private stopping = false
+  /** The execution promise of each running job, so shutdown can await them. */
+  private inFlight = new Map<string, Promise<void>>()
 
   constructor(
     private readonly log: Logger,
@@ -402,20 +406,57 @@ export class ExportQueue extends EventEmitter {
     if (this.pumping) return
     this.pumping = true
     try {
-      while (!this.paused && this.running.size < this.concurrency) {
+      while (!this.paused && !this.stopping && this.running.size < this.concurrency) {
         const next = this.order
           .map((id) => this.tasks.get(id))
           .find((t) => t && t.job.progress.stage === 'queued' && !this.running.has(t.job.id))
         if (!next) break
         this.running.add(next.job.id)
-        void this.execute(next).finally(() => {
+        // The promise is kept, not just voided: `stopAll` has to be able to
+        // wait for these to actually finish unwinding.
+        const run = this.execute(next).finally(() => {
           this.running.delete(next.job.id)
+          this.inFlight.delete(next.job.id)
           void this.pump()
         })
+        this.inFlight.set(next.job.id, run)
       }
     } finally {
       this.pumping = false
     }
+  }
+
+  /**
+   * Stop everything, and wait for it to have stopped. For shutdown.
+   *
+   * Two things made quitting mid-export messy. A spawned child is not killed
+   * when its parent exits on Windows, so ffmpeg carried on after the window
+   * had gone — burning CPU, holding the scratch directory open, and finishing
+   * a file nobody would ever read. And the abort path is where the cleanup
+   * lives: the exporter deletes the partial output and its work directory in
+   * `catch`/`finally`, which cannot run if the process is already gone.
+   *
+   * So this aborts, then waits for the unwinding to complete. The wait is
+   * bounded — a shutdown that hangs on a wedged ffmpeg is worse than one that
+   * leaves a temp file behind, and `will-quit` sweeps the scratch root anyway.
+   *
+   * `stopping` rather than `pause()`: pausing is a thing the person did and is
+   * reported back to them, and this is not that.
+   */
+  async stopAll(timeoutMs = 8000): Promise<void> {
+    this.stopping = true
+    for (const id of this.running) this.tasks.get(id)?.controller?.abort()
+    const pending = [...this.inFlight.values()]
+    if (pending.length === 0) return
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+        timer.unref?.()
+      })
+    ])
+    if (timer) clearTimeout(timer)
   }
 
   private async execute(task: QueueTask): Promise<void> {
