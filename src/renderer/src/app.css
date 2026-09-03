@@ -1777,19 +1777,6 @@ table.grid th.num {
 .model + .model {
   margin-top: var(--space-3);
 }
-
-.model-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.model-name {
-  color: var(--text-primary);
-  font: var(--type-label);
-}
-
 /* ============================ queue dock =============================== */
 
 .queue {
@@ -3934,254 +3921,6 @@ canvas.wave.draggable {
   height: 100%;
   background: var(--accent);
 }
-
-/* ---- the event: timeline, coverage map, stats ---- */
-
-.event-page {
-  overflow-y: auto;
-}
-
-.event-details {
-  display: grid;
-  gap: 8px;
-  max-width: 720px;
-}
-
-.event-stats {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.event-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 132px;
-  padding: 10px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--surface);
-}
-
-.event-stat-value {
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.1;
-}
-
-.event-stat-label {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.event-stat-hint {
-  font-size: 11px;
-  color: var(--text-dim);
-  opacity: 0.75;
-}
-
-.event-participant-breakdown,
-.event-workflow-breakdown {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-.event-workflow-chip {
-  font-size: 11px;
-  color: var(--text-dim);
-  padding: 2px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-}
-
-/* -- the timeline itself -- */
-
-.event-timeline {
-  display: grid;
-  gap: 8px;
-}
-
-.event-timeline-head {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--text-dim);
-  /* Aligned to the tracks, not the labels, so the times sit over the bars. */
-  padding-left: 132px;
-}
-
-.event-timeline-span {
-  opacity: 0.7;
-}
-
-.event-moments {
-  position: relative;
-  height: 20px;
-  margin-left: 132px;
-}
-
-.event-moment {
-  position: absolute;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  font-size: 10px;
-  color: var(--text-dim);
-  max-width: 96px;
-}
-
-.event-moment-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.event-moment-name {
-  max-width: 96px;
-}
-
-.event-rows {
-  display: grid;
-  gap: 3px;
-}
-
-.event-row {
-  display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
-  gap: 4px;
-  align-items: center;
-}
-
-.event-row-name {
-  background: none;
-  border: none;
-  color: var(--text);
-  text-align: left;
-  font-size: 12px;
-  padding: 2px 4px;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.event-row-name:hover {
-  background: var(--surface-hover, var(--surface));
-}
-
-.event-row-track {
-  position: relative;
-  height: 18px;
-  border-radius: 4px;
-  background: var(--surface-sunken);
-  overflow: hidden;
-}
-
-.event-row-span {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  border-radius: 3px;
-  background: var(--accent);
-}
-
-/* Partial coverage is deliberately a different fill, not just a shorter bar:
-   colour survives a glance where length alone does not. */
-.event-row-span.is-partial {
-  background: var(--warning, #d08442);
-}
-
-.event-row-note {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  color: var(--text-dim);
-  letter-spacing: 0.04em;
-}
-
-.event-row-track.is-unknown {
-  /* Hatched rather than empty: "we don't know" must not read as "nothing". */
-  background: repeating-linear-gradient(
-    45deg,
-    var(--surface-sunken),
-    var(--surface-sunken) 5px,
-    var(--surface) 5px,
-    var(--surface) 10px
-  );
-}
-
-.event-clips {
-  display: grid;
-  grid-template-columns: 128px minmax(0, 1fr);
-  gap: 4px;
-  align-items: center;
-  margin-top: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.event-clips-label {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.event-clips-track {
-  position: relative;
-  height: 22px;
-}
-
-.event-clip {
-  position: absolute;
-  top: 0;
-  height: 22px;
-  padding: 0 6px;
-  font-size: 10px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-  overflow: hidden;
-  min-width: 8px;
-}
-
-.event-clip.on {
-  border-color: var(--accent);
-  background: var(--accent-soft, var(--surface));
-}
-
-.event-moment-add {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  max-width: 620px;
-}
-
-.event-moment-list {
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.event-moment-list li {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 4px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  font-size: 12px;
-}
-
 /* ---- event search ---- */
 
 .search-results {
@@ -4265,55 +4004,6 @@ canvas.wave.draggable {
   border-color: var(--border);
   background: var(--surface);
 }
-
-/* ---- project health: sources, missing footage, storage ---- */
-
-.health-page {
-  overflow-y: auto;
-}
-
-.health-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.health-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-  gap: 10px;
-  align-items: center;
-  width: 100%;
-  padding: 7px 10px;
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm, 6px);
-  color: var(--text);
-  font-size: 13px;
-}
-
-button.health-row {
-  cursor: pointer;
-}
-
-button.health-row:hover {
-  border-color: var(--accent);
-}
-
-.health-row-meta {
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-.health-row-note {
-  font-size: 11px;
-  color: var(--text-dim);
-  max-width: 340px;
-}
-
 /* ---- clip contact sheet ---- */
 
 .clip-sheet {
@@ -4394,12 +4084,6 @@ button.health-row:hover {
   padding-left: 18px;
   font-size: 12px;
 }
-
-.event-attention {
-  color: var(--text-dim);
-  font-size: 12px;
-}
-
 /* ---- moment detail (§21) ---- */
 
 .moment-povs {
@@ -5147,47 +4831,6 @@ button.health-row:hover {
   display: inline-flex;
   color: var(--text-tertiary);
 }
-
-/* ==== streamer cards (Streamers page) ==== */
-
-.streamer-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 10px;
-}
-
-.streamer-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  padding: 12px 13px;
-  border-radius: var(--radius-md);
-  background: var(--surface);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-sm);
-}
-
-.streamer-card:hover {
-  box-shadow: var(--shadow-md);
-}
-
-.streamer-card-body {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.streamer-card-name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
 /* One badge per group: the many-to-many is the point. */
 .group-badge {
   font-size: 10px;
@@ -5198,29 +4841,6 @@ button.health-row:hover {
   border: 1px solid transparent;
   white-space: nowrap;
 }
-
-.streamer-card-meta {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-.streamer-card-meta.is-dim {
-  font-size: 11px;
-  opacity: 0.85;
-}
-
-.streamer-card-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  align-self: end;
-}
-
 /* ==== VOD rows ==== */
 
 /* ==== Clips: collection rail, grid, detail ==== */
@@ -7275,34 +6895,6 @@ button.health-row:hover {
   min-height: 0;
   overflow: hidden;
 }
-
-
-/* The native decoder draws into a canvas where the browser player used a
-   <video>. Same box, same object-fit behaviour, so the wall's layout does not
-   know which decoder produced the picture. */
-.pov-native-tile {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: contain;
-  background: #000;
-}
-
-/* What a natively decoded tile is managing. Shown because "it lags" is not a
-   diagnosis: 8fps of 30 is a capacity problem, a second of drift is a pacing
-   problem, and repeated reopens are neither — and they look identical. */
-.pov-native-stat {
-  position: absolute;
-  right: 4px;
-  top: 4px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.6);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-
 /* The wall's angle picker: one row per POV, ticked = on screen. */
 .angle-picker {
   list-style: none;
