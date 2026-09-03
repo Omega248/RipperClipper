@@ -174,6 +174,27 @@ export class ExportQueue extends EventEmitter {
   }): Promise<ExportJob[]> {
     await ensureWritableDirectory(input.outputDirectory)
 
+    /*
+     * Before anything is registered, not after.
+     *
+     * This ran at the end of the method, past the loop that has already put
+     * every clip into `this.tasks` and `this.order` at stage `queued`. The
+     * throw then skipped `emitJobs()` and `pump()` but unwound none of those
+     * registrations — so the renderer was told the batch had been rejected
+     * while the queue was quietly holding it in a runnable state. The next
+     * thing to call `pump()` at all — another export, Resume, a retry, a
+     * change to the concurrency setting — started writing the files the app
+     * had just said it would not. They also held their filenames through
+     * `claimedNames`, so the clip that *was* queued landed as "… (2)".
+     *
+     * Everything the estimate needs is already here.
+     */
+    const totalSeconds = input.clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)
+    await assertEnoughSpace(
+      input.outputDirectory,
+      estimateExportBytes(totalSeconds, input.streams.video?.bitrate, input.streams.audio?.bitrate)
+    )
+
     // Names only have to be unique inside the folder they land in, and each
     // folder is read once however many clips go into it.
     const seen = new Map<string, Set<string>>()
@@ -227,13 +248,6 @@ export class ExportQueue extends EventEmitter {
       this.order.push(job.id)
       created.push(job)
     }
-
-    // Warn early rather than filling the disk mid-export.
-    const totalSeconds = input.clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)
-    await assertEnoughSpace(
-      input.outputDirectory,
-      estimateExportBytes(totalSeconds, input.streams.video?.bitrate, input.streams.audio?.bitrate)
-    )
 
     this.emitJobs()
     void this.pump()

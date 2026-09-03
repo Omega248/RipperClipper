@@ -51,6 +51,19 @@ export interface RunResult {
   stderr: string
   /** True when the run was stopped through the AbortSignal. */
   aborted: boolean
+  /**
+   * True when the run was killed because it went quiet for `idleTimeoutMs`.
+   *
+   * Distinct from `aborted` because the two mean opposite things to the
+   * person: one is something they asked for, the other is a failure they
+   * need told about. They used to share the `aborted` flag, so a wedged
+   * ffmpeg — a stalled read, a hung encode — surfaced as `Errors.cancelled()`
+   * and the export was filed as "Cancelled" by somebody who cancelled
+   * nothing. It then could not be retried (`retryAllFailed` only takes
+   * `failed`) and "Clear finished" removed it, so the only record that it had
+   * ever gone wrong disappeared.
+   */
+  timedOut: boolean
 }
 
 export class ProcessError extends Error {
@@ -70,7 +83,7 @@ const DEFAULT_MAX_BUFFER = 4 * 1024 * 1024
 export function run(command: string, args: string[], options: RunOptions = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
-      resolve({ code: null, signal: null, stdout: '', stderr: '', aborted: true })
+      resolve({ code: null, signal: null, stdout: '', stderr: '', aborted: true, timedOut: false })
       return
     }
 
@@ -93,6 +106,7 @@ export function run(command: string, args: string[], options: RunOptions = {}): 
     let stdout = ''
     let stderr = ''
     let aborted = false
+    let timedOut = false
     let settled = false
     let idleTimer: NodeJS.Timeout | null = null
 
@@ -100,7 +114,7 @@ export function run(command: string, args: string[], options: RunOptions = {}): 
       if (!options.idleTimeoutMs) return
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
-        aborted = true
+        timedOut = true
         kill()
       }, options.idleTimeoutMs)
     }
@@ -150,7 +164,7 @@ export function run(command: string, args: string[], options: RunOptions = {}): 
       if (settled) return
       settled = true
       cleanup()
-      resolve({ code, signal, stdout, stderr, aborted })
+      resolve({ code, signal, stdout, stderr, aborted, timedOut })
     })
 
     bumpIdle()
@@ -186,6 +200,23 @@ export async function runChecked(
 ): Promise<RunResult> {
   const result = await run(command, args, options)
   if (result.aborted) return result
+  /*
+   * A stall is a failure, not a quiet success.
+   *
+   * This returned the result unexamined whenever the run had been killed,
+   * and the idle timeout used to look like an abort — so `keyframes()` got
+   * an empty stdout, `JSON.parse('')` threw, and its catch reported "no
+   * keyframes found", silently forcing a full re-encode of a clip that only
+   * needed a copy.
+   */
+  if (result.timedOut) {
+    throw new ProcessError(
+      `${command} produced no output for ${Math.round((options.idleTimeoutMs ?? 0) / 1000)}s and was stopped`,
+      result,
+      command,
+      args
+    )
+  }
   if (result.code !== 0) {
     throw new ProcessError(
       `${command} exited with code ${result.code ?? 'null'}`,

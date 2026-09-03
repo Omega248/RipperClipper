@@ -58,6 +58,12 @@ export interface SceneChangeInfo {
   times: number[]
 }
 
+/** The last non-empty line of a tool's stderr — the part that says why. */
+function lastLine(stderr: string): string {
+  const lines = stderr.trim().split(/[\r\n]+/).filter((l) => l.trim() !== '')
+  return (lines[lines.length - 1] ?? '').slice(0, 200)
+}
+
 export class FfmpegService {
   private info: FfmpegInfo = {
     available: false,
@@ -437,6 +443,21 @@ export class FfmpegService {
 
     const result = await run(ffmpeg, fullArgs, runOpts)
     if (result.aborted) throw Errors.cancelled()
+    /*
+     * A stall is not a cancellation. `run` kills a child that has gone quiet
+     * for `idleTimeoutMs`, and that used to arrive here as `aborted` — so a
+     * wedged encode was filed as an export the person had cancelled, with no
+     * error recorded and no way to retry it.
+     */
+    if (result.timedOut) {
+      this.log.error('ffmpeg', `${opts.label} stopped responding`, {
+        stderr: result.stderr.slice(-4000)
+      })
+      throw Errors.ffmpegFailed(
+        `${opts.label} stopped producing output and was stopped after ${Math.round((runOpts.idleTimeoutMs ?? 0) / 1000)}s. ` +
+          `The last thing it reported was: ${lastLine(result.stderr) || 'nothing'}`
+      )
+    }
     if (result.code !== 0) {
       this.log.error('ffmpeg', `${opts.label} failed`, {
         code: result.code,

@@ -180,11 +180,28 @@ const discovery = new DiscoveryService(log, streamers, resolver)
 const updater = new UpdateService(log, __CHANNEL__)
 
 let tempRoot = join(app.getPath('temp'), 'ripperclipper')
+
+/**
+ * Every scratch directory under the temp root, named once.
+ *
+ * The shutdown sweep used to list `previews` and `previews-work` — names
+ * nothing has created since they were renamed — while `waveform`, `scenes`,
+ * `filmstrip` and `preview-media`, which are created in every session that
+ * draws a waveform or scrubs a clip, were never swept at all. A list written
+ * out a second time is a list that drifts from the first; this is the one
+ * place both the users and the sweep read from.
+ *
+ * The root itself is deliberately never removed: `advanced.tempDirectory`
+ * lets the person point it at a directory of their own, and a recursive
+ * delete of somebody's chosen folder is not a thing to do on the way out.
+ */
+const SCRATCH = ['jobs', 'waveform', 'scenes', 'filmstrip', 'preview-media'] as const
+const scratch = (name: (typeof SCRATCH)[number]): string => join(tempRoot, name)
 const fetcher = new RangeFetcher(log, ffmpeg, cache, tempRoot)
 // Separated audio is cached beside the media cache: it is expensive to make
 // and identical inputs must never be processed twice.
 const exporter = new Exporter(log, ffmpeg, fetcher)
-const queue = new ExportQueue(log, exporter, join(tempRoot, 'jobs'))
+const queue = new ExportQueue(log, exporter, scratch('jobs'))
 const peaks = new AudioPeaksService(log, ffmpeg, fetcher)
 
 /*
@@ -535,7 +552,7 @@ function applySettings(s: AppSettings): void {
   sceneCache.configure(join(s.cache.directory, 'scenes'), share(0.01, 16 * 1024 * 1024))
   tempRoot = s.advanced.tempDirectory ?? join(app.getPath('temp'), 'ripperclipper')
   fetcher.setTempDir(tempRoot)
-  queue.setWorkRoot(join(tempRoot, 'jobs'))
+  queue.setWorkRoot(scratch('jobs'))
   queue.setConcurrency(s.concurrency)
   /*
    * One "how many at once" setting, two budgets — because the two halves of
@@ -1177,7 +1194,7 @@ function registerIpc(): void {
       throw Errors.qualityUnavailable('any audio stream', `${req.source.title} exposes no audio`)
     }
     const result = await mediaWorkLimiter.run(() =>
-      peaks.peaks({ stream, startSeconds, endSeconds, buckets, workDir: join(tempRoot, 'waveform') })
+      peaks.peaks({ stream, startSeconds, endSeconds, buckets, workDir: scratch('waveform') })
     )
     await waveCache.putJson(key, result)
     return result
@@ -1202,7 +1219,7 @@ function registerIpc(): void {
       throw Errors.qualityUnavailable('any video stream', `${req.source.title} exposes no video`)
     }
     const result = await mediaWorkLimiter.run(() =>
-      scenes.detect({ stream, startSeconds, endSeconds, threshold, workDir: join(tempRoot, 'scenes') })
+      scenes.detect({ stream, startSeconds, endSeconds, threshold, workDir: scratch('scenes') })
     )
     await sceneCache.putJson(key, result)
     return result
@@ -1234,7 +1251,7 @@ function registerIpc(): void {
         endSeconds,
         frameCount,
         width,
-        workDir: join(tempRoot, 'filmstrip')
+        workDir: scratch('filmstrip')
       })
     )
     await thumbCache.putJson(key, result)
@@ -1257,7 +1274,7 @@ function registerIpc(): void {
       stream,
       startSeconds: Math.max(0, req.startSeconds),
       endSeconds: Math.min(req.source.durationSeconds, req.endSeconds),
-      workDir: join(tempRoot, 'preview-media'),
+      workDir: scratch('preview-media'),
       hwAccel: settings.current.export.hwAccel,
       height: req.height
     })
@@ -1872,11 +1889,9 @@ if (!singleInstance) {
     await localServer?.close().catch(() => undefined)
 
     // Job scratch and preview work only; cached segments are deliberately kept.
-    await Promise.allSettled([
-      rm(join(tempRoot, 'jobs'), { recursive: true, force: true }),
-      rm(join(tempRoot, 'previews'), { recursive: true, force: true }),
-      rm(join(tempRoot, 'previews-work'), { recursive: true, force: true })
-    ])
+    await Promise.allSettled(
+      SCRATCH.map((name) => rm(scratch(name), { recursive: true, force: true }))
+    )
   }
 
   /*

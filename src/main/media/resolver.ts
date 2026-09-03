@@ -171,6 +171,11 @@ export class ResolverService {
       ...(opts.priority ? { priority: opts.priority } : {})
     })
     if (result.aborted) throw Errors.cancelled()
+    // A stall is a failure the person needs told about, not a cancellation
+    // they asked for — see RunResult.timedOut.
+    if (result.timedOut) {
+      throw Errors.resolverFailed('yt-dlp stopped responding and was stopped after two minutes.')
+    }
 
     if (result.code !== 0) {
       const stderr = result.stderr
@@ -213,6 +218,11 @@ export class ResolverService {
       ...(opts.priority ? { priority: opts.priority } : {})
     })
     if (result.aborted) throw Errors.cancelled()
+    // A stall is a failure the person needs told about, not a cancellation
+    // they asked for — see RunResult.timedOut.
+    if (result.timedOut) {
+      throw Errors.resolverFailed('yt-dlp stopped responding and was stopped after two minutes.')
+    }
     if (result.code !== 0) {
       this.log.warn('resolver', 'yt-dlp channel listing failed', {
         code: result.code,

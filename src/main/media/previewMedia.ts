@@ -35,6 +35,9 @@ export interface PreviewAsset {
 /** How long an abandoned half-built preview is left alone before it is swept. */
 const STALE_PARTIAL_MS = 10 * 60_000
 
+/** Same collision reason as thumbnails/peaks: a tick can hold several builds. */
+let previewSequence = 0
+
 export class PreviewMediaService {
   private readonly assets = new Map<string, PreviewAsset>()
   private maxSizeBytes: number
@@ -203,14 +206,35 @@ export class PreviewMediaService {
     }
 
     await mkdir(this.cacheDir, { recursive: true })
-    await mkdir(req.workDir, { recursive: true })
+    /*
+     * A directory of this run's own, exactly as thumbnails/peaks/scenes do.
+     *
+     * The source window used to be fetched to `preview-src.<ext>` directly
+     * inside `req.workDir`, which is one process-wide constant — so the path
+     * depended only on the container, not on the request. Nothing serialises
+     * these: the Editor's prefetch fires a `previewMedia` call per clip
+     * without awaiting, so two clips from the same VOD both resolved to the
+     * same file, the second `createWriteStream` truncated the first, and the
+     * two segment writers interleaved into it. Each build then remuxed
+     * whatever that file happened to hold into its own `<id>.mp4` — and
+     * because `ensure` reuses any `<id>.mp4` that merely exists and is
+     * non-empty, the wrong footage was served for that clip in every later
+     * session too.
+     *
+     * The fixed name also meant the window file — tens to hundreds of MB —
+     * was never removed. The `finally` below does both.
+     */
+    previewSequence += 1
+    const work = join(req.workDir, `preview-${Date.now().toString(36)}-${previewSequence}`)
+    await mkdir(work, { recursive: true })
+    try {
 
     req.onProgress?.(0.05, 'Fetching the range…')
     const window = await this.fetcher.fetchWindow({
       stream: req.stream,
       startSeconds: req.startSeconds,
       endSeconds: req.endSeconds,
-      destination: join(req.workDir, `preview-src.${windowExtension(req.stream.container)}`),
+      destination: join(work, `preview-src.${windowExtension(req.stream.container)}`),
       signal: req.signal,
       onProgress: (p) => req.onProgress?.(0.05 + p.fraction * 0.45, 'Fetching the range…')
     })
@@ -333,6 +357,9 @@ export class PreviewMediaService {
     })
     req.onProgress?.(1, 'Ready')
     return asset
+    } finally {
+      await rm(work, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   /** Drop everything: called when the cache is cleared. */
