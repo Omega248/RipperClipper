@@ -1,6 +1,6 @@
 # Handoff — production hardening pass, 3 September 2026
 
-A production-readiness pass over the whole repository: audit, fix, verify. Six
+A production-readiness pass over the whole repository: audit, fix, verify. Eight
 commits landed on `main`, all green. The pass is **incomplete** — twelve of the
 sixteen planned audit dimensions never ran, and §"What was never audited" below
 says exactly which. Nothing in here should be read as "the codebase has been
