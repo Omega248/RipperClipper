@@ -10,16 +10,9 @@ cleared"; it has been cleared *in the areas listed*.
 
 ## 0. First, the state of the working tree
 
-**Uncommitted, passing, safe to commit:**
-
-- `src/main/export/fcpxmlExporter.ts` — `safeName` now delegates to the shared
-  `sanitizeFilename`.
-- `tests/unit/projectExporters.test.ts` — new test: parses the generated
-  FCPXML with a real XML parser, with a hostile project name.
-
-Typecheck is clean and `projectExporters` + `generatedProjectEscaping` pass
-(29 tests). The full suite has **not** been run since this edit — run it before
-committing.
+**The working tree is clean.** Everything below is committed; `da8fa53` is the
+tip. 1,068 tests pass, typecheck is clean on both configs, and the production
+build succeeds.
 
 **Version control was re-attached this session.** The tree had no `.git`: it had
 been left half-initialised (no refs, a stray `index.lock`) and moved to
@@ -38,9 +31,9 @@ would have added ~1.2 GB of installers and fetched binaries to the repository.
 
 |                | Before | After |
 |----------------|--------|-------|
-| Tests          | 1048 passing, 5 skipped, 101 files | 1065 passing, 5 skipped, 104 files |
+| Tests          | 1048 passing, 5 skipped, 101 files | 1068 passing, 5 skipped, 104 files |
 | Typecheck      | clean (both configs) | clean |
-| Production build | main 447 kB, renderer 2,236 kB JS + 216 kB CSS | main 456 kB, renderer 2,238 kB JS |
+| Production build | main 447 kB, renderer 2,236 kB JS + 216 kB CSS | main 457 kB, renderer 2,239 kB JS |
 | Unhandled errors in the test run | 1–2 intermittent | none |
 | Time to window | tool detection blocked it | 1,834 ms / 3,303 ms measured |
 
@@ -114,6 +107,17 @@ signed URL); the bleep tone was plumbing with no source; `atomicWriteJson` now
 fsyncs before publishing (`fbe6e3d`); 53 rules / 7,156 bytes of stylesheet for
 removed features are gone (`2c0fb03`).
 
+**Three filename sanitisers became one** (`da8fa53`). The Final Cut adapter's
+`safeName`, `freeDirectory` and the package export's default name each built a
+filesystem path from a project name, and each stripped the characters Windows
+forbids but not control characters. A NUL byte made `writeFile`/`mkdir` throw a
+Node `TypeError` rather than producing a file — found by parsing a generated
+FCPXML with a hostile name. All three now call `shared/filenames.ts`'s
+`sanitizeFilename`; no inline copy is left in `src/main` or `src/shared`. One
+deliberate behaviour change: an export folder built from a name with illegal
+characters now separates with `_` rather than `-`, matching every other name
+the app writes. New folders only.
+
 **Startup** (`0626b53`): `detectEnvironment(true)` was awaited before
 `createWindow()`. It spawns three processes and yt-dlp alone takes ~1.7 s. It
 now runs beside the window and `envInfo` awaits it, so the answer is still
@@ -143,18 +147,7 @@ local file reads that had already finished.
 
 ## 4. Next actions, highest value first
 
-**a. Finish the sanitiser convergence (in progress).** Three copies of an
-incomplete filename sanitiser exist; all strip the characters Windows forbids
-but not control characters, and all three build filesystem paths from
-user-controlled names. A NUL byte makes the call throw a Node `TypeError`
-instead of producing a file. `shared/filenames.ts`'s `sanitizeFilename` already
-handles control characters, reserved device names, trailing dots and length.
-
-- `src/main/export/fcpxmlExporter.ts:107` — **done** (uncommitted).
-- `src/main/export/projectExporters.ts:45` (`freeDirectory`) — **still to do**.
-- `src/main/index.ts` package-export default filename — **still to do**.
-
-**b. Nine audit findings, one verified, eight unverified.** Verification agents
+**a. Nine audit findings, one verified, eight unverified.** Verification agents
 ran out of session budget. Only the first was confirmed (2/2 votes); treat the
 rest as leads to check, not as facts.
 
@@ -186,7 +179,7 @@ Unverified candidates, worth checking in this order:
   application-wide but enforced per buffer; the cross-source guard uses a
   hardcoded bitrate guess.
 
-**c. Re-run the audit for the twelve dimensions that never ran** (below).
+**b. Re-run the audit for the twelve dimensions that never ran** (below).
 
 ---
 
