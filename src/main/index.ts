@@ -48,6 +48,7 @@ import { rankVideo, selectStreams } from './media/formats.js'
 import type { SelectedStreams } from './media/formats.js'
 import { diskSpace } from './services/disk.js'
 import { AppError, Errors, serializeError } from '../shared/errors.js'
+import { sanitizeFilename } from '../shared/filenames.js'
 import { IPC } from '../shared/ipc.js'
 import type { WatermarkConfig } from '../shared/watermark.js'
 import type {
@@ -1061,7 +1062,7 @@ function registerIpc(): void {
       title: 'Export package',
       defaultPath: join(
         await ensureDefaultProjectsDir(),
-        `${req.project.name.replace(/[\\/:*?"<>|]/g, '_')}.${PACKAGE_EXTENSION}`
+        `${sanitizeFilename(req.project.name, 'project')}.${PACKAGE_EXTENSION}`
       ),
       filters: [{ name: 'Ripper Clipper package', extensions: [PACKAGE_EXTENSION] }]
     })

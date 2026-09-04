@@ -13,6 +13,7 @@ import type {
 } from './exporterTypes.js'
 import { baseIssues, preparePackage, writeBasePackage } from './genericExporter.js'
 import { EDITOR_DIR } from './packageLayout.js'
+import { sanitizeFilename } from '../../shared/filenames.js'
 
 /**
  * Final Cut Pro, through FCPXML.
@@ -103,7 +104,7 @@ function round(value: number): number {
 }
 
 function safeName(name: string): string {
-  return name.replace(/[\\/:*?"<>|]/g, '-').trim() || 'project'
+  return sanitizeFilename(name, 'project')
 }
 
 /**

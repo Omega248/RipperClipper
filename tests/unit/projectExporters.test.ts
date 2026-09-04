@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { buildEditingProject } from '../../src/shared/buildEditingProject.js'
 import type { ExportedMedia } from '../../src/shared/buildEditingProject.js'
 import { defaultWatermark } from '../../src/shared/watermark.js'
@@ -206,6 +207,48 @@ describe('the Final Cut adapter', () => {
     expect(t.positionY).toBeCloseTo(40, 1)
   })
 
+  it('produces a document a real XML parser accepts, hostile names included', async () => {
+    /*
+     * Containment checks cannot see an unbalanced tag or a broken escape, so
+     * this parses what was written.
+     *
+     * The names are the interesting part. A `.rcpkg` package exists to be
+     * shared and is shape-checked rather than sanitised, so a project or clip
+     * name is whatever the sender put there — and `xmlEscape` handled the
+     * five entities but left control characters, which XML 1.0 cannot carry
+     * escaped or raw. Final Cut rejects such a file outright, which reads as
+     * Ripper Clipper having produced a broken export.
+     */
+    const project = await fixture(2, 0.25, dir)
+    const hostile = {
+      ...project,
+      // Built without escapes so the fixture itself cannot be misread: an
+      // ampersand, angle brackets, a quote, a control character XML cannot
+      // carry, and non-ASCII that must survive intact.
+      name: ['Bank job & <heist>', String.fromCharCode(34) + 'big' + String.fromCharCode(34),
+        String.fromCharCode(1), String.fromCharCode(0), 'Omega ' + String.fromCharCode(0x3a9), '漢字'].join(' ')
+    }
+    const out = join(dir, 'FCP-hostile')
+    const result = await new FcpxmlExporter().export(hostile, { directory: out, copyMedia: false })
+
+    const parsed = execFileSync(
+      'python',
+      ['-c', 'import sys,xml.dom.minidom as m; d=m.parse(sys.argv[1]); print(d.documentElement.tagName)', result.projectFile!],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    expect(parsed.trim()).toBe('fcpxml')
+
+    // The name survived, minus only the characters XML cannot represent.
+    const xml = await readFile(result.projectFile!, 'utf8')
+    expect(xml).toContain('&amp;')
+    expect(xml).toContain('&lt;heist&gt;')
+    expect(xml).toContain('漢字')
+    // No control character survived into the document, escaped or raw.
+    for (const code of [0, 1, 8, 11, 12, 31]) {
+      expect(xml.includes(String.fromCharCode(code)), 'control char ' + code).toBe(false)
+    }
+  })
+
   it('writes rational time and a file URL, never a decimal or a raw path', async () => {
     const project = await fixture(3, 0.25, dir)
     const out = join(dir, 'FCP')
@@ -289,8 +332,40 @@ describe('export destinations', () => {
   })
 
   it('strips characters Windows will not accept in a folder name', async () => {
+    // `_` rather than the `-` this used to produce: the folder name now goes
+    // through the same sanitiser as every other name the app writes, instead
+    // of a second local copy of half of it.
     const path = await freeDirectory(dir, 'Rob: the <bank>')
-    expect(path).toBe(join(dir, 'Rob- the -bank-'))
+    expect(path).toBe(join(dir, 'Rob_ the _bank_'))
+  })
+
+  it('survives a name carrying characters that are not printable at all', async () => {
+    /*
+     * A project name is not this app's own — a `.rcpkg` package is
+     * shape-checked rather than sanitised, so the name is whatever the sender
+     * put in it. The local sanitiser here stripped what Windows forbids but
+     * left control characters, which are equally illegal in a path, and a NUL
+     * byte made `mkdir` throw `path must be ... without null bytes`: the
+     * export died with a Node type error rather than writing a folder.
+     */
+    const hostile =
+      'Bank job' + String.fromCharCode(0) + String.fromCharCode(1) + String.fromCharCode(31)
+    const path = await freeDirectory(dir, hostile)
+
+    // Asserted as a property, not a spelling: what matters is that nothing
+    // unprintable reached the path and that the folder can actually be made.
+    for (const code of [0, 1, 31]) {
+      expect(path.includes(String.fromCharCode(code)), 'control char ' + code).toBe(false)
+    }
+    expect(path.startsWith(join(dir, 'Bank job'))).toBe(true)
+    await mkdir(path, { recursive: true })
+    expect((await readdir(dir)).length).toBe(1)
+  })
+
+  it('never returns an empty name, however little of one survives', async () => {
+    const path = await freeDirectory(dir, String.fromCharCode(0) + '...   ')
+    expect(basename(path).length).toBeGreaterThan(0)
+    await mkdir(path, { recursive: true })
   })
 })
 

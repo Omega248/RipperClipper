@@ -1,6 +1,7 @@
 import { access, mkdir } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { join } from 'node:path'
+import { sanitizeFilename } from '../../shared/filenames.js'
 import type { EditingProject } from '../../shared/editingProject.js'
 import type { EditorId } from '../../shared/editorCapabilities.js'
 import { EDITORS } from '../../shared/editorCapabilities.js'
@@ -42,7 +43,12 @@ export function exporterFor(editor: EditorId): ProjectExporter {
 
 /** A folder name that does not already exist: `Name`, then `Name (2)`. */
 export async function freeDirectory(parent: string, name: string): Promise<string> {
-  const base = name.replace(/[\\/:*?"<>|]/g, '-').trim() || 'Project'
+  // The shared sanitiser, not a second copy of half of it. This stripped the
+  // characters Windows forbids but not control characters, which are just as
+  // illegal in a path — and a NUL makes mkdir throw outright, so an export
+  // died with a Node type error instead of producing a folder. The shared one
+  // also handles the reserved device names, trailing dots and the length cap.
+  const base = sanitizeFilename(name, 'Project')
   for (let n = 1; n < 500; n++) {
     const candidate = join(parent, n === 1 ? base : `${base} (${n})`)
     try {
