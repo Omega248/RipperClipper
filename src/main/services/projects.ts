@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, extname, join } from 'node:path'
 import { Errors } from '../../shared/errors.js'
 import { DEFAULT_EXPORT_SETTINGS } from '../../shared/defaults.js'
 import { masterPlaylistFor } from '../../shared/mediaProxyUrl.js'
@@ -70,6 +70,17 @@ export class ProjectStore {
   }
 
   async save(project: ProjectFile, path: string): Promise<ProjectFile> {
+    /*
+     * Refused here, not only at the caller, because this is not the only
+     * entry and the object being written is renderer-supplied: `save` spreads
+     * `project`, so whatever keys it carries reach the file. Writing that over
+     * `settings.json` is enough to plant an `advanced.ffmpegPath` the next
+     * launch will spawn — `mergeSettings` reads that key straight out of the
+     * file. A destination not named like a project is not a project save.
+     */
+    if (extname(path).toLowerCase() !== `.${PROJECT_EXTENSION}`) {
+      throw Errors.projectCorrupt(path, `a project is saved as .${PROJECT_EXTENSION}`)
+    }
     const next: ProjectFile = {
       ...project,
       sources: stripLive(project.sources),

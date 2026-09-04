@@ -65,15 +65,22 @@ class FakeOrigin {
     this.published += count
   }
 
+  /** Some encoders publish no PROGRAM-DATE-TIME at all; see the test below. */
+  stampDates = true
+
   playlist(): string {
     const first = Math.max(0, this.published - this.windowLength)
     const lines = [
       '#EXTM3U',
       '#EXT-X-VERSION:6',
       `#EXT-X-TARGETDURATION:${SEGMENT_SECONDS}`,
-      `#EXT-X-MEDIA-SEQUENCE:${first}`,
-      `#EXT-X-PROGRAM-DATE-TIME:${new Date((EPOCH + first * SEGMENT_SECONDS) * 1000).toISOString()}`
+      `#EXT-X-MEDIA-SEQUENCE:${first}`
     ]
+    if (this.stampDates) {
+      lines.push(
+        `#EXT-X-PROGRAM-DATE-TIME:${new Date((EPOCH + first * SEGMENT_SECONDS) * 1000).toISOString()}`
+      )
+    }
     for (let i = first; i < this.published; i++) {
       lines.push(`#EXTINF:${SEGMENT_SECONDS}.000,`, `${i}.ts`)
     }
@@ -148,6 +155,40 @@ describe('a live source', () => {
     // against it would be minutes wrong.
     expect(buffer.buffered[0].startEpoch).toBe(EPOCH)
     expect(buffer.buffered[5].startEpoch).toBe(EPOCH + 10)
+  })
+
+  it('still places media on a rising clock when the playlist carries no dates', async () => {
+    /*
+     * Not every encoder publishes PROGRAM-DATE-TIME, and the fallback used to
+     * be `now - bufferedSeconds(held)` evaluated per segment before the push
+     * — the start of the *oldest* held segment, not the newest.
+     *
+     * `lastSequence` starts at -1, so the first poll ingests the whole
+     * playlist as one batch with `now` effectively constant while the held
+     * total grows. The stamps therefore went backwards across the batch, and
+     * `segments[0].startEpoch` ended up greater than the live edge, which
+     * makes `covers` unsatisfiable for every range: each live clip failed
+     * with "Clip it sooner" for a moment sitting in memory.
+     */
+    origin.stampDates = false
+    const clock = EPOCH + 1000
+    buffer = new LiveBuffer(log, 'src:1', { windowSeconds: 60, now: () => clock })
+    await buffer.start(stream())
+    await until(() => buffer!.buffered.length >= 6)
+
+    const held = buffer.buffered
+    // Strictly rising with sequence — the contract on startEpoch.
+    for (let i = 1; i < held.length; i++) {
+      expect(held[i].startEpoch, `segment ${i} vs ${i - 1}`).toBeGreaterThan(held[i - 1].startEpoch)
+    }
+
+    // The newest segment sits at the live edge, not the oldest.
+    const last = held[held.length - 1]
+    expect(last.startEpoch + last.durationSeconds).toBeCloseTo(clock, 3)
+
+    // And the buffer can therefore actually answer for what it is holding.
+    expect(buffer.covers(held[0].startEpoch, last.startEpoch + last.durationSeconds)).toBe(true)
+    expect(buffer.covers(held[0].startEpoch + 1, last.startEpoch)).toBe(true)
   })
 
   it('never holds more than the configured window, however long the stream runs', async () => {

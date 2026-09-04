@@ -50,7 +50,7 @@ import { diskSpace } from './services/disk.js'
 import { AppError, Errors, serializeError } from '../shared/errors.js'
 import { sanitizeFilename } from '../shared/filenames.js'
 import { IPC } from '../shared/ipc.js'
-import type { WatermarkConfig } from '../shared/watermark.js'
+import type { ResolvedWatermark, WatermarkConfig } from '../shared/watermark.js'
 import type {
   EventDiscoveryRequest,
   EventOverlapRequest,
@@ -1028,17 +1028,55 @@ function registerIpc(): void {
   handle(IPC.sourceInspectFormats, (source: VodSource) => sources.inspectFormats(source))
   handle(IPC.sourceLiveStatus, (source: VodSource) => sources.liveStatus(source))
 
+  /*
+   * Project paths this process itself produced.
+   *
+   * `projectSave` takes an optional destination so the second and later saves
+   * of an open project do not re-ask — the renderer hands back the path it was
+   * given. But it took *any* string, and `ProjectStore.save` spreads the
+   * project object it is handed, so a compromised renderer could write a JSON
+   * document of its own choosing to any path the user can write to.
+   *
+   * That is arbitrary file write on its own, and it also reopens the hole the
+   * 1.5.0 audit closed by a different door: write
+   * `{ advanced: { ffmpegPath: 'C:/evil.exe' } }` over `settings.json`, and on
+   * the next launch `mergeSettings` picks `ffmpegPath` straight out of it
+   * (defaults.ts) and the next export spawns it. `keepToolPaths` guards the
+   * settings IPC channel; it cannot guard a file written behind its back.
+   *
+   * So a destination is only accepted if it came from here: a save/open dialog
+   * the person actually saw, the recent list this process recorded, or a file
+   * passed on the command line. `ProjectStore.save` additionally refuses
+   * anything not named like a project, so neither check stands alone.
+   */
+  const ownedProjectPaths = new Set<string>()
+  const own = <T extends string | null | undefined>(path: T): T => {
+    if (typeof path === 'string' && path.length > 0) ownedProjectPaths.add(resolve(path))
+    return path
+  }
+  const assertOwnedPath = (path: string): void => {
+    if (ownedProjectPaths.has(resolve(path))) return
+    log.warn('security', 'Refused to save a project to a path this app did not offer')
+    throw new AppError({
+      code: 'bad-destination',
+      title: 'That is not somewhere Ripper Clipper can save',
+      message: 'Use File → Save as to choose where this project goes.'
+    })
+  }
+
   handle(IPC.projectNew, (name: string) => projects.createProject(name))
   handle(IPC.projectSave, async (project: ProjectFile, path?: string) => {
     let target = path
-    if (!target) {
+    if (target) {
+      assertOwnedPath(target)
+    } else {
       const result = await dialog.showSaveDialog({
         title: 'Save project',
         defaultPath: join(await ensureDefaultProjectsDir(), projects.defaultFileName(project)),
         filters: [{ name: 'Ripper Clipper project', extensions: [PROJECT_EXTENSION] }]
       })
       if (result.canceled || !result.filePath) throw new Error('Save cancelled')
-      target = result.filePath
+      target = own(result.filePath)
     }
     const saved = await projects.save(project, target)
     return { path: target, project: saved }
@@ -1050,8 +1088,9 @@ function registerIpc(): void {
       filters: [{ name: 'Ripper Clipper project', extensions: [PROJECT_EXTENSION] }]
     })
     if (result.canceled || !result.filePath) return null
-    const saved = await projects.save(project, result.filePath)
-    return { path: result.filePath, project: saved }
+    const target = own(result.filePath)
+    const saved = await projects.save(project, target)
+    return { path: target, project: saved }
   })
   /**
    * §20 — a portable package: the work, never the media. See
@@ -1133,7 +1172,7 @@ function registerIpc(): void {
       filters: [{ name: 'Ripper Clipper project', extensions: [PROJECT_EXTENSION] }]
     })
     if (result.canceled || result.filePaths.length === 0) return null
-    const path = result.filePaths[0]
+    const path = own(result.filePaths[0])
     return { path, project: await projects.open(path) }
   })
   handle(IPC.projectOpenPath, async (path: string) => ({
@@ -1146,10 +1185,11 @@ function registerIpc(): void {
   handle(IPC.projectAutosave, (project: ProjectFile) => projects.autosave(project))
   handle(IPC.projectRecoveryCheck, () => projects.recoveryInfo())
   handle(IPC.projectRecoveryDiscard, () => projects.discardRecovery())
-  handle(IPC.projectRecent, () => projects.recent())
+  // Recorded by this process, so a project reopened from the list stays savable.
+  handle(IPC.projectRecent, async () => (await projects.recent()).map(own))
   handle(IPC.projectBackupList, (path: string) => projects.listBackups(path))
   handle(IPC.projectBackupRestore, (path: string) => projects.restoreBackup(path))
-  handle(IPC.projectStartupPath, () => startupProjectPath())
+  handle(IPC.projectStartupPath, () => own(startupProjectPath()))
 
   handle(IPC.liveWatch, async (source: VodSource) => {
     const formats = await sources.inspectFormats(source)
@@ -1541,6 +1581,38 @@ function registerIpc(): void {
     vodCrawler.prioritise(id)
   })
 
+  /**
+   * The watermark, rebuilt from the library rather than taken on trust.
+   *
+   * The renderer decides *which* watermark applies — a VOD override beats a
+   * streamer default, and it has the project state to know that — but it was
+   * also handing over `imagePath`, and that string goes straight onto
+   * ffmpeg's command line as `-i`. ffmpeg's input is not just a filename: a
+   * `concat:` or an `http://` there reads whatever it is pointed at, which is
+   * the same class of hole the 1.5.0 audit closed for stream URLs and left
+   * open on this one. A crafted path could read a local file into the
+   * exported picture, or make the user's machine fetch a remote one.
+   *
+   * `config.imageId` is all that is actually needed. The path and the real
+   * pixel dimensions come from the library here, so nothing the renderer says
+   * about where the image lives is used at all.
+   */
+  const ownWatermark = (given: ResolvedWatermark | undefined): ResolvedWatermark | undefined => {
+    const id = given?.config?.imageId
+    if (!given || !id) return undefined
+    const image = watermarks.find(id)
+    if (!image) {
+      log.warn('export', 'Ignoring a watermark that is not in the library', { id })
+      return undefined
+    }
+    return {
+      config: given.config,
+      imagePath: image.path,
+      imageWidth: image.width,
+      imageHeight: image.height
+    }
+  }
+
   handle(IPC.exportEnqueue, async (req: EnqueueRequest) => {
     const formats = req.source.formats?.length
       ? req.source.formats
@@ -1554,7 +1626,7 @@ function registerIpc(): void {
       settings: req.settings,
       // The renderer resolves which watermark applies (VOD override over
       // streamer default) and hands over the image; the queue just carries it.
-      watermark: req.watermark,
+      watermark: ownWatermark(req.watermark),
       outputDirectory: req.outputDirectory
     })
   })
@@ -1571,7 +1643,7 @@ function registerIpc(): void {
       settings: req.settings,
       // A combined file is cut from one POV, so it takes that POV's watermark
       // exactly as a single clip would.
-      watermark: req.watermark,
+      watermark: ownWatermark(req.watermark),
       outputDirectory: req.outputDirectory,
       outputName: req.outputName
     })
@@ -1634,7 +1706,7 @@ function registerIpc(): void {
         audioEdits: seg.audioEdits,
         source: seg.videoSource,
         streams: videoStreams,
-        watermark: seg.watermark,
+        watermark: ownWatermark(seg.watermark),
         transform: seg.transform,
         opacity: seg.opacity,
         audioGain: seg.audioGain,
@@ -1649,7 +1721,7 @@ function registerIpc(): void {
       projectName: req.projectName,
       clips,
       settings: req.settings,
-      watermark: req.segments[0].watermark,
+      watermark: ownWatermark(req.segments[0].watermark),
       outputDirectory: req.outputDirectory,
       outputName: req.outputName
     })

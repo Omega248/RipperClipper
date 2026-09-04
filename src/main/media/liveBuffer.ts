@@ -297,8 +297,36 @@ export class LiveBuffer {
     const fresh = playlist.segments.filter((s) => s.sequence > this.lastSequence)
     if (fresh.length === 0) return
 
+    /*
+     * The clock anchor for a playlist that carries no PROGRAM-DATE-TIME.
+     *
+     * The fallback used to be `now - bufferedSeconds(this.segments)`,
+     * evaluated per segment before the push — which names the start of the
+     * *oldest* held segment, not the newest. While the buffer filled, `now`
+     * and the held total advanced together so every arriving segment got the
+     * same epoch; and within one poll bringing several segments, `now` was
+     * constant while the held total grew, so the epochs went *backwards*
+     * across the batch. `lastSequence` starts at -1, so the very first poll
+     * ingests the whole playlist as one such batch — after which
+     * `segments[0].startEpoch` is greater than `liveEdgeEpoch` and
+     * `bufferCovers` cannot be satisfied for any range at all. Every live
+     * clip on such a stream then failed with "Clip it sooner", for a moment
+     * sitting in memory.
+     *
+     * Anchored once per batch instead and accumulated forward: the last
+     * segment lands at the live edge, and each earlier one sits its own
+     * duration behind, so the stamps rise with sequence the way the contract
+     * on `startEpoch` says they do.
+     */
+    const batchNow = this.now()
+    let untilEdge = fresh.reduce((total, seg) => total + seg.durationSeconds, 0)
+
     for (const segment of fresh) {
       if (!this.running) return
+      // Consumed whether or not this one arrives: a segment that fails to
+      // download still occupied its slice of the broadcast's wall clock.
+      const fallbackStart = batchNow - untilEdge
+      untilEdge -= segment.durationSeconds
       let data: Buffer
       try {
         data = await liveSegmentLimiter.run(() =>
@@ -315,9 +343,8 @@ export class LiveBuffer {
       this.segments.push({
         sequence: segment.sequence,
         // A live playlist without PROGRAM-DATE-TIME gives no wall clock to
-        // anchor to. Falling back to "now minus what is held" keeps the buffer
-        // usable; §4.3's sync pass is what makes it accurate.
-        startEpoch: segment.programDateTime ?? this.now() - bufferedSeconds(this.segments),
+        // anchor to; see the batch anchor above for what stands in for one.
+        startEpoch: segment.programDateTime ?? fallbackStart,
         durationSeconds: segment.durationSeconds,
         bytes: data.length,
         data,

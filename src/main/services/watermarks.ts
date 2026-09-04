@@ -61,10 +61,26 @@ export class WatermarkLibrary {
     const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim())
     if (!match) throw Errors.invalidRange('That is not a PNG this app can store.')
 
+    /*
+     * The prefix is a claim; the bytes are the fact.
+     *
+     * Only the data-URL header was checked, so any base64 at all was written
+     * to a `.png` in the app's own folder and then handed to ffmpeg as `-i`.
+     * Nothing catastrophic followed — the filename is generated and the
+     * directory is ours — but the failure surfaced much later as an
+     * unexplained export error from a decoder, rather than here as a refusal.
+     * The eight-byte PNG signature settles it before anything is written.
+     */
+    const bytes = Buffer.from(match[1], 'base64')
+    const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    if (bytes.length < PNG_SIGNATURE.length || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+      throw Errors.invalidRange('That is not a PNG this app can store.')
+    }
+
     await mkdir(this.directory, { recursive: true })
     const id = createId('wm')
     const destination = join(this.directory, `${id}.png`)
-    await writeFile(destination, Buffer.from(match[1], 'base64'))
+    await writeFile(destination, bytes)
 
     const size = await imageSize(destination)
     const image: WatermarkImage = {
