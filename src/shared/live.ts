@@ -240,7 +240,32 @@ export function bufferCovers(
   if (segments.length === 0) return false
   const first = segments[0]
   const edge = liveEdgeEpoch(segments)
-  return edge !== null && startEpoch >= first.startEpoch && endEpoch <= edge
+  if (edge === null || startEpoch < first.startEpoch || endEpoch > edge) return false
+
+  /*
+   * The endpoints are not enough on their own.
+   *
+   * A segment that fails to download is skipped and the sequence moves on —
+   * correct behaviour, because one bad request must not stall the buffer, but
+   * it leaves a hole in the middle of media that still spans the range. This
+   * checked only that the range began after the oldest segment and ended
+   * before the live edge, so a clip drawn across such a hole was reported as
+   * held, written by concatenating what was there, and came out short and
+   * time-shifted after the gap — with nothing anywhere saying so. Exports do
+   * not verify content, so it would be found by watching the clip.
+   *
+   * A gap shows as a break in the media sequence, and only matters when it
+   * falls inside the range being asked for.
+   */
+  for (let i = 1; i < segments.length; i++) {
+    const previous = segments[i - 1]
+    const next = segments[i]
+    if (next.sequence === previous.sequence + 1) continue
+    const holeStart = previous.startEpoch + previous.durationSeconds
+    const holeEnd = next.startEpoch
+    if (holeStart < endEpoch && holeEnd > startEpoch) return false
+  }
+  return true
 }
 
 function round(value: number): number {

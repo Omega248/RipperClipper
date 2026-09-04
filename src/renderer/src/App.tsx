@@ -307,7 +307,34 @@ export default function App(): JSX.Element {
    */
   useEffect(() => {
     const setLive = useStore.getState().setLive
-    void window.api.liveStates().then(setLive).catch(() => undefined)
+    void window.api
+      .liveStates()
+      .then((snapshot) => {
+        setLive(snapshot)
+        /*
+         * Adopt whatever the main process is already holding.
+         *
+         * `watchedLive` is a ref, so it starts empty on every mount — and a
+         * renderer reload does not restart the main process. Buffers from
+         * before the reload were therefore invisible to the reconciliation
+         * below, which only unwatches ids the ref knows about: each kept its
+         * poll timer and its held media, up to the whole live window per
+         * angle, with nothing left that could stop it. The crash screen's own
+         * Reload button is the likeliest way to reach it, which is the worst
+         * of it — recover from a crash and the app leaks the wall it was
+         * showing.
+         *
+         * Seeding the ref makes those orphans ordinary members of the set, so
+         * the reconciliation drops any the reopened project does not want.
+         * The bump is what makes that happen now rather than whenever the POV
+         * list next changes.
+         */
+        const ids = Object.keys(snapshot.sources ?? {})
+        if (ids.length === 0) return
+        for (const id of ids) watchedLive.current.add(id)
+        setAdoptedLive((n) => n + 1)
+      })
+      .catch(() => undefined)
     return window.api.onLive(setLive)
   }, [])
 
@@ -373,6 +400,8 @@ export default function App(): JSX.Element {
   }, [sourceKey])
 
   const watchedLive = useRef(new Set<string>())
+  /** Bumped once buffers held from before a renderer reload have been adopted. */
+  const [adoptedLive, setAdoptedLive] = useState(0)
   const liveSources = (store.project?.sources ?? []).filter((s) => s.isLive)
   const liveKey = liveSources.map((s) => s.id).join('\u0000')
   useEffect(() => {
@@ -400,7 +429,9 @@ export default function App(): JSX.Element {
     // on every state push, and re-running this on each of those would be a
     // watch/unwatch cycle several times a second.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveKey])
+    // adoptedLive: buffers inherited from before a renderer reload have to be
+    // reconciled once the mount effect has made them known.
+  }, [liveKey, adoptedLive])
 
   // The window doesn't actually close on its own — see main/index.ts's
   // `close` handler — so whatever triggered it (titlebar button, Alt+F4,

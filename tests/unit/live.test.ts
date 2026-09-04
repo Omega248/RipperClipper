@@ -174,6 +174,27 @@ describe('the live clock', () => {
     expect(bufferCovers(held, EPOCH + 50, EPOCH + 90)).toBe(false)
     expect(bufferCovers([], EPOCH, EPOCH + 5)).toBe(false)
   })
+
+  it('refuses a range that spans a segment the buffer never got', () => {
+    /*
+     * A segment that fails to download is skipped so one bad request cannot
+     * stall the buffer — but it leaves a hole in media that still spans the
+     * range at both ends. This used to check the endpoints only, so a clip
+     * drawn across the hole was reported as held, written by concatenating
+     * what was there, and came out short and time-shifted after the gap. An
+     * export verifies duration rather than content, so nothing caught it.
+     */
+    const held = segments(30)
+    const holed = [...held.slice(0, 10), ...held.slice(11)] // sequence 110 never arrived
+
+    // The hole sits at EPOCH+20..22.
+    expect(bufferCovers(holed, EPOCH + 10, EPOCH + 40)).toBe(false)
+    expect(bufferCovers(holed, EPOCH + 18, EPOCH + 24)).toBe(false)
+
+    // Either side of it is still perfectly clippable.
+    expect(bufferCovers(holed, EPOCH + 2, EPOCH + 20)).toBe(true)
+    expect(bufferCovers(holed, EPOCH + 22, EPOCH + 40)).toBe(true)
+  })
 })
 
 describe('the recording of a broadcast in progress', () => {
