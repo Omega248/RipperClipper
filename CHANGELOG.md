@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.6.2 — 5 September 2026
+
+### YouTube clips no longer come back dubbed
+
+A clip cut from a YouTube video could arrive in the wrong language — German,
+Malayalam, Spanish — because audio tracks were ranked on quality alone, and
+YouTube encodes its automatic dubs at a marginally *higher* bitrate than the
+original, so the ranking did not merely risk a dub, it reliably chose one.
+
+The audio track the video was actually recorded in is now preferred before
+quality is considered at all. On a video with twenty-two dubbed languages the
+old ranking picked Malayalam, with the English original sitting twenty-seventh
+of a hundred and ten candidates; it now picks the original.
+
+Only a track the source positively marks as the original changes anything.
+Twitch, Kick and single-track YouTube videos mark nothing, so they are ranked
+exactly as before.
+
+
 ## 1.6.1 — 2 September 2026
 
 The application icon is the app's own mark now — the player frame and range bar

@@ -1,7 +1,7 @@
 {
   "name": "ripperclipper",
   "productName": "Ripper Clipper",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Non-destructive VOD range editor and downloader for Twitch, Kick and YouTube",
   "main": "./out/main/index.js",
   "author": "Ripper Clipper",
