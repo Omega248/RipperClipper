@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.6.2 — 5 September 2026
+## 1.6.3 — 5 September 2026
+
+Everything 1.6.2 was meant to be. 1.6.2 was withdrawn before anyone had it:
+its tag pointed at a commit that did not include all of the below, and
+re-cutting the version was safer than moving a published tag.
 
 ### YouTube clips no longer come back dubbed
 
