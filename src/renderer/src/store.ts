@@ -142,6 +142,16 @@ interface HistoryEntry {
   sources: VodSource[]
   /** The Editor's own sequence — absent before it's ever been created. */
   timeline: EditorTimeline | undefined
+  /**
+   * The event block: its name, its real-world window, its collections and
+   * moments.
+   *
+   * `setEventInfo` and every collection action already pushed a history entry,
+   * but the entry did not carry this field — so renaming an event and pressing
+   * Ctrl+Z restored nothing and left the new name in place. Anything an action
+   * changes has to be in here, or undo quietly lies about what it undid.
+   */
+  event: EventInfo | undefined
 }
 
 interface State {
@@ -292,6 +302,8 @@ interface Actions {
   addSyncAnchors: (anchors: SyncAnchor[]) => void
   setActiveSource: (id: string | null) => void
   removeSource: (id: string) => void
+  /** Empty the project of POVs, clips, markers and the event block. One undo step. */
+  clearEvent: () => void
   /**
    * Tick or untick angles in the wall's angle picker.
    *
@@ -668,7 +680,8 @@ export const useStore = create<Store>((set, get) => ({
         clips: s.project.clips,
         markers: s.project.markers,
         sources: s.project.sources,
-        timeline: s.project.timeline
+        timeline: s.project.timeline,
+        event: s.project.event
       }
       const nextActive =
         s.activeSourceId === id ? (sources[0]?.id ?? null) : s.activeSourceId
@@ -686,6 +699,67 @@ export const useStore = create<Store>((set, get) => ({
         duration: active?.durationSeconds ?? 0,
         viewStart: 0,
         viewSpan: Math.max(60, active?.durationSeconds ?? 600)
+      }
+    }),
+
+  /**
+   * Empty this project without making a new one.
+   *
+   * The common case it exists for: the POVs currently loaded are the wrong
+   * event, or were a first attempt, and the editor wants to start again — but
+   * wants to keep the project file they already named and saved, along with
+   * its output folder and export settings. Removing eight POVs one at a time
+   * is eight confirmations and eight undo entries; "New project" is a second
+   * file on disk and a second thing to find later.
+   *
+   * One history entry, so the whole clear is a single Ctrl+Z. Every field it
+   * touches is in HistoryEntry — see the note there — so undo genuinely puts
+   * it all back rather than half of it.
+   *
+   * Deliberately kept: the project's name, id, output folder and export
+   * settings (the reason you are not making a new project), and
+   * `syncAnchors` — those are keyed by VOD id, so they are inert while the
+   * VOD is gone and give the timing straight back if the same one is loaded
+   * again.
+   */
+  clearEvent: () =>
+    set((s) => {
+      if (!s.project) return {}
+      const entry: HistoryEntry = {
+        clips: s.project.clips,
+        markers: s.project.markers,
+        sources: s.project.sources,
+        timeline: s.project.timeline,
+        event: s.project.event
+      }
+      return {
+        project: {
+          ...s.project,
+          sources: [],
+          clips: [],
+          markers: [],
+          timeline: undefined,
+          event: undefined
+        },
+        past: [...s.past, entry].slice(-MAX_HISTORY),
+        future: [],
+        dirty: true,
+        // The transport and every selection referred to things that are gone.
+        activeSourceId: null,
+        selectedClipId: null,
+        inPoint: null,
+        outPoint: null,
+        currentTime: 0,
+        duration: 0,
+        playing: false,
+        sequenceIndex: null,
+        viewStart: 0,
+        viewSpan: 600,
+        selectedTimelineItemIds: [],
+        selectedTimelineItemId: null,
+        // A run over clips that no longer exist would step through nothing.
+        reviewRun: [],
+        reviewIndex: 0
       }
     }),
 
@@ -716,7 +790,8 @@ export const useStore = create<Store>((set, get) => ({
         clips: s.project.clips,
         markers: s.project.markers,
         sources: s.project.sources,
-        timeline: s.project.timeline
+        timeline: s.project.timeline,
+        event: s.project.event
       }
       return { past: [...s.past, entry].slice(-MAX_HISTORY), future: [] }
     }),
@@ -729,7 +804,8 @@ export const useStore = create<Store>((set, get) => ({
         clips: s.project.clips,
         markers: s.project.markers,
         sources: s.project.sources,
-        timeline: s.project.timeline
+        timeline: s.project.timeline,
+        event: s.project.event
       }
       return {
         past: s.past.slice(0, -1),
@@ -739,7 +815,8 @@ export const useStore = create<Store>((set, get) => ({
           clips: previous.clips,
           markers: previous.markers,
           sources: previous.sources,
-          timeline: previous.timeline
+          timeline: previous.timeline,
+          event: previous.event
         },
         dirty: true,
         ...activeAfter(previous.sources, s.activeSourceId)
@@ -754,12 +831,20 @@ export const useStore = create<Store>((set, get) => ({
         clips: s.project.clips,
         markers: s.project.markers,
         sources: s.project.sources,
-        timeline: s.project.timeline
+        timeline: s.project.timeline,
+        event: s.project.event
       }
       return {
         past: [...s.past, current].slice(-MAX_HISTORY),
         future: s.future.slice(1),
-        project: { ...s.project, clips: next.clips, markers: next.markers, sources: next.sources, timeline: next.timeline },
+        project: {
+          ...s.project,
+          clips: next.clips,
+          markers: next.markers,
+          sources: next.sources,
+          timeline: next.timeline,
+          event: next.event
+        },
         dirty: true,
         ...activeAfter(next.sources, s.activeSourceId)
       }
@@ -958,7 +1043,8 @@ export const useStore = create<Store>((set, get) => ({
         clips: s.project.clips,
         markers: s.project.markers,
         sources: s.project.sources,
-        timeline: s.project.timeline
+        timeline: s.project.timeline,
+        event: s.project.event
       }
       const clips = s.project.clips.map((c) => {
         if (c.id !== clipId) return c
