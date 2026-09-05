@@ -211,6 +211,7 @@ export default function App(): JSX.Element {
   const [newProjectPrompt, setNewProjectPrompt] = useState<string | null>(null)
   const [sequenceExportPrompt, setSequenceExportPrompt] = useState<string | null>(null)
   const [confirmNewProject, setConfirmNewProject] = useState(false)
+  const [confirmClearEvent, setConfirmClearEvent] = useState(false)
   const [showWatermark, setShowWatermark] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showCommandPalette, setShowCommandPalette] = useState(false)
@@ -1514,6 +1515,13 @@ export default function App(): JSX.Element {
    */
   const projectMenu: MenuItem[] = [
     { id: 'new', label: 'New project', icon: 'new', onSelect: startNewProject },
+    {
+      id: 'clear-event',
+      label: 'Clear this event…',
+      icon: 'trash' as const,
+      disabled: !store.project || store.project.sources.length === 0,
+      onSelect: () => setConfirmClearEvent(true)
+    },
     { id: 'open', label: 'Open project…', icon: 'open', onSelect: () => void openProject() },
     {
       id: 'reopen-last-closed',
@@ -2271,6 +2279,25 @@ export default function App(): JSX.Element {
           }}
         />
       )}
+      {confirmClearEvent && (
+        <ConfirmDialog
+          title="Clear this event?"
+          description={`Every POV, clip and marker in “${store.project?.name}” is removed and the event starts empty. The project file, its name and its output folder are kept. Undo (Ctrl+Z) brings it all back.`}
+          confirmLabel="Clear the event"
+          destructive
+          onCancel={() => setConfirmClearEvent(false)}
+          onConfirm={() => {
+            setConfirmClearEvent(false)
+            useStore.getState().clearEvent()
+            store.toast({
+              kind: 'success',
+              title: 'Event cleared',
+              message: 'Undo brings every POV and clip back.'
+            })
+          }}
+        />
+      )}
+
       {confirmNewProject && (
         <ConfirmDialog
           title="Start a new project?"
