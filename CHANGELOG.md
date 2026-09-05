@@ -19,6 +19,20 @@ Twitch, Kick and single-track YouTube videos mark nothing, so they are ranked
 exactly as before.
 
 
+### Clear an event without making a new project
+
+The POVs loaded are the wrong event, or were a first attempt, and you want to
+start again — but keep the project file you already named, its output folder
+and its export settings. **Project → Clear this event…** empties the POVs,
+clips and markers and leaves the project itself alone.
+
+It is one undo step, not one per POV. Sync anchors are kept on purpose: they
+are tied to a VOD rather than to the event, so loading the same VOD again
+gets its timing back immediately.
+
+Undo also now covers the event block itself. Renaming an event and pressing
+Ctrl+Z used to restore nothing and leave the new name in place.
+
 ## 1.6.1 — 2 September 2026
 
 The application icon is the app's own mark now — the player frame and range bar
