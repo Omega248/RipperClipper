@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.6.2 — 5 September 2026
+## 1.6.3 — 5 September 2026
+
+Everything 1.6.2 was meant to be. 1.6.2 was withdrawn before anyone had it:
+its tag pointed at a commit that did not include all of the below, and
+re-cutting the version was safer than moving a published tag.
 
 ### YouTube clips no longer come back dubbed
 
@@ -18,6 +22,20 @@ Only a track the source positively marks as the original changes anything.
 Twitch, Kick and single-track YouTube videos mark nothing, so they are ranked
 exactly as before.
 
+
+### Clear an event without making a new project
+
+The POVs loaded are the wrong event, or were a first attempt, and you want to
+start again — but keep the project file you already named, its output folder
+and its export settings. **Project → Clear this event…** empties the POVs,
+clips and markers and leaves the project itself alone.
+
+It is one undo step, not one per POV. Sync anchors are kept on purpose: they
+are tied to a VOD rather than to the event, so loading the same VOD again
+gets its timing back immediately.
+
+Undo also now covers the event block itself. Renaming an event and pressing
+Ctrl+Z used to restore nothing and leave the new name in place.
 
 ## 1.6.1 — 2 September 2026
 
