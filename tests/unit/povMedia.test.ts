@@ -24,7 +24,7 @@ function pov(id: string, startRealTime: number, formats?: StreamInfo[]): VodSour
     creator: id,
     durationSeconds: 7200,
     playbackKind: 'hls',
-    capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+    capabilities: { notes: [] },
     formatsInspected: Boolean(formats),
     formats,
     syncMapping: {

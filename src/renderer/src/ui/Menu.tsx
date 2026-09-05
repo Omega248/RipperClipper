@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import Icon from './Icon.js'
 import type { IconName } from './Icon.js'
 
@@ -22,6 +23,12 @@ export interface MenuItem {
   onSelect: () => void
   /** Draws a rule above this item, to group commands. */
   separatorBefore?: boolean
+  /**
+   * Section title rendered above this item. Headings are labels, not targets:
+   * they are skipped by arrow-key movement and carry no role, so grouping a
+   * list never lengthens the path to anything in it.
+   */
+  heading?: string
 }
 
 export function MenuList({
@@ -75,6 +82,11 @@ export function MenuList({
     >
       {items.map((item, index) => (
         <li key={item.id} className={item.separatorBefore ? 'ui-menu-group' : undefined}>
+          {item.heading && (
+            <span className="ui-menu-heading" role="presentation">
+              {item.heading}
+            </span>
+          )}
           <button
             type="button"
             role="menuitem"
@@ -133,12 +145,17 @@ export default function Menu({
   label,
   icon,
   items,
-  align = 'start'
+  align = 'start',
+  trigger,
+  triggerClassName
 }: {
   label: string
   icon?: IconName
   items: MenuItem[]
   align?: 'start' | 'end'
+  /** Replaces the default icon/label/chevron. `label` still names the button. */
+  trigger?: ReactNode
+  triggerClassName?: string
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
@@ -173,7 +190,8 @@ export default function Menu({
       <button
         ref={buttonRef}
         type="button"
-        className="ui-btn ui-btn-secondary ui-btn-default"
+        className={triggerClassName ?? 'ui-btn ui-btn-secondary ui-btn-default'}
+        aria-label={trigger ? label : undefined}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => {
@@ -181,8 +199,12 @@ export default function Menu({
           setOpen((v) => !v)
         }}
       >
-        {icon && <Icon name={icon} />}
-        <span className="ui-btn-label">{label}</span>
+        {trigger ?? (
+          <>
+            {icon && <Icon name={icon} />}
+            <span className="ui-btn-label">{label}</span>
+          </>
+        )}
         <Icon name="chevron-down" size={14} />
       </button>
       {open && pos && (

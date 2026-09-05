@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { coverageLabel } from '@shared/eventStreams'
 import type { EventOverlapReply } from '@shared/ipc'
 import { formatTimecode } from '@shared/time'
+import { oneAnglePerStreamer, personKey } from '@shared/povPriority'
 import { useStore } from '../store.js'
 import { message, title } from './QualityPanel.js'
 import { Badge, Button, EmptyState, Notice, Spinner, StatusBadge } from '../ui/index.js'
@@ -24,6 +25,7 @@ export default function EventStreams({
   const selectedClipId = useStore((s) => s.selectedClipId)
   const setActiveSource = useStore((s) => s.setActiveSource)
   const toast = useStore((s) => s.toast)
+  const streamers = useStore((s) => s.streamers)
 
   const [result, setResult] = useState<EventOverlapReply | null>(null)
   const [loading, setLoading] = useState(false)
@@ -31,6 +33,28 @@ export default function EventStreams({
   // waiting on the load to finish, so importing several POVs back to back
   // never blocks on the slowest one. Reverted only if the load actually fails.
   const [added, setAdded] = useState<Set<string>>(new Set())
+
+  /*
+   * One row per person.
+   *
+   * `coveringEvent` answers per broadcast, and a restreamer has three of them
+   * covering the same seconds. "Import all" on that list would put the same
+   * angle on the wall three times, so the list is collapsed before it is shown
+   * — the better coverage wins, and Twitch breaks the tie.
+   */
+  const streams = useMemo(() => {
+    if (!result) return []
+    const personOf = new Map(
+      streamers.filter((s) => s.personId).map((s) => [s.id, s.personId as string])
+    )
+    return oneAnglePerStreamer(result.streams, {
+      key: (s) => personKey(s, (id) => personOf.get(id)),
+      platform: (s) => s.platform,
+      better: (a, b) =>
+        Number(b.availability === 'loaded') - Number(a.availability === 'loaded') ||
+        b.coverage.fraction - a.coverage.fraction
+    })
+  }, [result, streamers])
 
   const clip =
     project?.clips.find((c) => c.id === selectedClipId) ?? project?.clips[0] ?? null
@@ -105,7 +129,7 @@ export default function EventStreams({
       )}
       {loading && <Spinner label="Asking each saved channel…" />}
 
-      {result && result.streams.length === 0 && (
+      {result && streams.length === 0 && (
         <EmptyState
           icon="users"
           title="Nobody else was live"
@@ -113,9 +137,9 @@ export default function EventStreams({
         />
       )}
 
-      {result && result.streams.length > 0 && (
+      {result && streams.length > 0 && (
         <div className="stream-list">
-          {result.streams.some(
+          {streams.some(
             (entry) =>
               !(entry.availability === 'loaded' || loadedUrls.has(entry.vod.url)) &&
               !added.has(entry.vod.url)
@@ -124,13 +148,13 @@ export default function EventStreams({
               size="compact"
               icon="plus"
               onClick={() => {
-                for (const entry of result.streams) importOne(entry.vod.url)
+                for (const entry of streams) importOne(entry.vod.url)
               }}
             >
               Import all
             </Button>
           )}
-          {result.streams.map((entry) => {
+          {streams.map((entry) => {
             const loaded =
               entry.availability === 'loaded' ||
               loadedUrls.has(entry.vod.url) ||

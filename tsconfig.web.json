@@ -25,9 +25,8 @@
     "src/renderer/src/**/*.ts",
     "src/renderer/src/**/*.tsx",
     "src/shared/**/*.ts",
-    "tests/unit/povSwitch.test.ts",
-    "tests/unit/diagnose.test.ts",
-    "tests/unit/latePov.test.ts",
-    "tests/unit/playerBus.test.ts"
+    // Every test that reaches into the renderer, and the helpers they use.
+    // See tsconfig.node.json.
+    "tests/**/*.dom.test.ts"
   ]
 }

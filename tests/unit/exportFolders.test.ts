@@ -20,7 +20,7 @@ const SOURCE: VodSource = {
   durationSeconds: 3600,
   createdAt: '2026-08-16T20:00:00Z',
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: false
 }
 

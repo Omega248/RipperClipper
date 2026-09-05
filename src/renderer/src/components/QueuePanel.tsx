@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { formatBytes } from '@shared/errors'
+import { isSettled } from '@shared/jobs'
 import { jobStatus, STATUS } from '@shared/status'
 import { formatDuration } from '@shared/time'
 import type { ExportJob } from '@shared/types'
@@ -16,7 +17,24 @@ import { Button, IconButton, ProgressBar, StatusBadge } from '../ui/index.js'
 export default function QueuePanel(): JSX.Element {
   const jobs = useStore((s) => s.jobs)
   const [collapsed, setCollapsed] = useState(false)
+  /*
+   * Seeded from the queue itself, not assumed.
+   *
+   * The truth is a flag in the main process. This used to start as `false` on
+   * every mount, so a reload — including the one the crash screen offers — came
+   * back showing "Pause" on a queue that was already paused, and the only way
+   * to resume was to press Pause first and watch nothing happen.
+   */
   const [paused, setPaused] = useState(false)
+  useEffect(() => {
+    let live = true
+    void window.api.queuePaused().then((value) => {
+      if (live) setPaused(value)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
 
   const active = jobs.filter((j) => !isFinished(j)).length
   const failed = jobs.filter((j) => j.progress.stage === 'failed').length
@@ -39,9 +57,12 @@ export default function QueuePanel(): JSX.Element {
           disabled={jobs.length === 0}
           selected={paused}
           onClick={() => {
-            if (paused) void window.api.resumeQueue()
-            else void window.api.pauseQueue()
-            setPaused(!paused)
+            const next = !paused
+            setPaused(next)
+            void (next ? window.api.pauseQueue() : window.api.resumeQueue())
+              // The button reflects the queue, so if the call fails it must go
+              // back rather than sit there claiming a state nothing is in.
+              .catch(() => setPaused(!next))
           }}
         >
           {paused ? 'Resume' : 'Pause'}
@@ -178,6 +199,5 @@ function JobRow({ job, index, total }: { job: ExportJob; index: number; total: n
 }
 
 function isFinished(job: ExportJob): boolean {
-  const s = job.progress.stage
-  return s === 'complete' || s === 'failed' || s === 'cancelled'
+  return isSettled(job.progress.stage)
 }

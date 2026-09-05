@@ -1,6 +1,6 @@
 import type { AdapterCapabilities, PlaybackKind, VodSource } from '../../shared/types.js'
 import type { RawInfo } from '../media/resolver.js'
-import { parseMaster, sortVariants } from '../media/hls.js'
+import { firstCodec, parseMaster, sortVariants } from '../media/hls.js'
 import { isoDateFrom, parseOffset, safeUrl } from './types.js'
 import type { PlatformAdapter, UrlMatch } from './types.js'
 
@@ -12,6 +12,8 @@ export interface KickVideoApi {
   source?: string
   created_at?: string
   livestream?: {
+    /** The broadcast this recording belongs to is still on air. */
+    is_live?: boolean
     session_title?: string
     slug?: string
     duration?: number
@@ -74,27 +76,22 @@ export function matchVodByStartTime(
 }
 
 /** CODECS="avc1.64002a,mp4a.40.2" → the video or the audio entry. */
-function firstCodec(codecs: string | undefined, kind: 'video' | 'audio'): string | undefined {
-  if (!codecs) return undefined
-  const parts = codecs.split(',').map((c) => c.trim()).filter(Boolean)
-  const isAudio = (c: string): boolean => /^(mp4a|opus|ac-3|ec-3|vorbis)/i.test(c)
-  return parts.find((c) => (kind === 'audio' ? isAudio(c) : !isAudio(c)))
-}
-
 /**
  * Kick VODs are HLS-backed, so ranges map to segment runs in the same way as
  * Twitch. Kick uses UUID video ids in /video/<uuid> URLs and channel-scoped
  * /<channel>/videos/<uuid> URLs.
  */
+/** kick.com paths that are site furniture rather than someone's channel. */
+const RESERVED = new Set([
+  'browse', 'categories', 'category', 'following', 'search', 'video', 'videos',
+  'clips', 'settings', 'dashboard', 'subscriptions', 'help', 'about', 'login', 'signup'
+])
+
 export class KickAdapter implements PlatformAdapter {
   readonly id = 'kick' as const
   readonly displayName = 'Kick'
 
   readonly capabilities: AdapterCapabilities = {
-    metadata: true,
-    playback: true,
-    rangeDownload: true,
-    requiresAuth: false,
     notes: [
       'Kick occasionally rate-limits manifest requests; Ripper Clipper retries with backoff rather than hammering the endpoint.'
     ]
@@ -111,7 +108,28 @@ export class KickAdapter implements PlatformAdapter {
     if (parts[0] === 'video' && parts[1]) vodId = parts[1]
     else if (parts[1] === 'videos' && parts[2]) vodId = parts[2]
 
-    if (!vodId) return null
+    // https://kick.com/<channel> — the broadcast happening right now.
+    if (!vodId) {
+      // Kick's main site only: a subdomain is not a channel page.
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, '')
+      const slug = parts[0]
+      if (
+        host === 'kick.com' &&
+        parts.length === 1 &&
+        slug &&
+        /^[A-Za-z0-9_-]{3,25}$/.test(slug) &&
+        !RESERVED.has(slug.toLowerCase())
+      ) {
+        return {
+          platform: this.id,
+          // The channel's own name: no recording exists to be named yet.
+          vodId: slug.toLowerCase(),
+          kind: 'channel',
+          canonicalUrl: `https://kick.com/${slug}`
+        }
+      }
+      return null
+    }
     // Kick ids are UUIDs; accept the general shape without being brittle.
     if (!/^[A-Za-z0-9-]{8,64}$/.test(vodId)) return null
 
@@ -123,6 +141,7 @@ export class KickAdapter implements PlatformAdapter {
     return {
       platform: this.id,
       vodId,
+      kind: 'vod',
       canonicalUrl: canonical,
       startSeconds: parseOffset(parsed.searchParams.get('t'))
     }
@@ -165,6 +184,10 @@ export class KickAdapter implements PlatformAdapter {
       formats: variants.map((v, index) => ({
         format_id: v.name ?? (v.height ? `${v.height}p` : `variant-${index}`),
         url: v.uri,
+        // The master this variant came from. Playback wants this, not the
+        // variant: it is what lets the player and the tile decoder choose a
+        // rung at all.
+        manifest_url: master.url,
         ext: 'mp4',
         protocol: 'm3u8_native',
         vcodec: firstCodec(v.codecs, 'video') ?? 'unknown',
@@ -192,7 +215,20 @@ export class KickAdapter implements PlatformAdapter {
       durationSeconds: Number(raw.duration ?? 0),
       createdAt: isoDateFrom(raw),
       thumbnailUrl: raw.thumbnail,
-      playbackUrl: best?.url ?? raw.url,
+      /*
+       * The master playlist, not the biggest rung.
+       *
+       * This used to be `best.url` — the highest variant — which meant the
+       * player was handed a *media* playlist with one rendition in it. Every
+       * mechanism that picks a smaller rung then had nothing to pick from:
+       * hls.js's `capLevelToPlayerSize` had one level, and the native tile
+       * decoder's `variantForTile` never ran because the playlist was not a
+       * master. Every angle decoded 1080p60 whatever size it was drawn, which
+       * is what "not smooth" was.
+       *
+       * Export is unaffected — it works from `formats`, not from this.
+       */
+      playbackUrl: best?.manifest_url ?? best?.url ?? raw.url,
       playbackKind: this.playbackKind(raw),
       capabilities: this.capabilities,
       formatsInspected: false

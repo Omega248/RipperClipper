@@ -6,6 +6,8 @@ import { Logger } from '../../src/main/services/logger.js'
 import { FfmpegService } from '../../src/main/media/ffmpeg.js'
 import { startLocalServer } from '../../src/main/localServer.js'
 import type { LocalServer } from '../../src/main/localServer.js'
+import { mediaProxyToken, proxyUrl } from '../../src/main/mediaProxy.js'
+import { playbackSrc } from '../../src/shared/playbackSrc.js'
 import { CHUNKS, buildFixture, chunkIndexAt, sampleColor } from '../helpers/mediaFixture.js'
 import { startMediaServer } from '../helpers/mediaServer.js'
 import type { MediaServer } from '../helpers/mediaServer.js'
@@ -42,8 +44,16 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
+/*
+ * Built the way the app builds them, not by hand.
+ *
+ * The proxy will not fetch for a caller that cannot prove it is this app —
+ * without that it is an open relay on loopback — and the secret lives inside
+ * `proxyUrl`. A test that assembles the query itself is testing a URL the app
+ * never produces.
+ */
 const proxied = (kind: 'manifest' | 'segment', target: string): string =>
-  `${local.loopbackUrl}/media/${kind}?u=${encodeURIComponent(target)}`
+  proxyUrl(local.loopbackUrl, kind, target)
 
 describe('media proxy', () => {
   it('serves the rewritten manifest same-origin with permissive CORS', async () => {
@@ -108,9 +118,7 @@ describe('media proxy', () => {
 
   it('refuses anything that is not a plain http(s) target', async () => {
     for (const target of ['file:///etc/passwd', 'not-a-url', '']) {
-      const res = await fetch(
-        `${local.loopbackUrl}/media/segment?u=${encodeURIComponent(target)}`
-      )
+      const res = await fetch(proxied('segment', target))
       expect(res.status, target).toBe(400)
     }
   })
@@ -136,3 +144,63 @@ function expectColorNear(actual: [number, number, number], expected: readonly nu
     `expected rgb(${actual.join(',')}) to be close to rgb(${expected.join(',')})`
   ).toBeLessThan(60)
 }
+
+describe('the proxy is not an open relay', () => {
+  /*
+   * It is bound to loopback, which is not the same as being private: anything
+   * that can reach the port — another program on this machine, or a page that
+   * guesses the ephemeral port — could otherwise use it to read a link-local
+   * metadata endpoint or a router's admin page *through* this machine, and
+   * read the body cross-origin thanks to `access-control-allow-origin: *`.
+   */
+  it('refuses a request that cannot prove it came from the app', async () => {
+    const target = `${origin.url}/source.mp4`
+    for (const url of [
+      `${local.loopbackUrl}/media/segment?u=${encodeURIComponent(target)}`,
+      `${local.loopbackUrl}/media/segment?k=&u=${encodeURIComponent(target)}`,
+      `${local.loopbackUrl}/media/segment?k=${'0'.repeat(32)}&u=${encodeURIComponent(target)}`,
+      `${local.loopbackUrl}/media/manifest?k=short&u=${encodeURIComponent(target)}`
+    ]) {
+      const res = await fetch(url)
+      expect(res.status, url).toBe(403)
+    }
+  })
+
+  it('still serves the app itself', async () => {
+    const res = await fetch(proxied('segment', `${origin.url}/source.mp4`))
+    expect(res.status).toBe(200)
+  })
+})
+
+describe('the renderer builds URLs the proxy accepts', () => {
+  /*
+   * This is the regression that made every POV go black.
+   *
+   * The proxy grew a per-run secret; `playbackSrc` in the renderer was a
+   * second, hand-written copy of the same URL template and knew nothing about
+   * it, so every player URL 403'd while the tests — which only exercised the
+   * main-process builder — stayed green. Both now go through one shared
+   * function, and this asserts the halves still meet.
+   */
+  it('accepts a URL built the way the player builds one', async () => {
+    const source = {
+      playbackUrl: `${origin.url}/hls/master.m3u8`,
+      playbackKind: 'hls' as const
+    }
+    const url = playbackSrc(
+      source as never,
+      local.loopbackUrl,
+      // Exactly what the main process hands the renderer in `envInfo`.
+      mediaProxyToken()
+    )
+    expect(url).not.toBeNull()
+    const res = await fetch(url!)
+    expect(res.status).toBe(200)
+  })
+
+  it('falls back to the raw URL rather than a URL that cannot work', () => {
+    const source = { playbackUrl: 'https://cdn.invalid/a.m3u8', playbackKind: 'hls' as const }
+    expect(playbackSrc(source as never, local.loopbackUrl, undefined)).toBe(source.playbackUrl)
+    expect(playbackSrc(source as never, undefined, mediaProxyToken())).toBe(source.playbackUrl)
+  })
+})

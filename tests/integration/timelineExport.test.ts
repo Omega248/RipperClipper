@@ -48,7 +48,7 @@ const POV_A: VodSource = {
   creator: 'StreamerA',
   durationSeconds: TOTAL_SECONDS,
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: true
 }
 const POV_B: VodSource = { ...POV_A, id: 'pov_b', title: 'POV B', creator: 'StreamerB' }

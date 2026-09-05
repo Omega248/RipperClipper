@@ -1,8 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc.js'
-import type { InstallProgress, RendererApi, ToastEvent, ToolId, UpdateStatus } from '../shared/ipc.js'
+import type {
+  InstallProgress,
+  LiveSnapshot,
+  RendererApi,
+  ToastEvent,
+  ToolId,
+  UpdateStatus,
+  VodCrawlProgress
+} from '../shared/ipc.js'
 import type { ExportJob, SerializedAppError } from '../shared/types.js'
-import type { AnalysisProgress } from '../shared/transcription.js'
 
 /**
  * The only surface the renderer can reach. No filesystem, child-process or
@@ -47,6 +54,7 @@ const api: RendererApi = {
 
   resolveSource: (url, event) => invoke(IPC.sourceResolve, url, event),
   inspectFormats: (source) => invoke(IPC.sourceInspectFormats, source),
+  liveStatus: (source) => invoke(IPC.sourceLiveStatus, source),
 
   newProject: (name) => invoke(IPC.projectNew, name),
   saveProject: (project, path) => invoke(IPC.projectSave, project, path),
@@ -60,6 +68,12 @@ const api: RendererApi = {
   startupProjectPath: () => invoke(IPC.projectStartupPath),
   listBackups: (path) => invoke(IPC.projectBackupList, path),
   restoreBackup: (path) => invoke(IPC.projectBackupRestore, path),
+
+  liveWatch: (source) => invoke(IPC.liveWatch, source),
+  liveUnwatch: (sourceId) => invoke(IPC.liveUnwatch, sourceId),
+  liveStates: () => invoke(IPC.liveStates),
+  liveCovers: (req) => invoke(IPC.liveCovers, req),
+  liveSetWindow: (seconds) => invoke(IPC.liveWindow, seconds),
 
   audioPeaks: (req) => invoke(IPC.audioPeaks, req),
   sceneChanges: (req) => invoke(IPC.sceneChanges, req),
@@ -80,28 +94,30 @@ const api: RendererApi = {
 
   previewMedia: (req) => invoke(IPC.previewMedia, req),
 
+  listEditors: () => invoke(IPC.editorsList),
+  validateEditingProject: (project, editor) => invoke(IPC.editingProjectValidate, project, editor),
+  exportEditingProject: (req) => invoke(IPC.editingProjectExport, req),
+  chooseEditingProjectFolder: () => invoke(IPC.editingProjectChooseFolder),
   listStreamers: () => invoke(IPC.streamersList),
   addStreamer: (input, platform) => invoke(IPC.streamersAdd, input, platform),
   removeStreamer: (id) => invoke(IPC.streamersRemove, id),
   streamerVods: (id) => invoke(IPC.streamersVods, id),
+  streamerShelf: (id) => invoke(IPC.streamersShelf, id),
+  streamersLive: () => invoke(IPC.streamersLive),
+  streamersLiveCached: () => invoke(IPC.streamersLiveCached),
+  compareStreamerPlatforms: (handle) => invoke(IPC.streamersCompare, handle),
+  discoverStreamerSiblings: (id) => invoke(IPC.streamersDiscoverSiblings, id),
+  vodCrawlProgress: () => invoke(IPC.streamersCrawlProgress),
+  refreshStreamerVods: (id) => invoke(IPC.streamersCrawlNow, id),
+  onVodCrawl: (listener) => {
+    const handler = (_e: unknown, progress: VodCrawlProgress): void => listener(progress)
+    ipcRenderer.on(IPC.evtVodCrawl, handler)
+    return () => ipcRenderer.removeListener(IPC.evtVodCrawl, handler)
+  },
   setStreamerWatermark: (id, watermark) => invoke(IPC.streamersWatermark, id, watermark),
   streamersCoveringEvent: (req) => invoke(IPC.streamersOverlap, req),
   packageExport: (req) => invoke(IPC.packageExport, req),
   packageImport: () => invoke(IPC.packageImport),
-  clipAnalyse: (req) => invoke(IPC.clipAnalyse, req),
-  clipAnalysisCancel: (clipId) => invoke(IPC.clipAnalysisCancel, clipId),
-  onClipAnalysisProgress: (cb: (progress: AnalysisProgress) => void) => {
-    const listener = (_e: unknown, progress: AnalysisProgress): void => cb(progress)
-    ipcRenderer.on(IPC.clipAnalysisProgress, listener)
-    return () => ipcRenderer.removeListener(IPC.clipAnalysisProgress, listener)
-  },
-  clipHits: (req) => invoke(IPC.clipHits, req),
-  clipTranscript: (clipId, sourceId) => invoke(IPC.clipTranscript, clipId, sourceId),
-  clipAnalysisForget: (clipId, sourceIds) => invoke(IPC.clipAnalysisForget, clipId, sourceIds),
-  censorReady: () => invoke(IPC.censorReady),
-  whisperModelStatus: () => invoke(IPC.whisperModels),
-  whisperModelInstall: (id) => invoke(IPC.whisperModelInstall, id),
-  whisperModelRemove: (id) => invoke(IPC.whisperModelRemove, id),
   resolveMoment: (url) => invoke(IPC.resolveMoment, url),
   archiveRange: (req) => invoke(IPC.archiveRange, req),
   discoverEvent: (req) => invoke(IPC.discoverEvent, req),
@@ -133,13 +149,16 @@ const api: RendererApi = {
   exportClipListCsv: (csv, suggestedName) => invoke(IPC.exportClipListCsv, csv, suggestedName),
 
   cacheStats: () => invoke(IPC.cacheStats),
+  appMetrics: () => invoke(IPC.appMetrics),
   clearCache: () => invoke(IPC.cacheClear),
   diskSpace: (path) => invoke(IPC.diskSpace, path),
 
   revealPath: (path) => invoke(IPC.revealPath, path),
   openPath: (path) => invoke(IPC.openPath, path),
 
+  queuePaused: () => invoke(IPC.queuePaused),
   logsPath: () => invoke(IPC.logsPath),
+  logEvent: (level, scope, message, data) => invoke(IPC.logEvent, level, scope, message, data),
   tailLogs: (lines) => invoke(IPC.logsTail, lines),
 
   checkForUpdates: () => invoke(IPC.updateCheck),
@@ -152,6 +171,11 @@ const api: RendererApi = {
   isWindowMaximized: () => invoke(IPC.windowIsMaximized),
   confirmClose: () => invoke(IPC.windowConfirmClose),
 
+  onLive: (cb: (snapshot: LiveSnapshot) => void) => {
+    const listener = (_e: unknown, snapshot: LiveSnapshot): void => cb(snapshot)
+    ipcRenderer.on(IPC.evtLive, listener)
+    return () => ipcRenderer.removeListener(IPC.evtLive, listener)
+  },
   onJobs: (cb: (jobs: ExportJob[]) => void) => {
     const listener = (_e: unknown, jobs: ExportJob[]): void => cb(jobs)
     ipcRenderer.on(IPC.evtJobs, listener)

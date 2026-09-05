@@ -6,8 +6,7 @@
  * saving, and are applied only when a file is written — so undoing one later
  * costs nothing and the original VOD is never touched.
  *
- * There is no detector behind these any more (see the removed profanity
- * feature) and so no review workflow either: an edit the editor placed is
+ * Nothing detects or proposes these: an edit the editor placed by hand is
  * authoritative the moment it exists, the same way a marker or a trim point
  * is.
  */
@@ -129,6 +128,53 @@ export function buildAudioFilter(
 
   const parts: string[] = []
   /*
+   * The tone is EVALUATED OVER THE EXISTING STREAM, not generated beside it
+   * and mixed in.
+   *
+   * The obvious shape — an `aevalsrc` per bleep, mixed over the silenced
+   * range with `amix` — deadlocks on ffmpeg 7: a filtergraph source has no
+   * input to wait on, so it is always ready to produce, and when the video
+   * encoder is slow enough to push back (anything from `-preset medium` up)
+   * the graph never settles and the export simply never finishes. Measured on
+   * the same command and the same clip: 0.6s on ffmpeg 4.4, still running
+   * after a hundred seconds on 7.0.2. An export that hangs forever is far
+   * worse than one that is slow, and the app does not control which ffmpeg
+   * binary it is pointed at.
+   *
+   * `aeval` is an ordinary filter: it is driven by the samples arriving from
+   * the clip, so there is no independent source to schedule and no mix to
+   * keep in step. It replaces the samples in the gated range outright, which
+   * is what a bleep is anyway — the `volume=0` above already silenced them.
+   */
+  if (bleeps.length > 0) {
+    const ranges = bleeps.map((bleep) => {
+      const from = bleep.startSeconds.toFixed(3)
+      const to = bleep.endSeconds.toFixed(3)
+      // A hard-edged tone clicks. The ramp is folded into the amplitude
+      // expression rather than added as `afade` filters, because a fade
+      // filter applies to the whole stream and this must only touch the
+      // gated range.
+      const fade = Math.max(
+        0.001,
+        Math.min(EDGE_FADE_SECONDS, (bleep.endSeconds - bleep.startSeconds) / 4)
+      ).toFixed(3)
+      return {
+        gate: `between(t,${from},${to})`,
+        // Zero outside the range, ramping to one over `fade` at each edge.
+        envelope: `between(t,${from},${to})*clip(min((t-${from})/${fade},(${to}-t)/${fade}),0,1)`
+      }
+    })
+
+    // Summed rather than or-ed: `enable` treats any non-zero value as true,
+    // and the ranges never overlap, so a sum is both correct and shorter.
+    const gate = ranges.map((r) => r.gate).join('+')
+    const envelope = ranges.map((r) => r.envelope).join('+')
+    chain.push(
+      `aeval='${amplitude}*(${envelope})*sin(2*PI*${hz}*t)':c=same:enable='${gate}'`
+    )
+  }
+
+  /*
    * `asetpts=PTS-STARTPTS` first, and it is not optional either.
    *
    * A precise-mode cut seeks in two stages — an approximate input seek, then
@@ -141,31 +187,7 @@ export function buildAudioFilter(
    */
   parts.push(`[${input}]${['asetpts=PTS-STARTPTS', GATE_RESOLUTION, ...chain].join(',')}[edited]`)
 
-  if (bleeps.length === 0) {
-    return { filterComplex: parts.join(';'), outputLabel: 'edited', notes }
-  }
-
-  // One gated tone per bleep, mixed over the silenced range.
-  bleeps.forEach((bleep, index) => {
-    const from = bleep.startSeconds
-    const to = bleep.endSeconds
-    const fade = Math.min(EDGE_FADE_SECONDS, (to - from) / 4)
-    // aevalsrc rather than sine: it takes an explicit amplitude, so the bleep
-    // lands at a predictable level instead of whatever the build's sine
-    // happens to output.
-    parts.push(
-      `aevalsrc=${amplitude}*sin(2*PI*${hz}*t):d=${opts.durationSeconds.toFixed(3)}:s=48000:c=stereo` +
-        `,${GATE_RESOLUTION}` +
-        `,volume=enable='not(between(t,${from.toFixed(3)},${to.toFixed(3)}))':volume=0` +
-        `,afade=t=in:st=${from.toFixed(3)}:d=${fade.toFixed(3)}` +
-        `,afade=t=out:st=${(to - fade).toFixed(3)}:d=${fade.toFixed(3)}[bleep${index}]`
-    )
-  })
-
-  const mixInputs = ['[edited]', ...bleeps.map((_, i) => `[bleep${i}]`)].join('')
-  parts.push(`${mixInputs}amix=inputs=${1 + bleeps.length}:normalize=0:duration=first[out]`)
-
-  return { filterComplex: parts.join(';'), outputLabel: 'out', notes }
+  return { filterComplex: parts.join(';'), outputLabel: 'edited', notes }
 }
 
 /** Edits belonging to one POV. Edits with no POV belong to the clip's own. */

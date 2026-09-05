@@ -91,7 +91,7 @@ export class AudioPeaksService {
           's16le',
           raw
         ],
-        { signal: req.signal, label: 'waveform decode' }
+        { signal: req.signal, label: 'waveform decode', priority: 'idle' }
       )
 
       const pcm = await readFile(raw)

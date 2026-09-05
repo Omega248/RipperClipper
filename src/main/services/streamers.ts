@@ -4,22 +4,30 @@ import { net } from 'electron'
 import { Errors } from '../../shared/errors.js'
 import type { PlatformId } from '../../shared/types.js'
 import type {
+  LiveNow,
   EventOverlapReply,
   SavedStreamer,
   StreamerGroup,
   StreamerParticipation,
-  StreamerVod
+  StreamerVod,
+  StreamerVodShelf
 } from '../../shared/ipc.js'
 import { streamsCoveringEvent } from '../../shared/eventStreams.js'
 import type { WatermarkConfig } from '../../shared/watermark.js'
 import { createId } from '../../shared/clips.js'
 import { isStreamerGroupColor } from '../../shared/streamerGroupColors.js'
 import { isStreamerGroupIconName } from '../../shared/streamerGroupIcons.js'
-import { atomicWriteJson } from './projects.js'
+import { atomicWriteJson, parseJsonSalvagingTail } from './projects.js'
 import type { Logger } from './logger.js'
 import type { ResolverService } from '../media/resolver.js'
 import { ConcurrencyLimiter } from './limiter.js'
-import { fetchProfile, profileIsStale } from './streamerProfile.js'
+import type { ProcessPriority } from './process.js'
+import {
+  fetchLive,
+  fetchProfile,
+  profileIsStale,
+  twitchVideoDates
+} from './streamerProfile.js'
 
 /**
  * The streamer library: channels the editor works with regularly, and their
@@ -29,6 +37,23 @@ import { fetchProfile, profileIsStale } from './streamerProfile.js'
  * hunting down each one's channel page and copying a link every session is the
  * bulk of the busywork this app exists to remove.
  */
+
+/**
+ * How stale a saved live snapshot may be before it is ignored on startup.
+ *
+ * Long enough to survive a restart mid-session, short enough that it never
+ * tells you somebody is on air because they were when you closed the app last
+ * night.
+ */
+const LIVE_SNAPSHOT_MAX_AGE_MS = 5 * 60_000
+
+/**
+ * How long a YouTube live answer is carried over.
+ *
+ * Its check costs a yt-dlp process, unlike the plain HTTP the other two use,
+ * so it runs on a slower clock than the rest of the poll.
+ */
+const YOUTUBE_LIVE_TTL_MS = 5 * 60_000
 
 export interface StreamerListing {
   streamer: SavedStreamer
@@ -81,8 +106,26 @@ export function parseChannelUrl(input: string): { platform: PlatformId; handle: 
 }
 
 /** Same channel twice — by platform and handle, case-insensitively. */
+/**
+ * One spelling of a channel name, so the same channel is recognised as itself.
+ *
+ * The handle arrives from three places that disagree: a pasted URL, a resolved
+ * POV's `channelHandle` (YouTube's comes back with the leading `@`), and the
+ * sibling search, which uses whatever the *other* platform spells it. Stored
+ * as-is, "@name" and "name" are two different channels — so the duplicate
+ * check misses, both get saved, and the roster shows the same person twice.
+ */
+export function normalizeHandle(handle: string): string {
+  return handle.trim().replace(/^@+/, '')
+}
+
+/** The key two records must share to be the same channel: platform + name. */
+export function channelKey(platform: PlatformId, handle: string): string {
+  return `${platform}:${normalizeHandle(handle).toLowerCase()}`
+}
+
 export function sameStreamer(a: SavedStreamer, b: { platform: PlatformId; handle: string }): boolean {
-  return a.platform === b.platform && a.handle.toLowerCase() === b.handle.toLowerCase()
+  return channelKey(a.platform, a.handle) === channelKey(b.platform, b.handle)
 }
 
 /** Kick's channel VOD list → the shape the picker shows. */
@@ -152,14 +195,39 @@ export function vodsFromFlatPlaylist(payload: unknown): StreamerVod[] {
   return out
 }
 
+/**
+ * How far back a single channel listing reaches.
+ *
+ * High enough to be "everything" for any real channel, and still a number
+ * rather than infinity: yt-dlp will happily walk a listing until it runs out,
+ * and a bound is what stops one pathological channel turning a background
+ * crawl into an unbounded one.
+ */
+const CHANNEL_LISTING_MAX = 5000
+
 export class StreamerService {
   private readonly file: string
+  private readonly liveFile: string
   private cache: SavedStreamer[] | null = null
   private readonly groupsFile: string
   private groupsCache: StreamerGroup[] | null = null
   /** Bounds concurrent yt-dlp full resolves — used for date enrichment and quality probing alike. */
   private readonly resolveLimiter = new ConcurrencyLimiter(4)
   /** Profile lookups hit three different platforms; keep it gentle. */
+  /**
+   * Whether adding a streamer should go looking for their other channels.
+   *
+   * Set by the app at startup, off by default: this is the one thing here that
+   * does work nobody asked for, and it must be something a caller opts into.
+   */
+  autoDiscoverSiblings = false
+
+  /**
+   * The crawled VOD library, as a lookup. Set by the app at startup; left
+   * unset in tests, where a live listing is what is being tested.
+   */
+  shelfFor: ((streamerId: string) => StreamerVodShelf | null) | null = null
+
   private readonly profileLimiter = new ConcurrencyLimiter(3)
 
   constructor(
@@ -169,17 +237,64 @@ export class StreamerService {
   ) {
     this.file = join(stateDir, 'streamers.json')
     this.groupsFile = join(stateDir, 'streamer-groups.json')
+    this.liveFile = join(stateDir, 'streamer-live.json')
   }
 
   async list(): Promise<SavedStreamer[]> {
     if (this.cache) return this.cache
     try {
-      const parsed = JSON.parse(await readFile(this.file, 'utf8')) as unknown
+      const text = await readFile(this.file, 'utf8')
+      const parsed = parseJsonSalvagingTail(text)
+
+      /*
+       * A file with a damaged tail is repaired, not refused.
+       *
+       * `atomicWriteJson` used to stage every concurrent write to one shared
+       * temp file, so a library could be published as a complete array
+       * followed by the tail of a longer one. The streamers are all still
+       * there, in front of the damage — so take them, say so, and write the
+       * file back clean. The staging bug is fixed; this is for the files it
+       * already produced.
+       */
+      if (parsed === null) {
+        throw new Error(`${this.file} is not readable JSON, even in part`)
+      }
+      if (text.trim() !== JSON.stringify(parsed, null, 2).trim() && Array.isArray(parsed)) {
+        const salvaged = (parsed as SavedStreamer[]).filter(isStreamer)
+        this.log.warn('streamers', 'Repaired a damaged streamer library', {
+          recovered: salvaged.length,
+          bytes: text.length
+        })
+        this.cache = salvaged
+        void atomicWriteJson(this.file, salvaged).catch(() => undefined)
+        return this.cache
+      }
+
       this.cache = Array.isArray(parsed) ? (parsed as SavedStreamer[]).filter(isStreamer) : []
-    } catch {
-      this.cache = []
+      return this.cache
+    } catch (err) {
+      /*
+       * "No file yet" and "could not read the file" are NOT the same answer,
+       * and treating them as one destroyed libraries.
+       *
+       * This used to return `[]` for any failure, and `[]` is a perfectly
+       * valid list — so the very next write persisted it straight over a good
+       * file and every saved streamer was gone. The read only has to fail
+       * once, and it can: `atomicWriteJson` writes a temp file and renames it,
+       * and on Windows a read landing inside that rename fails with EPERM or
+       * EBUSY. Several writers running at once made that a matter of time.
+       *
+       * Missing is genuinely empty. Anything else is unknown, and unknown
+       * refuses to be written over — the caller fails loudly instead, which is
+       * recoverable, unlike silence.
+       */
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.cache = []
+        return this.cache
+      }
+      this.log.error('streamers', 'Could not read the streamer library', err)
+      throw err
     }
-    return this.cache
   }
 
   async listGroups(): Promise<StreamerGroup[]> {
@@ -341,27 +456,36 @@ export class StreamerService {
 
   /** Add by channel URL or "platform:handle"; adding an existing one is a no-op. */
   async add(input: string, platformHint?: PlatformId): Promise<SavedStreamer[]> {
-    const parsed = parseChannelUrl(input) ?? handleOnly(input, platformHint)
+    const parsed =
+      parseChannelUrl(input) ?? handleOnly(input, platformHint) ?? (await this.findHandle(input))
     if (!parsed) {
-      throw Errors.unsupportedUrl(
-        `${input} — paste a channel address such as twitch.tv/name, kick.com/name or youtube.com/@name.`
-      )
+      throw normalizeHandle(input).includes('/')
+        ? Errors.unsupportedUrl(
+            `${input} — paste a channel address such as twitch.tv/name, kick.com/name or youtube.com/@name.`
+          )
+        : Errors.unknownChannel(input)
     }
 
-    const current = await this.list()
-    const existing = current.find((s) => sameStreamer(s, parsed))
-    if (existing) return current
+    // The existence check and the insert have to be one step, or two callers
+    // adding the same channel at once both find nothing and both add it.
+    const before = await this.list()
+    const saved = await this.mutate((current) => {
+      if (current.some((s) => sameStreamer(s, parsed))) return { next: current, result: current }
 
-    const streamer: SavedStreamer = {
-      id: createId('str'),
-      platform: parsed.platform,
-      handle: parsed.handle,
-      displayName: parsed.handle,
-      channelUrl: channelVideosUrl(parsed.platform, parsed.handle),
-      addedAt: new Date().toISOString(),
-      lastUsedAt: null
-    }
-    return this.write([...current, streamer])
+      const streamer: SavedStreamer = {
+        id: createId('str'),
+        platform: parsed.platform,
+        handle: parsed.handle,
+        displayName: parsed.handle,
+        channelUrl: channelVideosUrl(parsed.platform, parsed.handle),
+        addedAt: new Date().toISOString(),
+        lastUsedAt: null
+      }
+      const next = [...current, streamer]
+      return { next, result: next }
+    })
+    this.discoverInBackground(before, saved)
+    return saved
   }
 
   /**
@@ -377,42 +501,52 @@ export class StreamerService {
     /** The event this POV was loaded into, for §13's participation record. */
     event?: { projectId: string; projectName: string; eventName?: string }
   }): Promise<SavedStreamer[]> {
-    const handle = (source.channelHandle ?? '').trim()
+    const handle = normalizeHandle(source.channelHandle ?? '')
     if (handle === '' || /\s/.test(handle)) {
       // No usable handle — a display name with spaces would produce a channel
       // URL that lists nothing, which is worse than not saving it.
       return this.list()
     }
-    const current = await this.list()
-    const existing = current.find((s) => sameStreamer(s, { platform: source.platform, handle }))
-    // An already-known channel still gains the participation record: the
-    // point of §13 is what they have worked on, which grows every time.
-    if (existing) {
-      return source.event ? this.write(current.map((s) => (s.id === existing.id ? withParticipation(s, source.event!) : s))) : current
-    }
+    // One step, for the same reason as `add`: loading several POVs from the
+    // same channel at once must not save that channel several times.
+    const before = await this.list()
+    const saved = await this.mutate((current) => {
+      const existing = current.find((s) => sameStreamer(s, { platform: source.platform, handle }))
 
-    const streamer: SavedStreamer = {
-      id: createId('str'),
-      platform: source.platform,
-      handle,
-      displayName: (source.creator ?? handle).trim() || handle,
-      channelUrl: channelVideosUrl(source.platform, handle),
-      addedAt: new Date().toISOString(),
-      lastUsedAt: new Date().toISOString()
-    }
-    this.log.info('streamers', 'Saved a streamer from a loaded POV', {
-      platform: source.platform,
-      handle
+      // An already-known channel still gains the participation record: the
+      // point of §13 is what they have worked on, which grows every time.
+      if (existing) {
+        const next = source.event
+          ? current.map((s) => (s.id === existing.id ? withParticipation(s, source.event!) : s))
+          : current
+        return { next, result: next }
+      }
+
+      const streamer: SavedStreamer = {
+        id: createId('str'),
+        platform: source.platform,
+        handle,
+        displayName: (source.creator ?? handle).trim() || handle,
+        channelUrl: channelVideosUrl(source.platform, handle),
+        addedAt: new Date().toISOString(),
+        lastUsedAt: new Date().toISOString()
+      }
+      this.log.info('streamers', 'Saved a streamer from a loaded POV', {
+        platform: source.platform,
+        handle
+      })
+      const next = [...current, source.event ? withParticipation(streamer, source.event) : streamer]
+      return { next, result: next }
     })
-    return this.write([
-      ...current,
-      source.event ? withParticipation(streamer, source.event) : streamer
-    ])
+    // A POV loaded from a link is the same statement as adding by hand: this
+    // person matters, so find the rest of their channels too.
+    this.discoverInBackground(before, saved)
+    return saved
   }
 
   async remove(id: string): Promise<SavedStreamer[]> {
     const current = await this.list()
-    return this.write(current.filter((s) => s.id !== id))
+    return this.write(current.filter((s) => s.id !== id), { allowEmpty: true })
   }
 
   /**
@@ -482,6 +616,13 @@ export class StreamerService {
       eventEndSeconds: req.eventEndSeconds,
       library,
       loaded
+    })
+
+    this.log.info('streamers', 'Searched the library for an event', {
+      streamers: library.length,
+      vods: library.reduce((n, entry) => n + entry.vods.length, 0),
+      matched: streams.length,
+      unreachable: unreachable.length
     })
 
     return {
@@ -556,6 +697,344 @@ export class StreamerService {
     return this.list()
   }
 
+  /**
+   * Who is broadcasting right now, across every saved channel.
+   *
+   * Not persisted and not cached: a live badge is worthless the moment it is
+   * stale, and the answer is cheap enough to just ask for. Bounded by the same
+   * limiter the profile fetches use so opening the page never fires twenty
+   * requests at three platforms at once.
+   */
+  /**
+   * Who was live the last time anyone asked, and when that was.
+   *
+   * Held for the life of the app, not persisted: it means the Streamers page
+   * shows who is on air the instant it opens instead of blinking empty for a
+   * few seconds every time it is navigated to, and a page that is opened and
+   * closed repeatedly does not re-ask three platforms each time.
+   */
+  private lastLive: Record<string, LiveNow> = {}
+  private lastLiveAt = 0
+  private liveLoaded = false
+  private lastYouTubeLiveAt = 0
+
+  /** How long a live answer is served from memory before it is asked for again. */
+  private static readonly LIVE_TTL_MS = 45_000
+
+  /**
+   * The last known live status, without asking anyone.
+   *
+   * Read from disk on first use, so the page has something to draw the moment
+   * it opens on a cold start rather than an empty roster that fills in a few
+   * seconds later. It is a snapshot of who was live when the app last looked,
+   * and the caller refreshes it immediately — see `liveNow`.
+   */
+  async liveCached(): Promise<Record<string, LiveNow>> {
+    if (!this.liveLoaded) {
+      this.liveLoaded = true
+      try {
+        const parsed = JSON.parse(await readFile(this.liveFile, 'utf8')) as {
+          at?: number
+          live?: Record<string, LiveNow>
+        }
+        // Anything older than a few minutes is not "who is live", it is who
+        // was live when the app was last open — which could be yesterday.
+        if (parsed?.live && Date.now() - (parsed.at ?? 0) < LIVE_SNAPSHOT_MAX_AGE_MS) {
+          this.lastLive = parsed.live
+        }
+      } catch {
+        // No snapshot yet, or one we cannot read. Either is a normal cold
+        // start: the refresh that follows fills it in.
+      }
+    }
+    return this.lastLive
+  }
+
+  async liveNow(signal?: AbortSignal): Promise<Record<string, LiveNow>> {
+    if (Date.now() - this.lastLiveAt < StreamerService.LIVE_TTL_MS) return this.lastLive
+    const current = await this.list()
+    const out: Record<string, LiveNow> = {}
+    const now = Date.now()
+
+    /*
+     * YouTube is asked far less often than the other two.
+     *
+     * Twitch and Kick answer over plain HTTP — a request each, cheap enough to
+     * repeat every minute. YouTube has no such route, so its check is a
+     * yt-dlp process per channel, and at the page's polling rate that was a
+     * process per YouTube channel per minute for as long as anyone had the
+     * Streamers page open. Its answer is carried over from the last look in
+     * between, which for "are they live" is accurate to within a few minutes.
+     */
+    const dueForYouTube = now - this.lastYouTubeLiveAt >= YOUTUBE_LIVE_TTL_MS
+    if (dueForYouTube) this.lastYouTubeLiveAt = now
+
+    await Promise.all(
+      current.map((streamer) => {
+        if (streamer.platform === 'youtube' && !dueForYouTube) {
+          const carried = this.lastLive[streamer.id]
+          if (carried) out[streamer.id] = carried
+          return Promise.resolve()
+        }
+        return this.profileLimiter
+          .run(() => fetchLive(streamer.platform, streamer.handle, this.resolver, signal))
+          .then((live) => {
+            if (live) out[streamer.id] = live
+          })
+          // One unreachable channel must not blank the badge on the other
+          // nineteen.
+          .catch(() => undefined)
+      })
+    )
+    this.lastLive = out
+    this.lastLiveAt = Date.now()
+    this.liveLoaded = true
+    // Written so the next cold start has something to show at once. Failing
+    // to write it costs a blank roster for one second, so it is never worth
+    // failing the call over.
+    void atomicWriteJson(this.liveFile, { at: this.lastLiveAt, live: out }).catch(() => undefined)
+    return out
+  }
+
+  /**
+   * A bare name, with no platform to go with it.
+   *
+   * People know each other by name, not by address — "add basedLore" is the
+   * request, and asking which of three sites they are on is the app making its
+   * own plumbing the user's problem. So the name is looked up on each platform
+   * in turn and the first channel that actually exists is the one saved;
+   * sibling discovery picks up the rest a moment later, which is exactly what
+   * it does for a pasted address too.
+   *
+   * A name already in the library short-circuits the lookup: re-adding
+   * somebody must not depend on three sites being reachable.
+   */
+  private async findHandle(
+    input: string
+  ): Promise<{ platform: PlatformId; handle: string } | null> {
+    const handle = normalizeHandle(input)
+    if (handle === '' || /[\s/]/.test(handle)) return null
+
+    const order: PlatformId[] = ['twitch', 'kick', 'youtube']
+    const known = (await this.list()).find((s) => order.some((p) => sameStreamer(s, { platform: p, handle })))
+    if (known) return { platform: known.platform, handle: known.handle }
+
+    for (const platform of order) {
+      const profile = await this.profileLimiter
+        .run(() => fetchProfile(platform, handle, this.resolver))
+        .catch(() => null)
+      if (profile) return { platform, handle }
+    }
+    return null
+  }
+
+  /**
+   * The same person's channels on the other platforms, found by name.
+   *
+   * A restreamer almost always uses the same handle everywhere, so the cheap
+   * profile lookup this page already does for pictures answers "do they exist
+   * on Twitch too" for free. Anything found is saved and linked to the one
+   * that was asked about, so the three entries behave as one person with three
+   * places to watch from.
+   *
+   * Fails soft per platform and never invents a link: a handle that resolves
+   * to somebody else's channel is indistinguishable from the right one here,
+   * which is why this only ever matches an identical name and leaves the
+   * unlink in the user's hands.
+   */
+  async discoverSiblings(id: string, force = false): Promise<SavedStreamer[]> {
+    const current = await this.list()
+    const streamer = current.find((s) => s.id === id)
+    if (!streamer) return current
+    if (!force && streamer.siblingsCheckedAt) return current
+
+    const others: PlatformId[] = (['twitch', 'kick', 'youtube'] as PlatformId[]).filter(
+      (p) => p !== streamer.platform
+    )
+
+    for (const platform of others) {
+      // Already saved on that platform? Link it rather than adding a duplicate.
+      const known = (await this.list()).find((s) => sameStreamer(s, { platform, handle: streamer.handle }))
+      if (known) {
+        if (known.personId !== streamer.personId || !streamer.personId) {
+          await this.linkPerson(streamer.id, known.id)
+        }
+        continue
+      }
+
+      const profile = await this.profileLimiter
+        .run(() => fetchProfile(platform, streamer.handle, this.resolver))
+        .catch(() => null)
+      if (!profile) continue
+
+      const added = await this.add(streamer.handle, platform).catch(() => null)
+      const fresh = (added ?? (await this.list())).find((s) =>
+        sameStreamer(s, { platform, handle: streamer.handle })
+      )
+      if (fresh) await this.linkPerson(streamer.id, fresh.id)
+    }
+
+    // Recorded whether anything was found or not: "checked, and they are only
+    // on Kick" is an answer worth keeping, or every launch re-asks.
+    const checkedAt = new Date().toISOString()
+    return this.write(
+      (await this.list()).map((s) => (s.id === id ? { ...s, siblingsCheckedAt: checkedAt } : s))
+    )
+  }
+
+  /**
+   * Search the other platforms for a newly added streamer, in the background.
+   *
+   * Not awaited by the caller: adding a channel must be instant, and the
+   * result of this is decoration that arrives a moment later. Failures are
+   * swallowed for the same reason — a platform being unreachable is not a
+   * reason for "add streamer" to fail.
+   */
+  private discoverInBackground(before: SavedStreamer[], after: SavedStreamer[]): void {
+    // Off unless the app turns it on. A service that starts unawaited writes
+    // of its own is a service no test can tear down cleanly — the write lands
+    // after the temp directory is gone.
+    if (!this.autoDiscoverSiblings) return
+    const known = new Set(before.map((s) => s.id))
+    for (const streamer of after) {
+      if (known.has(streamer.id) || streamer.siblingsCheckedAt) continue
+      void this.discoverSiblings(streamer.id).catch(() => undefined)
+    }
+  }
+
+  /**
+   * Collapse accounts that are the same channel saved twice.
+   *
+   * `add` has always refused a handle it already holds, but it did so by
+   * reading the list, checking, and writing — and several callers run
+   * unprompted and concurrently (sibling discovery, "remember this POV"), so
+   * two of them could read the same list, each find nothing, and each add the
+   * same channel. The staging bug that corrupted the library made that window
+   * much wider. This is the cleanup for the rows it already produced;
+   * `mutate` below is what stops new ones.
+   *
+   * Nothing is thrown away: the surviving row inherits the groups, the pin,
+   * the watermark, the person link and the earliest date from every copy.
+   * `preferIds` is how the caller says which id has a back catalogue already
+   * crawled against it, so the expensive half of the data keeps its owner.
+   */
+  async dedupe(preferIds?: ReadonlySet<string>): Promise<{ removed: string[] }> {
+    return this.mutate((current) => {
+      const byChannel = new Map<string, SavedStreamer[]>()
+      for (const streamer of current) {
+        const key = channelKey(streamer.platform, streamer.handle)
+        const group = byChannel.get(key)
+        if (group) group.push(streamer)
+        else byChannel.set(key, [streamer])
+      }
+
+      const removed: string[] = []
+      const kept: SavedStreamer[] = []
+
+      for (const copies of byChannel.values()) {
+        if (copies.length === 1) {
+          const only = copies[0]
+          kept.push(
+            only.handle === normalizeHandle(only.handle)
+              ? only
+              : { ...only, handle: normalizeHandle(only.handle) }
+          )
+          continue
+        }
+
+        const ranked = copies.slice().sort((a, b) => {
+          // The one with a crawled back catalogue wins: everything else here
+          // is cheap to re-fetch and that is not.
+          const shelvedA = preferIds?.has(a.id) === true
+          const shelvedB = preferIds?.has(b.id) === true
+          if (shelvedA !== shelvedB) return shelvedA ? -1 : 1
+          const richness = (x: SavedStreamer): number =>
+            (x.avatarUrl ? 2 : 0) +
+            (x.displayName.toLowerCase() !== x.handle.toLowerCase() ? 2 : 0) +
+            (x.groupIds?.length ?? 0) +
+            (x.watermark ? 1 : 0)
+          if (richness(a) !== richness(b)) return richness(b) - richness(a)
+          return (b.lastUsedAt ?? b.addedAt).localeCompare(a.lastUsedAt ?? a.addedAt)
+        })
+
+        const [winner, ...losers] = ranked
+        kept.push({
+          ...winner,
+          handle: normalizeHandle(winner.handle),
+          groupIds: [...new Set(copies.flatMap((c) => c.groupIds ?? []))],
+          personId: copies.find((c) => c.personId)?.personId ?? winner.personId,
+          watermark: copies.find((c) => c.watermark)?.watermark ?? winner.watermark,
+          favorite: copies.some((c) => c.favorite) ? true : winner.favorite,
+          addedAt: copies.map((c) => c.addedAt).sort()[0] ?? winner.addedAt,
+          lastUsedAt:
+            copies
+              .map((c) => c.lastUsedAt)
+              .filter((at): at is string => typeof at === 'string')
+              .sort()
+              .pop() ?? winner.lastUsedAt
+        })
+        removed.push(...losers.map((l) => l.id))
+      }
+
+      /*
+       * Second pass: the same person, twice, on the same platform, where only
+       * one of them has any broadcasts.
+       *
+       * The pass above matches on the handle, and the handle is exactly what
+       * disagrees when a channel gets saved twice — so it cannot catch the
+       * ones that matter. This matches on the displayed name instead and
+       * settles it by evidence: a row with a crawled back catalogue is a real
+       * channel; a row on the same platform, under the same name, with
+       * nothing behind it is the accident. The empty one goes.
+       *
+       * Never empties a name: if none of them have broadcasts, nothing is
+       * chosen and both stay, because then there is no evidence either way.
+       */
+      const byName = new Map<string, SavedStreamer[]>()
+      for (const streamer of kept) {
+        const key = `${streamer.platform}:${streamer.displayName.trim().toLowerCase()}`
+        const group = byName.get(key)
+        if (group) group.push(streamer)
+        else byName.set(key, [streamer])
+      }
+
+      const survivors: SavedStreamer[] = []
+      for (const group of byName.values()) {
+        if (group.length === 1) {
+          survivors.push(group[0])
+          continue
+        }
+
+        const withBroadcasts = group.filter((a) => preferIds?.has(a.id) === true)
+        if (withBroadcasts.length === 0 || withBroadcasts.length === group.length) {
+          survivors.push(...group)
+          continue
+        }
+
+        const empties = group.filter((a) => preferIds?.has(a.id) !== true)
+        const winner = withBroadcasts[0]
+
+        // The empty row still knew things — its groups, its pin, its person
+        // link. Those move across before it goes.
+        survivors.push({
+          ...winner,
+          groupIds: [...new Set(group.flatMap((c) => c.groupIds ?? []))],
+          personId: group.find((c) => c.personId)?.personId ?? winner.personId,
+          watermark: group.find((c) => c.watermark)?.watermark ?? winner.watermark,
+          favorite: group.some((c) => c.favorite) ? true : winner.favorite,
+          addedAt: group.map((c) => c.addedAt).sort()[0] ?? winner.addedAt
+        })
+        survivors.push(...withBroadcasts.slice(1))
+        removed.push(...empties.map((e) => e.id))
+      }
+
+      if (removed.length > 0) {
+        this.log.warn('streamers', 'Collapsed duplicate channels', { removed: removed.length })
+      }
+      return { next: survivors, result: { removed } }
+    })
+  }
+
   async touch(id: string): Promise<SavedStreamer[]> {
     const current = await this.list()
     return this.write(
@@ -568,23 +1047,142 @@ export class StreamerService {
     const streamer = (await this.list()).find((s) => s.id === id)
     if (!streamer) throw Errors.unsupportedUrl(`unknown streamer ${id}`)
 
-    const vods =
-      streamer.platform === 'kick'
-        ? await this.kickVods(streamer, signal)
-        : await this.resolverVods(streamer, signal)
+    /*
+     * The crawled shelf first, and this is not an optimisation.
+     *
+     * Every caller that wants a channel's broadcasts — the overlap search, the
+     * discovery sweep, the dialog — went through here, and here went to the
+     * platform: one listing per channel plus one request per undated VOD. With
+     * forty-five saved streamers, asking "who else filmed this" listed
+     * forty-five channels live and then asked YouTube for a thousand dates,
+     * which YouTube answers with a bot check. The dates never arrived, and a
+     * VOD without a date cannot be matched to a moment (`coverageOf` returns
+     * null), so the search worked hardest exactly when it returned nothing.
+     *
+     * The shelf is the same data, already merged and already dated, filled in
+     * slowly by VodCrawler — which is the one thing allowed to spend requests
+     * on this. A channel with no shelf yet is still listed live, because the
+     * first thing you do after adding a streamer must not be to wait for a
+     * crawl.
+     */
+    const shelf = this.shelfFor?.(id) ?? null
+    if (shelf && shelf.vods.length > 0) return shelf.vods
 
-    this.log.info('streamers', 'Listed recent VODs', {
-      platform: streamer.platform,
-      handle: streamer.handle,
-      count: vods.length
-    })
-    return vods
+    return this.channelVods(streamer.platform, streamer.handle, signal)
+  }
+
+  /**
+   * Recent VODs for any channel, newest first — saved or not.
+   *
+   * Separate from `vods` because a channel does not have to be in the library
+   * to matter: a broadcast loaded from a pasted link needs its archive found
+   * when it ends, and nobody should have to add the streamer first for that
+   * to work.
+   */
+  async channelVods(
+    platform: PlatformId,
+    handle: string,
+    signal?: AbortSignal
+  ): Promise<StreamerVod[]> {
+    const vods = await this.listChannelVods(platform, handle, { signal })
+    const dated = await this.enrichWithDates(vods, signal)
+    return dated
       .slice()
       .sort((a, b) => (b.publishedAt ?? '').localeCompare(a.publishedAt ?? ''))
       .slice(0, 40)
   }
 
-  private async kickVods(streamer: SavedStreamer, signal?: AbortSignal): Promise<StreamerVod[]> {
+  /**
+   * A channel's broadcasts as the platform lists them — titles and links, no
+   * dates.
+   *
+   * The cheap half, deliberately separated from the expensive half. One
+   * request lists a whole channel; learning *when* each of those happened
+   * costs a request each on Twitch and YouTube (Kick's own API includes the
+   * date, so its list comes back complete). The background crawl wants the
+   * cheap half immediately and the expensive half spread over hours, and it
+   * can only do that if it can ask for them apart.
+   */
+  async listChannelVods(
+    platform: PlatformId,
+    handle: string,
+    opts: { signal?: AbortSignal; limit?: number; priority?: ProcessPriority } = {}
+  ): Promise<StreamerVod[]> {
+    const channel = { platform, handle, channelUrl: channelVideosUrl(platform, handle) }
+    const vods =
+      platform === 'kick'
+        ? await this.kickVods(channel, opts.signal)
+        : vodsFromFlatPlaylist(
+            await this.resolver.flatPlaylist(channel.channelUrl, {
+              ...(opts.signal ? { signal: opts.signal } : {}),
+              // No limit by default: the whole point of the library is that
+              // it holds a channel's history, not its recent past.
+              limit: opts.limit ?? CHANNEL_LISTING_MAX,
+              ...(opts.priority ? { priority: opts.priority } : {})
+            })
+          )
+
+    this.log.info('streamers', 'Listed channel VODs', { platform, handle, count: vods.length })
+    return vods
+  }
+
+  /**
+   * When one broadcast happened, or null if the platform will not say.
+   *
+   * One process. The crawl calls this a few thousand times over a session,
+   * which is exactly why it is one call the caller can pace rather than a
+   * batch this service decides the speed of.
+   */
+  async vodDate(
+    url: string,
+    opts: { signal?: AbortSignal; priority?: ProcessPriority } = {}
+  ): Promise<string | null> {
+    const info = await this.resolveLimiter.run(() =>
+      this.resolver.resolve(url, {
+        ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.priority ? { priority: opts.priority } : {})
+      })
+    )
+    return publishedAtFromRawInfo(info)
+  }
+
+  /**
+   * Dates for a whole channel at once, where the platform will give them.
+   *
+   * Twitch will, through the same GQL endpoint the profile lookup uses — a
+   * hundred broadcasts and their publish times in one request, instead of one
+   * process each. Kick's listing already carries dates, so nothing here has
+   * anything to add. YouTube has no equivalent, so it keeps to the slow path.
+   *
+   * Returns a map keyed by VOD url. An empty map means "no shortcut for this
+   * one", never "this channel has no broadcasts" — the caller falls back to
+   * asking one at a time.
+   */
+  async bulkVodDates(
+    platform: PlatformId,
+    handle: string,
+    vods: StreamerVod[],
+    signal?: AbortSignal
+  ): Promise<Record<string, string>> {
+    if (platform !== 'twitch' || vods.length === 0) return {}
+
+    const byId = await twitchVideoDates(handle.replace(/^@/, ''), signal)
+    if (Object.keys(byId).length === 0) return {}
+
+    const out: Record<string, string> = {}
+    for (const vod of vods) {
+      // A Twitch VOD url ends with its numeric id: /videos/1234567890.
+      const id = /\/videos\/(\d+)/.exec(vod.url)?.[1]
+      const at = id ? byId[id] : undefined
+      if (at) out[vod.url] = at
+    }
+    return out
+  }
+
+  private async kickVods(
+    streamer: { handle: string },
+    signal?: AbortSignal
+  ): Promise<StreamerVod[]> {
     // yt-dlp has no Kick channel extractor, and Kick's own list is what makes
     // its new-style VOD links resolvable anyway.
     const url = `https://kick.com/api/v2/channels/${encodeURIComponent(streamer.handle)}/videos`
@@ -604,12 +1202,6 @@ export class StreamerService {
       throw Errors.kickBlocked(`Kick answered HTTP ${response.status} listing ${streamer.handle}'s VODs`)
     }
     return kickVodsFromChannel(await response.json(), streamer.handle)
-  }
-
-  private async resolverVods(streamer: SavedStreamer, signal?: AbortSignal): Promise<StreamerVod[]> {
-    const raw = await this.resolver.flatPlaylist(streamer.channelUrl, { signal })
-    const vods = vodsFromFlatPlaylist(raw)
-    return this.enrichWithDates(vods, signal)
   }
 
   /**
@@ -636,7 +1228,70 @@ export class StreamerService {
     )
   }
 
-  private async write(next: SavedStreamer[]): Promise<SavedStreamer[]> {
+  /**
+   * One write at a time, and never an unexplained wipe.
+   *
+   * Two guards, both learned the hard way:
+   *
+   * `writing` serialises. Every mutation here is read-modify-write against a
+   * cached list, and several of them run unprompted — sibling discovery, the
+   * profile refresh, the crawl. Interleaved, two of them read the same list
+   * and the second write silently drops the first one's change.
+   *
+   * The emptiness check is the backstop. Going from a populated library to
+   * none of it is either the user removing their last streamer or something
+   * having gone wrong; the first is rare and the second was catastrophic, so
+   * it is refused unless the caller says it means it.
+   */
+  private writing: Promise<unknown> = Promise.resolve()
+
+  /**
+   * Read, change, write — with nobody else in between.
+   *
+   * `write` alone only serialised the writing. The dangerous part is the gap
+   * before it: two callers read the same list, each decides the channel is
+   * missing, and each adds it. Running the whole read-modify-write inside the
+   * same chain closes that gap, so "does this already exist" is asked against
+   * a list nobody else is about to change.
+   */
+  private async mutate<T>(
+    change: (current: SavedStreamer[]) => { next: SavedStreamer[]; result: T } | Promise<{ next: SavedStreamer[]; result: T }>,
+    opts: { allowEmpty?: boolean } = {}
+  ): Promise<T> {
+    const run = async (): Promise<T> => {
+      const current = await this.list()
+      const { next, result } = await change(current)
+      await this.writeNow(next, opts)
+      return result
+    }
+    const queued = this.writing.then(run, run)
+    this.writing = queued.catch(() => undefined)
+    return queued
+  }
+
+  private async write(
+    next: SavedStreamer[],
+    opts: { allowEmpty?: boolean } = {}
+  ): Promise<SavedStreamer[]> {
+    const queued = this.writing.then(
+      () => this.writeNow(next, opts),
+      () => this.writeNow(next, opts)
+    )
+    this.writing = queued.catch(() => undefined)
+    return queued
+  }
+
+  /** The write itself. Only ever called from inside the serialised chain. */
+  private async writeNow(
+    next: SavedStreamer[],
+    opts: { allowEmpty?: boolean } = {}
+  ): Promise<SavedStreamer[]> {
+    const had = this.cache?.length ?? 0
+    if (next.length === 0 && had > 0 && !opts.allowEmpty) {
+      this.log.error('streamers', 'Refused to empty the streamer library', { had })
+      return this.cache ?? []
+    }
+
     this.cache = next
     await atomicWriteJson(this.file, next)
     return next
@@ -667,7 +1322,7 @@ function handleOnly(
   input: string,
   platform: PlatformId | undefined
 ): { platform: PlatformId; handle: string } | null {
-  const text = input.trim().replace(/^@/, '')
+  const text = normalizeHandle(input)
   if (!platform || text === '' || /[\s/]/.test(text)) return null
   return { platform, handle: text }
 }

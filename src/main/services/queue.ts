@@ -35,6 +35,8 @@ export interface QueueClipInput {
     stream: StreamInfo
     startSeconds: number
     endSeconds: number
+    /** Set when that POV is live, so its media is asked of the buffer by id. */
+    liveSourceId?: string
   }
   /** Hand-drawn mute/bleep/duck ranges, in the clip's own timeline. */
   audioEdits?: AudioEdit[]
@@ -70,13 +72,25 @@ export interface QueueTask {
   streams: SelectedStreams
   settings: ExportSettings
   outputDirectory: string
-  /** Bleep tone, so what was previewed is what gets written. */
-  bleep?: { hz: number; amplitude: number }
   controller: AbortController | null
   /** For combined exports: the clips to join once the parts are ready. */
   combineOf?: string[]
   combineName?: string
 }
+
+/**
+ * Ceiling on exports running at once.
+ *
+ * The old ceiling of four was sized for cutting clips out of a broadcast,
+ * where more at once buys nothing — one clip is a handful of segments and the
+ * link is already saturated. Archiving whole VODs is the opposite shape of
+ * work: each job spends almost all of its time waiting on the network, so
+ * running thirty of them together is what actually uses the connection. What
+ * stops that from becoming thirty times the load on the CDN is the segment
+ * limiter in rangeFetcher, which bounds requests in flight across all jobs
+ * together rather than per job.
+ */
+const MAX_CONCURRENCY = 32
 
 const STAGE_WEIGHTS: Record<string, [number, number]> = {
   // stage -> [startFraction, endFraction] of the overall job
@@ -88,13 +102,29 @@ const STAGE_WEIGHTS: Record<string, [number, number]> = {
   verifying: [0.96, 1]
 }
 
+/** How often a running job's progress is pushed to the interface. */
+const PROGRESS_EMIT_MS = 250
+
 export class ExportQueue extends EventEmitter {
   private tasks = new Map<string, QueueTask>()
   private order: string[] = []
   private running = new Set<string>()
+
+  /**
+   * Whether anything the person is waiting on is running right now.
+   *
+   * Read by background work that should stand aside — see VodCrawler.
+   */
+  get busy(): boolean {
+    return this.running.size > 0
+  }
   private paused = false
   private concurrency = 2
   private pumping = false
+  /** Set once shutdown has begun, so nothing new starts on the way out. */
+  private stopping = false
+  /** The execution promise of each running job, so shutdown can await them. */
+  private inFlight = new Map<string, Promise<void>>()
 
   constructor(
     private readonly log: Logger,
@@ -109,7 +139,7 @@ export class ExportQueue extends EventEmitter {
   }
 
   setConcurrency(value: number): void {
-    this.concurrency = Math.max(1, Math.min(4, Math.round(value)))
+    this.concurrency = Math.max(1, Math.min(MAX_CONCURRENCY, Math.round(value)))
     void this.pump()
   }
 
@@ -143,6 +173,27 @@ export class ExportQueue extends EventEmitter {
     projectName?: string
   }): Promise<ExportJob[]> {
     await ensureWritableDirectory(input.outputDirectory)
+
+    /*
+     * Before anything is registered, not after.
+     *
+     * This ran at the end of the method, past the loop that has already put
+     * every clip into `this.tasks` and `this.order` at stage `queued`. The
+     * throw then skipped `emitJobs()` and `pump()` but unwound none of those
+     * registrations — so the renderer was told the batch had been rejected
+     * while the queue was quietly holding it in a runnable state. The next
+     * thing to call `pump()` at all — another export, Resume, a retry, a
+     * change to the concurrency setting — started writing the files the app
+     * had just said it would not. They also held their filenames through
+     * `claimedNames`, so the clip that *was* queued landed as "… (2)".
+     *
+     * Everything the estimate needs is already here.
+     */
+    const totalSeconds = input.clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)
+    await assertEnoughSpace(
+      input.outputDirectory,
+      estimateExportBytes(totalSeconds, input.streams.video?.bitrate, input.streams.audio?.bitrate)
+    )
 
     // Names only have to be unique inside the folder they land in, and each
     // folder is read once however many clips go into it.
@@ -198,13 +249,6 @@ export class ExportQueue extends EventEmitter {
       created.push(job)
     }
 
-    // Warn early rather than filling the disk mid-export.
-    const totalSeconds = input.clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)
-    await assertEnoughSpace(
-      input.outputDirectory,
-      estimateExportBytes(totalSeconds, input.streams.video?.bitrate, input.streams.audio?.bitrate)
-    )
-
     this.emitJobs()
     void this.pump()
     return created
@@ -217,8 +261,6 @@ export class ExportQueue extends EventEmitter {
     settings: ExportSettings
     /** The POV's watermark, so a combined file is marked like a single clip. */
     watermark?: ResolvedWatermark
-    /** Bleep tone, so what was previewed is what gets written. */
-    bleep?: { hz: number; amplitude: number }
     outputDirectory: string
     outputName: string
     projectName?: string
@@ -272,7 +314,6 @@ export class ExportQueue extends EventEmitter {
       streams: input.streams,
       settings: input.settings,
       watermark: input.watermark,
-      bleep: input.bleep,
       outputDirectory: directory,
       controller: null,
       combineOf: input.clips.map((c) => c.id),
@@ -376,20 +417,57 @@ export class ExportQueue extends EventEmitter {
     if (this.pumping) return
     this.pumping = true
     try {
-      while (!this.paused && this.running.size < this.concurrency) {
+      while (!this.paused && !this.stopping && this.running.size < this.concurrency) {
         const next = this.order
           .map((id) => this.tasks.get(id))
           .find((t) => t && t.job.progress.stage === 'queued' && !this.running.has(t.job.id))
         if (!next) break
         this.running.add(next.job.id)
-        void this.execute(next).finally(() => {
+        // The promise is kept, not just voided: `stopAll` has to be able to
+        // wait for these to actually finish unwinding.
+        const run = this.execute(next).finally(() => {
           this.running.delete(next.job.id)
+          this.inFlight.delete(next.job.id)
           void this.pump()
         })
+        this.inFlight.set(next.job.id, run)
       }
     } finally {
       this.pumping = false
     }
+  }
+
+  /**
+   * Stop everything, and wait for it to have stopped. For shutdown.
+   *
+   * Two things made quitting mid-export messy. A spawned child is not killed
+   * when its parent exits on Windows, so ffmpeg carried on after the window
+   * had gone — burning CPU, holding the scratch directory open, and finishing
+   * a file nobody would ever read. And the abort path is where the cleanup
+   * lives: the exporter deletes the partial output and its work directory in
+   * `catch`/`finally`, which cannot run if the process is already gone.
+   *
+   * So this aborts, then waits for the unwinding to complete. The wait is
+   * bounded — a shutdown that hangs on a wedged ffmpeg is worse than one that
+   * leaves a temp file behind, and `will-quit` sweeps the scratch root anyway.
+   *
+   * `stopping` rather than `pause()`: pausing is a thing the person did and is
+   * reported back to them, and this is not that.
+   */
+  async stopAll(timeoutMs = 8000): Promise<void> {
+    this.stopping = true
+    for (const id of this.running) this.tasks.get(id)?.controller?.abort()
+    const pending = [...this.inFlight.values()]
+    if (pending.length === 0) return
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs)
+        timer.unref?.()
+      })
+    ])
+    if (timer) clearTimeout(timer)
   }
 
   private async execute(task: QueueTask): Promise<void> {
@@ -405,6 +483,8 @@ export class ExportQueue extends EventEmitter {
     let lastAt = Date.now()
     let speed = 0
 
+    let lastEmitAt = 0
+    let lastStage = ''
     const report = (e: { stage: string; fraction: number; message: string; bytes?: number }): void => {
       const [from, to] = STAGE_WEIGHTS[e.stage] ?? [0, 1]
       const overall = from + (to - from) * Math.max(0, Math.min(1, e.fraction))
@@ -432,7 +512,23 @@ export class ExportQueue extends EventEmitter {
         message: e.message
       }
       task.job.progress = progress
-      this.emitJobs()
+
+      /*
+       * Pushed on a clock, not on every event.
+       *
+       * `onProgress` fires once per segment written — a four-hour window is
+       * ~1,400 of them — and each push rebuilds the whole job list and
+       * structure-clones it across the IPC boundary, times however many
+       * exports are running. Four times a second is faster than the eye and
+       * a fraction of the work. A stage change or a finished job always goes
+       * through immediately, because those are the ones being waited on.
+       */
+      const settled = e.fraction >= 1 || e.stage !== lastStage
+      if (settled || now - lastEmitAt >= PROGRESS_EMIT_MS) {
+        lastStage = e.stage
+        lastEmitAt = now
+        this.emitJobs()
+      }
     }
 
     try {
@@ -450,7 +546,6 @@ export class ExportQueue extends EventEmitter {
           streams: task.streams,
           audioOverride: task.clip.audioOverride,
           audioEdits: task.clip.audioEdits,
-          bleep: task.bleep,
           watermark: task.watermark,
           settings: task.settings,
           outputPath: task.job.outputPath!,
@@ -536,7 +631,6 @@ export class ExportQueue extends EventEmitter {
         streams: clip.streams ?? task.streams,
         audioOverride: clip.audioOverride,
         audioEdits: clip.audioEdits,
-        bleep: task.bleep,
         watermark: clip.watermark ?? task.watermark,
         transform: clip.transform,
         opacity: clip.opacity,
@@ -563,7 +657,10 @@ export class ExportQueue extends EventEmitter {
       workDir,
       settings: task.settings,
       signal: controller.signal,
-      onProgress: (e) => report({ ...e, fraction: 0.9 })
+      // The exporter reports a real fraction of the combined running time;
+      // this used to overwrite it with a constant, which is why the bar sat at
+      // ~94% for the whole combine.
+      onProgress: report
     })
 
     const total = clips.reduce((s, c) => s + (c.endSeconds - c.startSeconds), 0)

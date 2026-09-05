@@ -39,11 +39,7 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
   const patchClips = useStore((s) => s.patchClips)
   const moveClip = useStore((s) => s.moveClip)
   const setSequenceIndex = useStore((s) => s.setSequenceIndex)
-  const setInPoint = useStore((s) => s.setInPoint)
-  const setOutPoint = useStore((s) => s.setOutPoint)
   const requestCreateClip = useStore((s) => s.requestCreateClip)
-  const currentTime = useStore((s) => s.currentTime)
-  const hasSource = useStore((s) => s.activeSourceId !== null)
   const setPage = useStore((s) => s.setPage)
   const addClipCollection = useStore((s) => s.addClipCollection)
   const projectEvent = useStore((s) => s.project?.event)
@@ -70,25 +66,20 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
           description="Play to the moment you want, mark where it starts and ends, then add it. Every POV of the same moment comes with it."
           action={{ label: 'Add clip', icon: 'plus', onClick: () => requestCreateClip() }}
         />
+        {/* Marking lives on the transport and under the timeline, where the
+            range you are marking is actually visible. Repeating the same two
+            buttons here only made it unclear which pair was the real one. */}
+        <ol className="clip-empty-steps">
+          <li>Play to the moment you want.</li>
+          <li>
+            Press <kbd>I</kbd> where it starts and <kbd>O</kbd> where it ends — or shift-drag
+            across the timeline.
+          </li>
+          <li>
+            Check the range under the timeline, then <kbd>Enter</kbd>.
+          </li>
+        </ol>
         <div className="rows">
-          <Button
-            fullWidth
-            icon="mark-in"
-            disabled={!hasSource}
-            onClick={() => setInPoint(currentTime)}
-            title="Mark the start of a clip at the playhead (I)"
-          >
-            Mark in at the playhead
-          </Button>
-          <Button
-            fullWidth
-            icon="mark-out"
-            disabled={!hasSource}
-            onClick={() => setOutPoint(currentTime)}
-            title="Mark the end of a clip at the playhead (O)"
-          >
-            Mark out at the playhead
-          </Button>
           <Button fullWidth variant="ghost" icon="help" onClick={onShowGuide}>
             How to make a clip
           </Button>
@@ -235,7 +226,14 @@ export default function ClipList({ onExportClip, onShowGuide, onFindInPovs }: Pr
         </div>
       )}
 
-      <div role="list" aria-label="Clips">
+      {/* Past a couple of hundred rows the off-screen ones stop being laid out
+          and painted — the drawer is a scan surface, and at this length every
+          row in the DOM is the difference between scrolling and stuttering. */}
+      <div
+        role="list"
+        aria-label="Clips"
+        className={displayClips.length > 200 ? 'is-long' : undefined}
+      >
       {displayClips.map((clip, index) => (
         <div
           key={clip.id}

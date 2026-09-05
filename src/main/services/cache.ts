@@ -21,6 +21,7 @@ export class CacheManager {
   private directory: string
   private maxSizeBytes: number
   private pruning: Promise<void> | null = null
+  private writtenSincePrune = 0
 
   constructor(
     private readonly log: Logger,
@@ -34,6 +35,9 @@ export class CacheManager {
   configure(directory: string, maxSizeBytes: number): void {
     this.directory = directory
     this.maxSizeBytes = maxSizeBytes
+    // A smaller budget (or a different folder entirely) invalidates whatever
+    // was accumulated against the old one, so measure at the next write.
+    this.writtenSincePrune = Number.MAX_SAFE_INTEGER
   }
 
   get dir(): string {
@@ -99,8 +103,36 @@ export class CacheManager {
       await rm(tmpPath, { force: true }).catch(() => undefined)
       throw err
     }
-    void this.schedulePrune()
+    this.notePruneDebt(data.length)
     return finalPath
+  }
+
+  /**
+   * Bytes may be written between measurements, so pruning is not a per-write
+   * cost.
+   *
+   * `prune()` reads the whole segments directory and stats every entry to
+   * find out how big the cache is. Doing that after each write was fine when
+   * a write meant one clip's worth of segments; archiving a four-hour VOD is
+   * about 1,400 writes, and thirty of them together turn a bookkeeping task
+   * into a directory scan running continuously against the same disk the
+   * downloads are being written to.
+   *
+   * Waiting for a slice of the budget to accumulate instead means the cache
+   * can exceed its limit by that slice before being measured, which is the
+   * intended trade: the limit is a disk-usage bound, not a hard boundary, and
+   * overshooting it by a sixteenth costs nothing.
+   */
+  private notePruneDebt(bytes: number): void {
+    this.writtenSincePrune += bytes
+    if (this.writtenSincePrune < this.pruneIntervalBytes) return
+    this.writtenSincePrune = 0
+    void this.schedulePrune()
+  }
+
+  /** Scaled to the budget, so a 20MB cache is not measured on an 8GB rhythm. */
+  private get pruneIntervalBytes(): number {
+    return Math.min(256 * 1024 * 1024, Math.max(4 * 1024 * 1024, Math.floor(this.maxSizeBytes / 16)))
   }
 
   /**

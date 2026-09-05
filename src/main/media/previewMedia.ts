@@ -32,6 +32,12 @@ export interface PreviewAsset {
   cached: boolean
 }
 
+/** How long an abandoned half-built preview is left alone before it is swept. */
+const STALE_PARTIAL_MS = 10 * 60_000
+
+/** Same collision reason as thumbnails/peaks: a tick can hold several builds. */
+let previewSequence = 0
+
 export class PreviewMediaService {
   private readonly assets = new Map<string, PreviewAsset>()
   private maxSizeBytes: number
@@ -68,9 +74,34 @@ export class PreviewMediaService {
       const names = await readdir(this.cacheDir)
       entries = []
       for (const name of names) {
-        if (!name.endsWith('.mp4') || name.endsWith('.partial.mp4')) continue
+        if (!name.endsWith('.mp4')) continue
         const info = await stat(join(this.cacheDir, name)).catch(() => null)
-        if (info?.isFile()) entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
+        if (!info?.isFile()) continue
+
+        /*
+         * Abandoned half-built previews are swept, not ignored.
+         *
+         * A preview is staged as `.partial.mp4` and renamed on success, so
+         * one still sitting there means the build failed, was cancelled — the
+         * normal case, since scrubbing to a new range abandons the last one —
+         * or the app died mid-write. They were excluded from the size sum and
+         * deleted by nothing, so they accumulated invisibly and the cache
+         * budget quietly understated what was on disk.
+         *
+         * Age is the only safe test: a partial being written right now is
+         * seconds old, and one from a build that is long gone is not.
+         */
+        if (name.endsWith('.partial.mp4')) {
+          if (Date.now() - info.mtimeMs > STALE_PARTIAL_MS) {
+            await rm(join(this.cacheDir, name), { force: true }).catch(() => undefined)
+          } else {
+            // Counts against the budget while it is still being written.
+            entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
+          }
+          continue
+        }
+
+        entries.push({ name, sizeBytes: info.size, mtimeMs: info.mtimeMs })
       }
     } catch {
       return
@@ -82,6 +113,10 @@ export class PreviewMediaService {
     let removed = 0
     for (const entry of entries) {
       if (total <= this.maxSizeBytes * 0.9) break
+      // A partial young enough to still be in flight is counted but not
+      // deleted — pulling the file out from under a running ffmpeg is worse
+      // than being briefly over budget.
+      if (entry.name.endsWith('.partial.mp4')) continue
       const id = entry.name.replace(/\.mp4$/, '')
       await rm(join(this.cacheDir, entry.name), { force: true }).catch(() => undefined)
       this.assets.delete(id)
@@ -171,14 +206,35 @@ export class PreviewMediaService {
     }
 
     await mkdir(this.cacheDir, { recursive: true })
-    await mkdir(req.workDir, { recursive: true })
+    /*
+     * A directory of this run's own, exactly as thumbnails/peaks/scenes do.
+     *
+     * The source window used to be fetched to `preview-src.<ext>` directly
+     * inside `req.workDir`, which is one process-wide constant — so the path
+     * depended only on the container, not on the request. Nothing serialises
+     * these: the Editor's prefetch fires a `previewMedia` call per clip
+     * without awaiting, so two clips from the same VOD both resolved to the
+     * same file, the second `createWriteStream` truncated the first, and the
+     * two segment writers interleaved into it. Each build then remuxed
+     * whatever that file happened to hold into its own `<id>.mp4` — and
+     * because `ensure` reuses any `<id>.mp4` that merely exists and is
+     * non-empty, the wrong footage was served for that clip in every later
+     * session too.
+     *
+     * The fixed name also meant the window file — tens to hundreds of MB —
+     * was never removed. The `finally` below does both.
+     */
+    previewSequence += 1
+    const work = join(req.workDir, `preview-${Date.now().toString(36)}-${previewSequence}`)
+    await mkdir(work, { recursive: true })
+    try {
 
     req.onProgress?.(0.05, 'Fetching the range…')
     const window = await this.fetcher.fetchWindow({
       stream: req.stream,
       startSeconds: req.startSeconds,
       endSeconds: req.endSeconds,
-      destination: join(req.workDir, `preview-src.${windowExtension(req.stream.container)}`),
+      destination: join(work, `preview-src.${windowExtension(req.stream.container)}`),
       signal: req.signal,
       onProgress: (p) => req.onProgress?.(0.05 + p.fraction * 0.45, 'Fetching the range…')
     })
@@ -258,6 +314,8 @@ export class PreviewMediaService {
       await this.ffmpeg.exec(args, {
         signal: req.signal,
         label: `preview ${transcoding ? 'transcode' : 'remux'}`,
+        // The person is watching this one appear, so it outranks a filmstrip.
+        priority: 'background',
         onProgress: (p) =>
           req.onProgress?.(
             0.55 + Math.min(1, p.outTimeSeconds / Math.max(0.1, duration)) * 0.4,
@@ -272,7 +330,7 @@ export class PreviewMediaService {
         this.log.warn('preview', 'Copy failed; re-encoding the preview instead')
         await this.ffmpeg.exec(
           [...common, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-c:a', 'aac', '-movflags', '+faststart', staged],
-          { signal: req.signal, label: 'preview transcode fallback' }
+          { signal: req.signal, label: 'preview transcode fallback', priority: 'background' }
         )
       } else {
         throw err
@@ -299,6 +357,9 @@ export class PreviewMediaService {
     })
     req.onProgress?.(1, 'Ready')
     return asset
+    } finally {
+      await rm(work, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   /** Drop everything: called when the cache is cleared. */

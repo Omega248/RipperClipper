@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { runChecked } from '../../src/main/services/process.js'
 
@@ -274,4 +274,78 @@ function goertzel(samples: Float32Array, frequency: number, sampleRate: number):
     s1 = s0
   }
   return s1 * s1 + s2 * s2 - coeff * s1 * s2
+}
+
+/**
+ * A deliberately fat copy of the same VOD, for tests about *how* a file is read.
+ *
+ * The ordinary fixture is about two megabytes — smaller than the five-megabyte
+ * container-analysis bound the HTTP fetcher gives ffmpeg — so opening it reads
+ * the whole thing and no seek is ever needed. Any test asking "did it seek to
+ * the clip, or read the whole file?" therefore cannot tell the two apart, and
+ * whether a Range request happens to appear comes down to timing. Above the
+ * probe bound the question has exactly one answer, and it is the one that
+ * matters for a six-hour broadcast.
+ *
+ * Getting there needs incompressible content, not a bigger bitrate setting: a
+ * solid colour encodes to almost nothing however many bits x264 is offered, so
+ * asking for `-b:v 3M` produces the same two megabytes. Film grain is what
+ * makes the file big. It averages out — `sampleColor` scales a frame to a
+ * single pixel — so colour and tone assertions still hold second by second.
+ *
+ * Built on demand rather than in `buildFixture`, so only the test that needs
+ * it pays for it.
+ */
+export const BULKY_MIN_BYTES = 8 * 1024 * 1024
+
+export async function buildBulkySource(
+  root: string,
+  ffmpeg = 'ffmpeg'
+): Promise<{ path: string; bytes: number }> {
+  const path = join(root, 'bulky.mp4')
+  await runChecked(ffmpeg, [
+    '-hide_banner',
+    '-loglevel',
+    'error',
+    '-y',
+    '-i',
+    join(root, 'source.mp4'),
+    // Smaller frame, noisier picture: the size has to come from entropy, and
+    // a quarter of the pixels keeps the encode quick while still producing
+    // tens of megabytes.
+    '-vf',
+    'scale=320:180,noise=alls=8:allf=t+u',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'ultrafast',
+    '-pix_fmt',
+    'yuv420p',
+    '-g',
+    String(FPS * GOP_SECONDS),
+    '-keyint_min',
+    String(FPS * GOP_SECONDS),
+    '-sc_threshold',
+    '0',
+    '-crf',
+    '20',
+    '-c:a',
+    'copy',
+    // The index at the front, as a platform would serve it: without this
+    // ffmpeg must seek to the end for the index, and the seek a test proves
+    // would be that one rather than the seek to the clip.
+    '-movflags',
+    '+faststart',
+    path
+  ])
+  const bytes = (await stat(path)).size
+  if (bytes < BULKY_MIN_BYTES) {
+    // Loud rather than silent: a fixture that quietly shrinks below the
+    // fetcher's probe bound turns the test that uses it into one that cannot
+    // fail.
+    throw new Error(
+      `bulky fixture is only ${bytes} bytes; it must exceed the fetcher's 5MB probe bound`
+    )
+  }
+  return { path, bytes }
 }

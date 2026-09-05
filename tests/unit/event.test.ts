@@ -28,7 +28,7 @@ const source = (id: string, startsAt: number, durationSeconds: number): VodSourc
   creator: id,
   durationSeconds,
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: false,
   syncMapping: {
     vodId: id,

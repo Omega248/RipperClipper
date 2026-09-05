@@ -13,6 +13,16 @@ export interface UrlMatch {
   canonicalUrl: string
   /** Optional start offset encoded in the URL (e.g. ?t=1h2m3s). */
   startSeconds?: number
+  /**
+   * What the URL points at.
+   *
+   * A `channel` link names a person, not a recording — twitch.tv/someone is
+   * whatever they are broadcasting at the moment you open it, and nothing at
+   * all when they are offline. `vodId` then carries the channel's own name
+   * rather than a recording's id, because until the broadcast is archived
+   * that is the only stable thing about it.
+   */
+  kind?: 'vod' | 'channel'
 }
 
 /**

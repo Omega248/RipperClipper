@@ -16,6 +16,7 @@ import {
 import { Logger } from '../../src/main/services/logger.js'
 import { ResolverService } from '../../src/main/media/resolver.js'
 import type { SavedStreamer } from '../../src/shared/ipc.js'
+import { isDefaultAvatar, personAvatar, personName } from '../../src/shared/people.js'
 
 describe('channel links', () => {
   it('recognises channel pages on every platform', () => {
@@ -523,5 +524,287 @@ describe('streamer participation (§13)', () => {
     }
     expect(next.participation!.length).toBeLessThanOrEqual(20)
     expect(next.participation![0].projectName).toBe('Event 29')
+  })
+})
+
+describe('one row per person', () => {
+  // Kick spells a handle one way and Twitch another; the roster should show
+  // the name the person actually chose, not whichever account sorted first.
+  function account(handle: string, displayName: string): SavedStreamer {
+    return {
+      id: `str_${handle}_${displayName}`,
+      platform: 'kick',
+      handle,
+      displayName,
+      channelUrl: `https://kick.com/${handle}`,
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null
+    }
+  }
+
+  it('prefers a published profile name over a slug, and capitals over none', () => {
+    expect(
+      personName([
+        account('totallynotbelltower', 'totallynotbelltower'),
+        account('totallynotbelltower', 'TotallyNotBelltower')
+      ])
+    ).toBe('TotallyNotBelltower')
+
+    // Both are bare handles — still has to return something rather than throw.
+    expect(personName([account('zpapz', 'zpapz')])).toBe('zpapz')
+  })
+})
+
+describe('one face per person', () => {
+  function withAvatar(handle: string, avatarUrl?: string): SavedStreamer {
+    return {
+      id: `str_${handle}_${avatarUrl ?? 'none'}`,
+      platform: 'kick',
+      handle,
+      displayName: handle,
+      channelUrl: `https://kick.com/${handle}`,
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+      ...(avatarUrl ? { avatarUrl } : {})
+    }
+  }
+
+  it('knows a platform placeholder from a picture someone chose', () => {
+    expect(
+      isDefaultAvatar(
+        'https://static-cdn.jtvnw.net/user-default-pictures-uv/abc-profile_image-150x150.png'
+      )
+    ).toBe(true)
+    expect(isDefaultAvatar('https://kick.com/img/default-profile-pictures/default2.jpeg')).toBe(true)
+    expect(isDefaultAvatar(undefined)).toBe(true)
+    expect(isDefaultAvatar('https://files.kick.com/images/user/1/profile_image/real.jpg')).toBe(false)
+  })
+
+  it('takes a real picture from any account over a placeholder on the first', () => {
+    // The case this exists for: on air on Kick with no avatar set there, but a
+    // real one on Twitch. The row should show the face, not a grey circle.
+    const accounts = [
+      withAvatar('manax', 'https://kick.com/img/default-profile-pictures/default2.jpeg'),
+      withAvatar('manax', 'https://static-cdn.jtvnw.net/jtv_user_pictures/real.png')
+    ]
+    expect(personAvatar(accounts)).toBe('https://static-cdn.jtvnw.net/jtv_user_pictures/real.png')
+  })
+
+  it('falls back to a placeholder rather than nothing, and to nothing when there is none', () => {
+    const placeholder = 'https://kick.com/img/default-profile-pictures/default2.jpeg'
+    expect(personAvatar([withAvatar('a', placeholder)])).toBe(placeholder)
+    expect(personAvatar([withAvatar('a')])).toBeUndefined()
+    expect(personAvatar([])).toBeUndefined()
+  })
+})
+
+describe('collapsing duplicate channels', () => {
+  let dir = ''
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dedupe-'))
+    service = new StreamerService(new Logger(join(dir, 'logs')), {} as never, dir)
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('keeps one row per channel and inherits everything from the copies', async () => {
+    await service.add('kick.com/manax')
+    await service.add('kick.com/manax')
+    // The duplicate this is really for: written directly, as the corruption
+    // window produced — same channel, different id.
+    await service.restore({
+      id: 'str_dupe',
+      platform: 'kick',
+      handle: 'Manax',
+      displayName: 'Manax',
+      channelUrl: 'https://kick.com/Manax',
+      addedAt: '2020-01-01T00:00:00.000Z',
+      lastUsedAt: '2026-08-30T00:00:00.000Z',
+      groupIds: ['grp_pd'],
+      favorite: true
+    })
+
+    expect(await service.list()).toHaveLength(2)
+
+    const { removed } = await service.dedupe()
+    const after = await service.list()
+    expect(after).toHaveLength(1)
+    expect(removed).toHaveLength(1)
+
+    // Nothing the copies knew is lost.
+    expect(after[0].groupIds).toEqual(['grp_pd'])
+    expect(after[0].favorite).toBe(true)
+    expect(after[0].addedAt).toBe('2020-01-01T00:00:00.000Z')
+    expect(after[0].lastUsedAt).toBe('2026-08-30T00:00:00.000Z')
+  })
+
+  it('keeps the copy whose back catalogue has already been crawled', async () => {
+    await service.restore({
+      id: 'str_rich',
+      platform: 'twitch',
+      handle: 'someone',
+      displayName: 'Someone',
+      channelUrl: 'https://twitch.tv/someone',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+      avatarUrl: 'https://example.invalid/a.png'
+    })
+    await service.restore({
+      id: 'str_shelved',
+      platform: 'twitch',
+      handle: 'someone',
+      displayName: 'someone',
+      channelUrl: 'https://twitch.tv/someone',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null
+    })
+
+    // The plainer row wins because its id is the one with the dated shelf.
+    await service.dedupe(new Set(['str_shelved']))
+    const after = await service.list()
+    expect(after).toHaveLength(1)
+    expect(after[0].id).toBe('str_shelved')
+  })
+
+  it('adding the same channel twice at once still only adds it once', async () => {
+    // The race that made the duplicates: two callers read the same list, each
+    // finds nothing, each writes.
+    await Promise.all([
+      service.add('kick.com/zpapz'),
+      service.add('kick.com/zpapz'),
+      service.add('kick.com/zpapz')
+    ])
+    expect(await service.list()).toHaveLength(1)
+  })
+})
+
+describe('one spelling of a handle', () => {
+  it('treats @name and name as the same channel', () => {
+    // YouTube's resolved channelHandle comes back with the @; a pasted URL
+    // does not. Stored as-is they were two channels, so both got saved.
+    const saved: SavedStreamer = {
+      id: 'str_a',
+      platform: 'youtube',
+      handle: 'someone',
+      displayName: 'Someone',
+      channelUrl: 'https://youtube.com/@someone',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null
+    }
+    expect(sameStreamer(saved, { platform: 'youtube', handle: '@someone' })).toBe(true)
+    expect(sameStreamer(saved, { platform: 'youtube', handle: ' SomeOne ' })).toBe(true)
+    expect(sameStreamer(saved, { platform: 'twitch', handle: 'someone' })).toBe(false)
+    expect(sameStreamer(saved, { platform: 'youtube', handle: 'someoneelse' })).toBe(false)
+  })
+
+  it('collapses rows that only differ by that spelling', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'handles-'))
+    const service = new StreamerService(new Logger(join(dir, 'logs')), {} as never, dir)
+
+    await service.restore({
+      id: 'str_at',
+      platform: 'youtube',
+      handle: '@someone',
+      displayName: 'Someone',
+      channelUrl: 'https://youtube.com/@someone',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null
+    })
+    await service.restore({
+      id: 'str_plain',
+      platform: 'youtube',
+      handle: 'someone',
+      displayName: 'someone',
+      channelUrl: 'https://youtube.com/@someone',
+      addedAt: '2026-01-02T00:00:00.000Z',
+      lastUsedAt: null
+    })
+
+    await service.dedupe()
+    const after = await service.list()
+    expect(after).toHaveLength(1)
+    // And the survivor is stored the one way, so it stops being unmatchable.
+    expect(after[0].handle).toBe('someone')
+
+    await rm(dir, { recursive: true, force: true })
+  })
+})
+
+describe('the same name twice on one platform', () => {
+  let dir = ''
+  let service: StreamerService
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'empties-'))
+    service = new StreamerService(new Logger(join(dir, 'logs')), {} as never, dir)
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  function row(id: string, handle: string, extra: Partial<SavedStreamer> = {}): SavedStreamer {
+    return {
+      id,
+      platform: 'kick',
+      handle,
+      displayName: 'Skorbnut',
+      channelUrl: `https://kick.com/${handle}`,
+      addedAt: '2026-01-01T00:00:00.000Z',
+      lastUsedAt: null,
+      ...extra
+    }
+  }
+
+  it('drops the row with no broadcasts, whatever its handle says', async () => {
+    // The handles differ, so the handle pass cannot see these as one channel.
+    // The evidence can: one has a crawled back catalogue and one has nothing.
+    await service.restore(row('str_real', 'skorbnut', { avatarUrl: 'https://x/a.png' }))
+    await service.restore(row('str_empty', 'Skorbnut_', { groupIds: ['grp_pd'], favorite: true }))
+
+    const { removed } = await service.dedupe(new Set(['str_real']))
+    const after = await service.list()
+
+    expect(removed).toEqual(['str_empty'])
+    expect(after).toHaveLength(1)
+    expect(after[0].id).toBe('str_real')
+    // What the dropped row knew comes across rather than going with it.
+    expect(after[0].groupIds).toEqual(['grp_pd'])
+    expect(after[0].favorite).toBe(true)
+  })
+
+  it('keeps both when neither has broadcasts — there is nothing to choose by', async () => {
+    await service.restore(row('str_a', 'skorbnut'))
+    await service.restore(row('str_b', 'skorbnut2'))
+
+    const { removed } = await service.dedupe(new Set())
+    expect(removed).toEqual([])
+    expect(await service.list()).toHaveLength(2)
+  })
+
+  it('keeps both when both have broadcasts — two real channels, not a duplicate', async () => {
+    await service.restore(row('str_a', 'skorbnut'))
+    await service.restore(row('str_b', 'skorbnutlive'))
+
+    const { removed } = await service.dedupe(new Set(['str_a', 'str_b']))
+    expect(removed).toEqual([])
+    expect(await service.list()).toHaveLength(2)
+  })
+
+  it('leaves the same name on a different platform alone', async () => {
+    await service.restore(row('str_kick', 'skorbnut'))
+    await service.restore({
+      ...row('str_twitch', 'skorbnut'),
+      platform: 'twitch',
+      channelUrl: 'https://twitch.tv/skorbnut'
+    })
+
+    const { removed } = await service.dedupe(new Set(['str_kick']))
+    expect(removed).toEqual([])
+    expect(await service.list()).toHaveLength(2)
   })
 })

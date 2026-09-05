@@ -348,6 +348,27 @@ export function refreshClipMappings(
   return clips.map((clip) => ({ ...clip, povMappings: buildClipMappings(clip, sources, nowIso) }))
 }
 
+/**
+ * The same, for one clip.
+ *
+ * Dragging a clip's edge on the timeline rebuilt the mappings for *every* clip
+ * in the project on every mouse move — fifty clips across nine POVs is four
+ * hundred and fifty projections a hundred times a second, and it is the reason
+ * resizing a clip felt heavy. Moving one clip cannot change another clip's
+ * mapping: a mapping depends on that clip's own times and on the sources, and
+ * neither changes for its neighbours.
+ */
+export function refreshClipMapping(
+  clips: ClipSegment[],
+  id: string,
+  sources: VodSource[],
+  nowIso: string
+): ClipSegment[] {
+  return clips.map((clip) =>
+    clip.id === id ? { ...clip, povMappings: buildClipMappings(clip, sources, nowIso) } : clip
+  )
+}
+
 /** The POVs that can actually be used for this clip, best coverage first. */
 export function usableMappings(clip: ClipSegment): ClipPovMapping[] {
   return (clip.povMappings ?? []).filter(
@@ -361,4 +382,48 @@ export const POV_STATUS_LABEL: Record<PovClipStatus, string> = {
   out_of_range: 'Out of range',
   sync_required: 'Sync required',
   sync_low_confidence: 'Low confidence'
+}
+
+/**
+ * How far a per-clip POV correction may be pushed, in seconds.
+ *
+ * A correction exists to fix seconds of drift, not to point a clip at a
+ * different part of the broadcast — past a couple of minutes you are no longer
+ * aligning, you are re-marking, and the clip's own range is the honest place
+ * to do that. The cap is also what stops a held-down nudge key from walking a
+ * POV silently off the end of its own recording.
+ */
+export const MAX_POV_OFFSET_SECONDS = 120
+
+/** Step a per-clip POV correction, clamped and rounded to the millisecond. */
+export function nudgedPovOffset(currentSeconds: number, deltaSeconds: number): number {
+  const next = currentSeconds + deltaSeconds
+  const clamped = Math.max(-MAX_POV_OFFSET_SECONDS, Math.min(MAX_POV_OFFSET_SECONDS, next))
+  return Math.round(clamped * 1000) / 1000
+}
+
+/**
+ * The POV best suited to supplying a clip's picture (or sound): fully covered
+ * beats partly covered, and among equals the better-aligned one wins, with the
+ * POV the clip was authored from breaking a tie — it is the one whose numbers
+ * the editor actually typed.
+ */
+export function bestPovFor(candidates: VodSource[], ranges: ClipPovRange[]): string | null {
+  const byId = new Map(ranges.map((r) => [r.sourceId, r]))
+  const scored = candidates
+    .map((source) => ({ source, range: byId.get(source.id) }))
+    .filter((entry): entry is { source: VodSource; range: ClipPovRange } => entry.range !== undefined)
+    .filter((entry) => entry.range.coverage === 'full' || entry.range.coverage === 'partial')
+  if (scored.length === 0) return null
+  scored.sort((a, b) => {
+    const cover = coverRank(b.range.coverage) - coverRank(a.range.coverage)
+    if (cover !== 0) return cover
+    if (b.range.confidence !== a.range.confidence) return b.range.confidence - a.range.confidence
+    return Number(b.range.authored) - Number(a.range.authored)
+  })
+  return scored[0].source.id
+}
+
+function coverRank(coverage: ClipPovRange['coverage']): number {
+  return coverage === 'full' ? 2 : coverage === 'partial' ? 1 : 0
 }

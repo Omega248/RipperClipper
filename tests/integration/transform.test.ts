@@ -41,7 +41,7 @@ const SOURCE: VodSource = {
   creator: 'Fixture',
   durationSeconds: TOTAL_SECONDS,
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: true
 }
 

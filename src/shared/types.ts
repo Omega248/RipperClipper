@@ -242,6 +242,19 @@ export interface StreamInfo {
   /** audio only */
   sampleRate?: number
   channels?: number
+  /** BCP-47-ish tag from the resolver, e.g. "en", "de", "zh-Hans". Audio tracks only. */
+  language?: string
+  /**
+   * This is the track the video was actually recorded in, not a dub.
+   *
+   * YouTube's auto-dubbing publishes one audio track per language, all encoded
+   * from the same ladder, and the dubs frequently come out at a *higher*
+   * bitrate than the original. Choosing audio on quality alone therefore picks
+   * a dub — see `rankAudio`. False here means either "a dub" or "the source
+   * never said", and those are deliberately not distinguished: only a positive
+   * claim of originality is allowed to change the ranking.
+   */
+  originalAudio?: boolean
   /** Estimated total bytes for the whole VOD in this format, when known. */
   filesize?: number
   /** How a byte range for this format can be obtained. */
@@ -263,6 +276,47 @@ export type MediaProtocol =
   /** DASH/segmented resource described by an explicit fragment list. */
   | 'fragmented'
 
+/**
+ * A live source's current relationship to its broadcast.
+ *
+ * Deliberately not a boolean. "Live" and "not live" cannot express the two
+ * states the UI most needs to distinguish from failure: a stream that dropped
+ * and is coming back, and a stream that ended whose archive has not been
+ * published yet. Both must keep the clip ranges already captured against them
+ * — treating either as an error loses the user's work.
+ */
+export interface LiveState {
+  state: 'live' | 'reconnecting' | 'ended' | 'awaiting-vod'
+  /** Seconds behind the broadcast edge, as measured — never assumed from wall clock. */
+  latencySeconds: number
+  /** Seconds of media currently held in the rolling buffer. */
+  bufferedSeconds: number
+  /** The configured window. The buffer never exceeds it. */
+  windowSeconds: number
+  /** When the broadcast started, if the platform reports it. */
+  startedAt?: number
+  /** Viewers, if the platform reports it. Display only. */
+  viewers?: number
+  /** Set once the archive resolves. This is what completes a held live clip. */
+  archivedVodId?: string
+  /**
+   * The platform's own recording of the broadcast *while it is still running*.
+   *
+   * Twitch, Kick and YouTube all start publishing a recording as the broadcast
+   * goes out, and it grows with it. That recording is the whole session from
+   * the moment they went live, at source quality, seekable — everything the
+   * rolling buffer is not. Once this is known the source plays and exports
+   * from it and the buffer becomes a fallback for the last few seconds the
+   * recording has not caught up with.
+   *
+   * Distinct from `archivedVodId`, which means the broadcast has *finished*
+   * and this is its final archive.
+   */
+  recordingVodId?: string
+  /** Consecutive failed reconnects. Drives the retry backoff and the wording. */
+  retries?: number
+}
+
 export interface VodSource {
   id: string
   platform: PlatformId
@@ -279,6 +333,41 @@ export interface VodSource {
   playbackUrl?: string
   playbackKind: PlaybackKind
   capabilities: AdapterCapabilities
+  /**
+   * This source is a broadcast happening now, rather than a finished VOD.
+   *
+   * Distinct from `live`, which is the *state* of the rolling buffer and only
+   * exists once the app is actually holding media. This says what the source
+   * IS, is known the moment it resolves, and is what tells the rest of the app
+   * that `durationSeconds` is a floor rather than a length, that the clock is
+   * wall-clock rather than an offset from zero, and that a clip has to be cut
+   * from held media.
+   */
+  isLive?: boolean
+  /**
+   * This recording is still being written — the broadcast is on air.
+   *
+   * A live channel is opened as the VOD the platform is already making, so the
+   * media is an ordinary recording: it seeks and it exports like any other, and
+   * `isLive` is false. But its length is a floor that moves, not a limit, and
+   * anything asking "where is this angle right now" has to know the difference.
+   */
+  stillRecording?: boolean
+  /**
+   * The archive this broadcast became, once it has been published.
+   *
+   * A clip marked against a live source is cut from the buffer at the time and
+   * can be re-cut precisely from here afterwards — the two are the same range
+   * on the same event clock, from two different sources of the media.
+   */
+  archivedVodId?: string
+  /**
+   * The platform's recording of this broadcast while it was still running.
+   *
+   * Kept on the source, not just in live state, because it is what the clips
+   * marked during the broadcast were actually cut from.
+   */
+  recordingVodId?: string
   /** Populated after an explicit "inspect source" step. Never guessed. */
   formats?: StreamInfo[]
   /** True once formats have actually been probed from the source. */
@@ -289,10 +378,31 @@ export interface VodSource {
    * timing could be established. See shared/sync.ts.
    */
   syncMapping?: VodTimeMapping
+  /**
+   * Present only on sources that are (or were) live. A source that has gone
+   * `ended` keeps this block so the UI can say what happened rather than
+   * silently becoming an ordinary VOD with a gap.
+   *
+   * Transient runtime state: never persisted into the project file.
+   */
+  live?: LiveState
   /** Character this POV is streaming as, when the editor has named it. */
   character?: string
   /** Editor-chosen POV label, used when no character name is set. */
   povName?: string
+  /**
+   * The person unticked this angle in the wall's angle picker.
+   *
+   * A view choice, not a property of the recording: the POV keeps its clips,
+   * its sync and its place on the timeline, it simply is not one of the angles
+   * being watched right now. Absent (the common case) means shown, so a POV
+   * added later appears without anyone having to tick it.
+   *
+   * Persisted with the project — which angles you watch an event from is part
+   * of how you were working on it, and having to re-tick eight of fourteen
+   * every time you reopen would make the picker worse than no picker.
+   */
+  hiddenInWall?: boolean
   /**
    * The channel's own name on its platform (a login/slug, not a display name),
    * which is what the streamer library and channel listings key off. Also how
@@ -319,12 +429,19 @@ export type PlaybackKind =
   /** The source offers nothing the native player can show. */
   | 'none'
 
+/**
+ * What the app should tell you about this platform before you rely on it.
+ *
+ * This used to carry four booleans — metadata, playback, rangeDownload,
+ * requiresAuth — hardcoded `true` in all three adapters, read by nothing, and
+ * documented as "shown to the user when a capability is false" when none of
+ * them ever was. `requiresAuth: false` sat directly beside a note saying
+ * sub-only VODs need an account. A declaration nothing checks and nothing
+ * reads is worse than no declaration: it reads like a guarantee.
+ *
+ * The notes are real, and are shown in the quality panel.
+ */
 export interface AdapterCapabilities {
-  metadata: boolean
-  playback: boolean
-  rangeDownload: boolean
-  requiresAuth: boolean
-  /** Explanation shown to the user when a capability is false. */
   notes: string[]
 }
 
@@ -340,6 +457,15 @@ export interface ExportSettings {
   hwAccel: HwAccelPreference
   /** Max seconds of keyframe drift tolerated before smart mode re-encodes. */
   keyframeToleranceSeconds: number
+  /**
+   * Splice an exact cut instead of re-encoding all of it.
+   *
+   * When a cut has to be frame-accurate, only the frames between the mark and
+   * the next keyframe actually need re-encoding — the rest of the clip is
+   * already exactly what the file should contain and can be copied. On by
+   * default; turn it off to go back to re-encoding the whole clip in one pass.
+   */
+  smartCut: boolean
   /**
    * Seconds of head and tail added when a POV's alignment for a clip is not
    * trusted, so an uncertain cut still contains the moment. Zero disables it.
@@ -375,6 +501,16 @@ export interface AppSettings {
     ffmpegPath: string | null
     ffprobePath: string | null
     ytDlpPath: string | null
+    /**
+     * Browser whose cookies yt-dlp may borrow, or null for none.
+     *
+     * The only way to reach a subscriber-only or age-restricted VOD the person
+     * is genuinely entitled to watch. Read from the browser at resolve time by
+     * yt-dlp itself — the app never stores, copies or transmits them, and asks
+     * for no password. The platform notes have told people to set this since
+     * before the setting existed.
+     */
+    cookiesFromBrowser: string | null
     tempDirectory: string | null
     /** Install missing tools automatically on startup. */
     autoInstallTools: boolean
@@ -395,6 +531,32 @@ export interface AppSettings {
     exportCompletionSound: boolean
     /** Built previews downscale to a lighter proxy — faster to seek within, at the cost of picture quality. */
     fastPreview: boolean
+    /**
+     * Set the first time the editor adds a clip. The "making your first clip"
+     * strip is keyed on this rather than on the open event having no clips,
+     * so it teaches once instead of returning on every new event forever.
+     */
+    hasMadeAClip: boolean
+    /**
+     * Ceiling on how many POV tiles decode at once. Defaults to 8, which is
+     * about what fits on one screen before tiles stop being worth looking at;
+     * 0 means no ceiling.
+     *
+     * A machine limit, not a content choice — *which* angles are on screen is
+     * the wall's angle picker (`VodSource.hiddenInWall`). See `wallSelection`.
+     */
+    maxLivePovs?: number
+    /**
+     * Stamp every loaded POV with a generated badge naming whose angle it is,
+     * so exported angles arrive in an editor already labelled.
+     *
+     * On by default. A watermark does rule out stream copy — every frame is
+     * different, so there is nothing left to copy — which is why the encode
+     * behind it is composited on the GPU wherever the machine allows it (see
+     * `cudaOverlay`): decode, overlay and encode without a frame ever leaving
+     * VRAM. Turn it off and a clip that needs no other redraw becomes a copy.
+     */
+    autoNameBadge?: boolean
   }
   shortcuts: Record<string, string>
   /** Saved export-setting bundles, applied to the current project on demand. */
@@ -621,6 +783,18 @@ export interface FfmpegInfo {
   version: string | null
   /** Encoder names detected as usable for hardware acceleration. */
   hwEncoders: string[]
+  /**
+   * This machine can decode, overlay and encode without the frames ever
+   * leaving the GPU — NVDEC → `overlay_cuda` → NVENC.
+   *
+   * The difference this makes is the difference between a watermarked clip
+   * being a preprocessing step and being an export: the CPU path copies every
+   * frame out of the GPU, composites it, and copies it back, which is what
+   * made a watermarked cut run at 2x realtime instead of 10x. Smoke-tested at
+   * startup like the encoders, because `-filters` listing `overlay_cuda`
+   * only means the build has it, not that this driver will run it.
+   */
+  cudaOverlay: boolean
   error: SerializedAppError | null
 }
 

@@ -3,9 +3,8 @@ import { formatTimecode, validateRange } from '@shared/time'
 import { applyTemplate } from '@shared/filenames'
 import { useActiveClips, useActiveSource, useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
-import PovMatrix from './PovMatrix.js'
+import ClipTimeline from './ClipTimeline.js'
 import ClipThumbnails from './ClipThumbnails.js'
-import CensorPanel from './CensorPanel.js'
 import { sortedCollections, unusedPovIds, workflowOf } from '@shared/collections'
 import { CLIP_WORKFLOW_LABEL, CLIP_WORKFLOW_ORDER } from '@shared/types'
 import type { ClipWorkflowState } from '@shared/types'
@@ -198,7 +197,7 @@ export default function Properties(): JSX.Element {
                 its boundaries.
               </Notice>
             )}
-            <PovMatrix clip={clip} />
+            <ClipTimeline clip={clip} compact />
 
             {/* Where this clip has got to, and which folder it lives in.
                 Both are organisation, so they sit together and neither
@@ -233,9 +232,6 @@ export default function Properties(): JSX.Element {
             {/* §9 + §8 in one object: what the moment looks like from every
                 angle that has it, with the ones actually used marked. */}
             <ClipThumbnails clip={clip} />
-
-            {/* Read automatically in the background; this is the review. */}
-            <CensorPanel clip={clip} />
 
             {unusedPovIds(clip).length > 0 && (
               <Notice tone="info">

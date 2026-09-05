@@ -15,6 +15,13 @@ interface Props {
   onDiscoverEvent: () => void
   onFindInPovs: () => void
   onManualSync: () => void
+  /**
+   * Other saved streamers who were live at this clip's moment, not yet loaded
+   * as a POV. It lives beside the action that adds them rather than in the
+   * header, where it was a number next to a button that merely opened a list.
+   */
+  overlapAvailableCount: number
+  onShowStreamers: () => void
 }
 
 /**
@@ -29,7 +36,9 @@ export default function PovBar({
   onAddPov,
   onDiscoverEvent,
   onFindInPovs,
-  onManualSync
+  onManualSync,
+  overlapAvailableCount,
+  onShowStreamers
 }: Props): JSX.Element | null {
   const sources = useStore((s) => s.project?.sources)
   const activeSourceId = useStore((s) => s.activeSourceId)
@@ -206,6 +215,17 @@ export default function PovBar({
       <div className="povbar-actions">
         <Button icon="plus" onClick={onAddPov} title="Load another angle of this event">
           Add POV
+        </Button>
+        <Button
+          icon="users"
+          onClick={onShowStreamers}
+          title={
+            overlapAvailableCount > 0
+              ? `${overlapAvailableCount} other saved streamer${overlapAvailableCount === 1 ? '' : 's'} covered this moment`
+              : 'Saved streamers'
+          }
+        >
+          Who was live{overlapAvailableCount > 0 ? ` (${overlapAvailableCount})` : ''}
         </Button>
         <Button
           icon="search"

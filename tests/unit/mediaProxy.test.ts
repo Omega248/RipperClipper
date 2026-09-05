@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { proxyUrl, rewritePlaylist } from '../../src/main/mediaProxy.js'
+import { handleMediaRequest, proxyUrl, rewritePlaylist } from '../../src/main/mediaProxy.js'
 
 const BASE = 'http://127.0.0.1:5000'
 
@@ -114,5 +114,80 @@ describe('rewritePlaylist — media', () => {
     expect(rewritten).toContain('#EXTINF:4.0,')
     const segment = rewritten.split('\n').find((l) => l.startsWith(`${BASE}/media/segment?`))!
     expect(decode(segment)).toBe('https://cdn.invalid/v/seg.ts')
+  })
+})
+
+describe('the proxy refuses anyone who is not this app', () => {
+  /*
+   * The proxy fetches whatever URL it is handed and returns the body with
+   * `access-control-allow-origin: *`. Bound to loopback that still leaves it an
+   * open relay: another program on the machine, or a page that guesses the
+   * ephemeral port, could read `http://192.168.1.1/` or a link-local metadata
+   * endpoint *through* this machine and read the response cross-origin.
+   *
+   * An Origin check alone does not hold — a non-browser client omits the
+   * header. The URLs the renderer is handed carry a per-run secret instead.
+   */
+  const call = async (url: string): Promise<{ status: number; fetched: string[] }> => {
+    const fetched: string[] = []
+    const original = globalThis.fetch
+    // Rejecting keeps the test on the gate: what the handler does with a real
+    // upstream response needs a real socket, and the streaming path has its own
+    // coverage. Getting as far as this call is the thing being asserted.
+    globalThis.fetch = (async (input: unknown) => {
+      fetched.push(String(input))
+      throw new Error('upstream not exercised here')
+    }) as typeof fetch
+
+    let status = 0
+    const res = {
+      writeHead(code: number) {
+        status = code
+        return this
+      },
+      end() {
+        return this
+      },
+      setHeader() {},
+      on() {},
+      once() {},
+      emit() {},
+      destroy() {}
+    }
+    try {
+      await handleMediaRequest(
+        { url, method: 'GET', headers: {}, on() {}, once() {} } as never,
+        res as never,
+        { base: BASE, segments: null } as never
+      )
+    } finally {
+      globalThis.fetch = original
+    }
+    return { status, fetched }
+  }
+
+  const target = 'http://169.254.169.254/latest/meta-data/'
+
+  it('does not fetch anything for a request with no token', async () => {
+    const { status, fetched } = await call(`/media/segment?u=${encodeURIComponent(target)}`)
+    expect(status).toBe(403)
+    expect(fetched).toEqual([])
+  })
+
+  it('does not fetch anything for a wrong token', async () => {
+    const bad = 'f'.repeat(32)
+    const { status, fetched } = await call(
+      `/media/segment?k=${bad}&u=${encodeURIComponent(target)}`
+    )
+    expect(status).toBe(403)
+    expect(fetched).toEqual([])
+  })
+
+  it('lets through a URL the app itself built', async () => {
+    // Only that it passes the gate — what happens after is the streaming path,
+    // which has its own tests and needs a real socket.
+    const url = proxyUrl(BASE, 'segment', 'https://cdn.invalid/0.ts')
+    const { fetched } = await call(url.slice(BASE.length))
+    expect(fetched).toEqual(['https://cdn.invalid/0.ts'])
   })
 })

@@ -1,33 +1,66 @@
 import { useMemo } from 'react'
 import { formatTimecode } from '@shared/time'
-import { POV_STATUS_LABEL } from '@shared/povMapping'
-import type { ClipPovMapping, ClipSegment } from '@shared/types'
+import {
+  MAX_POV_OFFSET_SECONDS,
+  POV_STATUS_LABEL,
+  audioCapablePovs,
+  bestPovFor,
+  clipPovRanges,
+  nudgedPovOffset,
+  videoCapablePovs
+} from '@shared/povMapping'
+import { povColor } from '@shared/povColors'
+import { povLabel } from '@shared/pov'
+import type { ClipPovMapping, ClipSegment, VodSource } from '@shared/types'
 import { useStore } from '../store.js'
 import { playerBus } from '../player/controller.js'
-import { povLabel } from './PovBar.js'
-import { Button } from '../ui/index.js'
+import { Button, Icon, IconButton } from '../ui/index.js'
 
 interface Props {
   clip: ClipSegment
-  onAlignClip: () => void
+  /** Opens the waveform aligner for this clip. Absent where there is no room for it. */
+  onAlignClip?: () => void
+  /** Drops the ruler and the head, for panels that already have their own. */
+  compact?: boolean
 }
 
 /**
- * The clip's own workspace: one lane per POV, positioned by real-world timing,
- * on the clip's relative clock (00:00 is the start of the clip, not of anyone's
- * VOD). Lanes show at a glance who covers the whole moment, who joined late and
- * who was not recording; clicking one switches to that angle at the same
- * instant, which is the multi-POV equivalent of cutting between cameras.
+ * Everything about a clip, POV by POV — and every control for it.
+ *
+ * A clip is not one recording, it is the same moment seen from however many
+ * angles were rolling, and this is where the editor decides what happens to
+ * each of them: which angle supplies the exported picture, which supplies the
+ * sound, how far each one has to be nudged to line up, which ones have been
+ * used, and where each one actually is in its own VOD. All of that already
+ * existed in the project file and in the store; none of it except the two
+ * radio buttons was reachable from the interface, and what was reachable was
+ * spread over a table in one panel and a set of read-only lanes in another.
+ *
+ * The lanes are positioned by real-world timing on the clip's own clock (00:00
+ * is the start of the clip, not of anyone's VOD), so who covers the whole
+ * moment, who joined late and who was not recording is legible before reading
+ * a single number.
  */
-export default function ClipTimeline({ clip, onAlignClip }: Props): JSX.Element | null {
+export default function ClipTimeline({ clip, onAlignClip, compact = false }: Props): JSX.Element | null {
   const sources = useStore((s) => s.project?.sources) ?? []
   const activeSourceId = useStore((s) => s.activeSourceId)
   const currentTime = useStore((s) => s.currentTime)
   const setActiveSource = useStore((s) => s.setActiveSource)
   const setCurrentTime = useStore((s) => s.setCurrentTime)
+  const setClipPov = useStore((s) => s.setClipPov)
+  const setClipPovOffset = useStore((s) => s.setClipPovOffset)
+  const setClipPovUsed = useStore((s) => s.setClipPovUsed)
 
   const duration = Math.max(0.001, clip.endSeconds - clip.startSeconds)
   const mappings = clip.povMappings ?? []
+
+  const ranges = useMemo(() => clipPovRanges(clip, sources), [clip, sources])
+  const rangeById = useMemo(() => new Map(ranges.map((r) => [r.sourceId, r])), [ranges])
+  const videoCapable = useMemo(() => new Set(videoCapablePovs(clip, sources).map((s) => s.id)), [clip, sources])
+  const audioCapable = useMemo(() => new Set(audioCapablePovs(clip, sources).map((s) => s.id)), [clip, sources])
+
+  const videoId = clip.videoSourceId ?? clip.sourceId
+  const audioId = clip.audioSourceId ?? videoId
 
   /**
    * Where the playhead sits inside the clip, 0..1. Derived from whichever POV
@@ -60,54 +93,147 @@ export default function ClipTimeline({ clip, onAlignClip }: Props): JSX.Element 
     seekTo(mapping, fraction * duration)
   }
 
+  const offsetsSet = Object.values(clip.povOffsets ?? {}).filter((v) => Math.abs(v) > 0.001).length
+  const covering = mappings.filter(covers).length
+  const videoRange = rangeById.get(videoId) ?? null
+  const audioRange = rangeById.get(audioId) ?? null
+
+  const useBest = (): void => {
+    const video = bestPovFor(videoCapablePovs(clip, sources), ranges)
+    if (video) setClipPov(clip.id, 'video', video)
+    const audio = bestPovFor(audioCapablePovs(clip, sources), ranges)
+    if (audio) setClipPov(clip.id, 'audio', audio)
+  }
+
+  const resetAllOffsets = (): void => {
+    for (const [sourceId, value] of Object.entries(clip.povOffsets ?? {})) {
+      if (Math.abs(value) > 0.001) setClipPovOffset(clip.id, sourceId, 0)
+    }
+  }
+
   const ticks = tickSeconds(duration)
 
   return (
     <div className="clip-timeline">
-      <div className="clip-timeline-head">
-        <strong>{clip.name}</strong>
-        <span className="hint inline mono">
-          {formatTimecode(0)} → {formatTimecode(duration)} · clip time
+      {!compact && (
+        <div className="clip-timeline-head">
+          <strong className="ellipsis">{clip.name}</strong>
+          <span className="hint inline mono">
+            {formatTimecode(0)} → {formatTimecode(duration)} · clip time
+          </span>
+          <span className="topbar-divider" />
+          <span className="hint inline">
+            {covering} of {mappings.length} POVs cover this clip
+          </span>
+          <span className="spacer" />
+          <Button
+            size="compact"
+            icon="target"
+            onClick={useBest}
+            title="Pick the best-covered, best-aligned angle for the picture and for the sound"
+          >
+            Use best
+          </Button>
+          <Button
+            size="compact"
+            icon="undo"
+            disabled={offsetsSet === 0}
+            onClick={resetAllOffsets}
+            title="Clear every hand-alignment on this clip"
+          >
+            Reset alignment{offsetsSet > 0 ? ` (${offsetsSet})` : ''}
+          </Button>
+          {onAlignClip && (
+            <Button
+              size="compact"
+              icon="waveform"
+              onClick={onAlignClip}
+              disabled={mappings.length < 2}
+              title="Line a POV up against this clip's sound — this clip only"
+            >
+              Align by sound
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* What the export will actually be, said in words rather than left to
+          be inferred from two radio columns. */}
+      <div className="clip-plan">
+        <span className="clip-plan-part">
+          <Icon name="grid" size={12} />
+          Picture from <strong>{labelOf(sources, videoId)}</strong>
+          {videoRange && videoRange.coverage === 'partial' && (
+            <span className="warn"> — only part of this moment</span>
+          )}
+          {videoRange && videoRange.coverage === 'none' && (
+            <span className="warn"> — not recording here</span>
+          )}
         </span>
-        <span className="spacer" />
-        <span className="hint inline">
-          {mappings.filter(covers).length} of {mappings.length} POVs cover this clip
+        <span className="clip-plan-part">
+          <Icon name="volume" size={12} />
+          Sound from <strong>{labelOf(sources, audioId)}</strong>
+          {audioId !== videoId && <span className="pill">separate</span>}
+          {audioRange && audioRange.coverage === 'partial' && (
+            <span className="warn"> — only part of this moment</span>
+          )}
         </span>
-        <Button
-          size="compact"
-          icon="waveform"
-          onClick={onAlignClip}
-          disabled={mappings.length < 2}
-          title="Line a POV up against this clip's sound — this clip only"
-        >
-          Align this clip
-        </Button>
       </div>
 
-      <div className="clip-ruler" aria-hidden="true">
-        {ticks.map((t) => (
-          <span key={t} className="clip-tick" style={{ left: `${(t / duration) * 100}%` }}>
-            {formatTimecode(t, { millis: false })}
-          </span>
-        ))}
+      {!compact && (
+        <div className="clip-ruler" aria-hidden="true">
+          {ticks.map((t) => (
+            <span key={t} className="clip-tick" style={{ left: `${(t / duration) * 100}%` }}>
+              {formatTimecode(t, { millis: false })}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="clip-lane-headings" aria-hidden="true">
+        <span>POV</span>
+        <span>Coverage of this clip</span>
+        <span title="Where this clip falls in that POV's own recording">In VOD</span>
+        <span>Align</span>
+        <span title="Which angle supplies the exported picture and sound">Pic / Snd</span>
+        <span title="Mark an angle you have already used">Used</span>
       </div>
 
       <div className="clip-lanes">
-        {mappings.map((mapping) => {
-          const index = sources.findIndex((s) => s.id === mapping.sourceId)
-          const source = sources[index]
+        {/*
+         * The lanes and the playhead share an inner box, and that is what makes
+         * the line reach the bottom row.
+         *
+         * `.clip-lanes` scrolls, so an absolutely-positioned line inside it is
+         * measured against the *visible* box rather than the content: with two
+         * lanes in view and five loaded, the playhead stopped after the second
+         * one. The inner box has no overflow of its own, so its height is the
+         * height of every lane there is.
+         */}
+        <div className="clip-lanes-inner">
+          {mappings.map((mapping) => {
+          const source = sources.find((s) => s.id === mapping.sourceId)
           if (!source) return null
+          const range = rangeById.get(mapping.sourceId) ?? null
           const bar = laneBar(mapping)
           const active = mapping.sourceId === activeSourceId
+          const usable = covers(mapping)
+          const offset = clip.povOffsets?.[mapping.sourceId] ?? 0
+          const used = (clip.usedPovIds ?? []).includes(mapping.sourceId)
+          const isVideo = mapping.sourceId === videoId
+          const isAudio = mapping.sourceId === audioId
+
           return (
             <div key={mapping.sourceId} className={`clip-lane${active ? ' active' : ''}`}>
               <button
                 className="lane-name"
-                title={`Switch to ${source.title} at this moment`}
-                disabled={!covers(mapping)}
+                title={`Watch ${source.title} at this moment`}
+                disabled={!usable}
                 onClick={() => seekTo(mapping, playheadFraction === null ? 0 : playheadFraction * duration)}
               >
-                {povLabel(source, index)}
+                <span className="lane-swatch" style={{ background: povColor(mapping.sourceId) }} />
+                <span className="ellipsis">{povLabel(source)}</span>
+                {range?.authored && <span className="pill" title="The angle this clip was marked in">marked in</span>}
               </button>
 
               <div
@@ -115,8 +241,8 @@ export default function ClipTimeline({ clip, onAlignClip }: Props): JSX.Element 
                 role="presentation"
                 onClick={(e) => onLaneClick(mapping, e)}
                 title={
-                  covers(mapping)
-                    ? `${formatTimecode(mapping.vodStartSeconds)} → ${formatTimecode(mapping.vodEndSeconds)} in this VOD`
+                  usable
+                    ? `${formatTimecode(mapping.vodStartSeconds)} → ${formatTimecode(mapping.vodEndSeconds)} in this VOD — click to watch from here`
                     : POV_STATUS_LABEL[mapping.status]
                 }
               >
@@ -129,36 +255,103 @@ export default function ClipTimeline({ clip, onAlignClip }: Props): JSX.Element 
                 {!bar && <span className="lane-empty">{POV_STATUS_LABEL[mapping.status]}</span>}
               </div>
 
-              <span className={`cover ${coverClass(mapping.status)}`}>
-                {POV_STATUS_LABEL[mapping.status]}
-                {(clip.povOffsets?.[mapping.sourceId] ?? 0) !== 0 && (
-                  <span className="pill" title="Hand-aligned for this clip">
-                    {(clip.povOffsets![mapping.sourceId] > 0 ? '+' : '') +
-                      clip.povOffsets![mapping.sourceId].toFixed(2)}
-                    s
-                  </span>
-                )}
+              <span className="lane-range mono" title={POV_STATUS_LABEL[mapping.status]}>
+                {usable ? formatTimecode(mapping.vodStartSeconds, { millis: false }) : '—'}
               </span>
+
+              {/*
+               * The per-clip correction, finally reachable.
+               *
+               * It has been in the data model and the store the whole time and
+               * the only way to set it was the waveform dialog — so a POV that
+               * was half a second out could not simply be nudged. Shift takes
+               * whole seconds; the value itself resets on click.
+               */}
+              <span className="lane-offset">
+                <IconButton
+                  icon="chevron-left"
+                  size="compact"
+                  label={`Nudge ${povLabel(source)} earlier`}
+                  disabled={!usable}
+                  onClick={(e) =>
+                    setClipPovOffset(clip.id, mapping.sourceId, nudgedPovOffset(offset, e.shiftKey ? -1 : -0.1))
+                  }
+                />
+                <button
+                  className={`lane-offset-value mono${offset !== 0 ? ' on' : ''}`}
+                  disabled={!usable || offset === 0}
+                  title={
+                    offset === 0
+                      ? `Aligned as found (up to ±${MAX_POV_OFFSET_SECONDS}s of correction available)`
+                      : 'Click to clear this correction'
+                  }
+                  onClick={() => setClipPovOffset(clip.id, mapping.sourceId, 0)}
+                >
+                  {offset === 0 ? '0.00' : `${offset > 0 ? '+' : ''}${offset.toFixed(2)}`}
+                </button>
+                <IconButton
+                  icon="chevron-right"
+                  size="compact"
+                  label={`Nudge ${povLabel(source)} later`}
+                  disabled={!usable}
+                  onClick={(e) =>
+                    setClipPovOffset(clip.id, mapping.sourceId, nudgedPovOffset(offset, e.shiftKey ? 1 : 0.1))
+                  }
+                />
+              </span>
+
+              <span className="lane-roles">
+                <IconButton
+                  icon="grid"
+                  size="compact"
+                  label={`Take the picture from ${povLabel(source)}`}
+                  selected={isVideo}
+                  disabled={!usable || !videoCapable.has(mapping.sourceId)}
+                  onClick={() => setClipPov(clip.id, 'video', mapping.sourceId)}
+                />
+                <IconButton
+                  icon="volume"
+                  size="compact"
+                  label={`Take the sound from ${povLabel(source)}`}
+                  selected={isAudio}
+                  disabled={!usable || !audioCapable.has(mapping.sourceId)}
+                  onClick={() => setClipPov(clip.id, 'audio', mapping.sourceId)}
+                />
+              </span>
+
+              <IconButton
+                icon="check"
+                size="compact"
+                label={used ? `Mark ${povLabel(source)} unused` : `Mark ${povLabel(source)} used`}
+                selected={used}
+                disabled={!usable}
+                onClick={() => setClipPovUsed(clip.id, mapping.sourceId, !used)}
+              />
             </div>
           )
         })}
 
-        {playheadFraction !== null && (
-          <div className="clip-playhead" style={{ left: `calc(140px + (100% - 240px) * ${playheadFraction})` }} />
-        )}
+          {playheadFraction !== null && (
+            <div
+              className="clip-playhead"
+              style={{
+                left: `calc(var(--lane-name-w) + (100% - var(--lane-gutters)) * ${playheadFraction})`
+              }}
+            />
+          )}
+        </div>
       </div>
     </div>
   )
 }
 
-function covers(mapping: ClipPovMapping): boolean {
-  return mapping.status === 'available' || mapping.status === 'partial' || mapping.status === 'sync_low_confidence'
+function labelOf(sources: VodSource[], sourceId: string): string {
+  const source = sources.find((s) => s.id === sourceId)
+  return source ? povLabel(source) : 'an angle that is no longer loaded'
 }
 
-function coverClass(status: ClipPovMapping['status']): string {
-  if (status === 'available') return 'full'
-  if (status === 'partial' || status === 'sync_low_confidence') return 'partial'
-  return 'none'
+function covers(mapping: ClipPovMapping): boolean {
+  return mapping.status === 'available' || mapping.status === 'partial' || mapping.status === 'sync_low_confidence'
 }
 
 /**

@@ -27,7 +27,39 @@ export class Logger {
     mkdirSync(directory, { recursive: true })
     this.file = join(directory, filename)
     this.rotateIfNeeded()
-    this.stream = createWriteStream(this.file, { flags: 'a' })
+    this.stream = this.open()
+  }
+
+  /**
+   * The log file, with the one listener that keeps it from being fatal.
+   *
+   * `createWriteStream` had no `error` handler, and a write stream that
+   * errors with nothing listening throws — so the logger, whose entire job is
+   * to be the thing still working when other things are not, could take the
+   * process down. It is reachable without anything exotic: userData on a
+   * redirected or network profile that goes away, a removable drive, a full
+   * disk, permissions changing under a running app.
+   *
+   * It was also self-feeding. The main process reports an uncaught exception
+   * by calling `log.error`, which writes to this same stream, which throws
+   * again.
+   *
+   * On failure the file is dropped and everything else carries on: the
+   * in-app log viewer still receives every line through `listeners`, errors
+   * still reach the console, and one line says the file stopped so a missing
+   * log is not a mystery later.
+   */
+  private open(): WriteStream {
+    const stream = createWriteStream(this.file, { flags: 'a' })
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (this.stream !== stream) return
+      this.stream = null
+      console.error(
+        `[logger] Could not write to ${this.file} (${err.code ?? err.message}). ` +
+          'Logging to file has stopped; the app is unaffected.'
+      )
+    })
+    return stream
   }
 
   get path(): string {

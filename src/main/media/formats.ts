@@ -30,7 +30,27 @@ export function rankVideo(a: StreamInfo, b: StreamInfo): number {
   return (b.bitrate ?? 0) - (a.bitrate ?? 0)
 }
 
+/**
+ * Best audio, with the original language winning before quality is considered.
+ *
+ * The language test comes first for a reason that is not a preference: a
+ * YouTube video with auto-dubbing publishes one audio track per language —
+ * upwards of twenty of them — all encoded from the same ladder, and the dubs
+ * routinely land a few hundred bits per second *above* the original. Ranking
+ * on channels, bitrate and sample rate alone therefore does not merely risk a
+ * dub, it actively selects one, and which language wins is decided by whose
+ * encoder happened to produce the largest file. That is how a clip comes back
+ * dubbed into German.
+ *
+ * Only a positive claim of originality reorders anything. When no track is
+ * marked — every non-YouTube source, and YouTube videos with a single track —
+ * every format compares equal on this key and the quality ordering below is
+ * exactly what it always was.
+ */
 export function rankAudio(a: StreamInfo, b: StreamInfo): number {
+  const origA = a.originalAudio === true ? 1 : 0
+  const origB = b.originalAudio === true ? 1 : 0
+  if (origA !== origB) return origB - origA
   const chA = a.channels ?? 0
   const chB = b.channels ?? 0
   if (chA !== chB) return chB - chA

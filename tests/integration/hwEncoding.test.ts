@@ -43,7 +43,7 @@ const SOURCE: VodSource = {
   creator: 'Fixture',
   durationSeconds: 4,
   playbackKind: 'hls',
-  capabilities: { metadata: true, playback: true, rangeDownload: true, requiresAuth: false, notes: [] },
+  capabilities: { notes: [] },
   formatsInspected: true
 }
 
@@ -77,14 +77,41 @@ beforeAll(async () => {
   const info = await ffmpeg.detect({})
   if (!info.available) throw new Error('FFmpeg is required to run the integration tests')
 
-  // A real, small AV1-encoded source — libsvtav1 is only used to *build* the
-  // fixture; the export path under test never touches it.
+  /*
+   * A real, small AV1-encoded source. The encoder is only used to *build* the
+   * fixture — the export path under test never touches it.
+   *
+   * Whichever AV1 encoder this ffmpeg actually has, rather than a hard-coded
+   * `libsvtav1`. That hard-coding is why this suite had never run: the static
+   * builds used for testing ship libaom but not SVT, so every run died in
+   * `beforeAll` with "Unknown encoder" and the hardware-encoding tests below
+   * — the ones that matter — were never reached.
+   */
+  const encoders = execFileSync('ffmpeg', ['-hide_banner', '-encoders'], { encoding: 'utf8' })
+  const av1Encoder = ['libsvtav1', 'libaom-av1', 'librav1e'].find((name) =>
+    new RegExp(`\\b${name}\\b`).test(encoders)
+  )
+  if (!av1Encoder) {
+    throw new Error(
+      'No AV1 encoder in this ffmpeg (looked for libsvtav1, libaom-av1, librav1e), ' +
+        'so the AV1 fixture cannot be built.'
+    )
+  }
+  // libaom is far slower than SVT at its defaults; these keep a 4-second
+  // 320x180 fixture down to a couple of seconds rather than a minute.
+  const speed =
+    av1Encoder === 'libsvtav1'
+      ? ['-preset', '10', '-crf', '40']
+      : av1Encoder === 'libaom-av1'
+        ? ['-cpu-used', '8', '-crf', '50', '-b:v', '0']
+        : ['-speed', '10']
+
   av1SourcePath = join(root, 'av1-source.mp4')
   execFileSync('ffmpeg', [
     '-y', '-v', 'error',
     '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=24:duration=4',
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
-    '-c:v', 'libsvtav1', '-preset', '10', '-crf', '40',
+    '-c:v', av1Encoder, ...speed,
     '-c:a', 'aac',
     av1SourcePath
   ])
@@ -128,8 +155,19 @@ describe('AV1 export policy', () => {
     // slow to be the everyday path for a source that merely happens to be
     // AV1 on a machine without hardware for it.
     expect(videoNote).not.toContain('libsvtav1')
-    // Whatever it says, it's specific — not a vague "it worked".
-    expect(videoNote).toMatch(/av1_nvenc|libx265|libx264/)
+    /*
+     * Whatever it says, it names a real encoder — not a vague "it worked".
+     *
+     * The HEVC fallback is *hardware* on a machine that has one. This
+     * originally listed only `libx265` for that case, which quietly assumed
+     * the machine running the tests had no NVENC: on an RTX card the policy
+     * correctly picked `hevc_nvenc` and the test called the best available
+     * outcome a failure. The policy is "AV1 hardware if there is any, HEVC
+     * otherwise, and never software AV1" — hardware HEVC satisfies it.
+     */
+    expect(videoNote).toMatch(
+      /av1_(nvenc|qsv|amf)|hevc_(nvenc|qsv|amf|videotoolbox|vaapi)|libx265|libx264/
+    )
 
     const probe = JSON.parse(
       execFileSync('ffprobe', [

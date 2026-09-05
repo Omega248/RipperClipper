@@ -6,6 +6,7 @@ import type { ResolverService } from '../media/resolver.js'
 import { toStreamInfos } from '../media/resolver.js'
 import type { RawInfo } from '../media/resolver.js'
 import { resolveKickDirect } from '../media/kickDirect.js'
+import { resolveTwitchDirect } from '../media/twitchDirect.js'
 import type { Logger } from './logger.js'
 
 /**
@@ -21,7 +22,16 @@ export class SourceService {
   constructor(
     private readonly log: Logger,
     private readonly registry: AdapterRegistry,
-    private readonly resolver: ResolverService
+    private readonly resolver: ResolverService,
+    /**
+     * Which browser's cookies yt-dlp may borrow, read fresh on each resolve.
+     *
+     * A function rather than a value because the setting can change while the
+     * app runs, and a stale copy would silently keep failing on exactly the
+     * VODs this exists to reach. Returns null when the person has not chosen
+     * one, which is the default.
+     */
+    private readonly cookiesFromBrowser: () => string | null = () => null
   ) {}
 
   async resolve(url: string, opts: { signal?: AbortSignal } = {}): Promise<VodSource> {
@@ -34,14 +44,45 @@ export class SourceService {
 
     const raw = await this.resolveRaw(adapter.id, match, opts.signal)
 
-    if (raw.is_live) {
+    /*
+     * A broadcast in progress is a source like any other — it just has no end
+     * yet. The rolling buffer is what makes it clippable (see LiveService),
+     * and the archive replaces it as the media once the platform publishes
+     * one. What it is NOT is a VOD with a duration, so the checks below that
+     * exist to catch a broken VOD have to know the difference.
+     */
+    const isLive = raw.is_live === true
+
+    /*
+     * A channel link with no recording behind it is the one case where the
+     * person asked about a person, not a recording, and the honest answer is
+     * that there is nothing to open.
+     *
+     * `!isLive` alone is no longer that case. A live broadcast is now opened as
+     * the recording the platform is already writing — hours of it, seekable and
+     * clippable from the start — which arrives here as an ordinary VOD with
+     * `is_live: false`. Formats are what say whether a recording was found.
+     */
+    if (match.kind === 'channel' && !isLive && (raw.formats?.length ?? 0) === 0) {
       throw Errors.vodUnavailable(
-        'This URL points at a live broadcast rather than a finished VOD. Wait until the stream ends and the VOD is published.'
+        `${raw.channel ?? raw.uploader ?? match.vodId} is not live right now. Paste a link to one of their VODs, or add them as a streamer to be told when they go live.`
       )
     }
 
-    const source = { ...adapter.buildSource(match, raw), channelHandle: channelHandleFrom(raw, url) }
-    if (!Number.isFinite(source.durationSeconds) || source.durationSeconds <= 0) {
+    const source = {
+      ...adapter.buildSource(match, raw),
+      ...(isLive ? { isLive: true } : {}),
+      // Opened from a channel that was on air: an ordinary VOD that is still
+      // growing. See `still_recording` on RawInfo.
+      ...(raw.still_recording === true ? { stillRecording: true } : {}),
+      channelHandle: channelHandleFrom(raw, url)
+    }
+
+    // A live broadcast's "duration" is however much of it has happened so
+    // far — a floor that moves, not a length — so an absent or zero one says
+    // nothing is wrong. On a finished VOD it means the platform gave us
+    // something we cannot cut against.
+    if (!isLive && (!Number.isFinite(source.durationSeconds) || source.durationSeconds <= 0)) {
       throw Errors.vodUnavailable('the platform did not report a duration for this VOD')
     }
 
@@ -52,42 +93,106 @@ export class SourceService {
       this.formatCache.set(source.id, { at: Date.now(), formats })
     }
 
-    this.log.info('source', 'VOD resolved', {
+    this.log.info('source', isLive ? 'Live broadcast resolved' : 'VOD resolved', {
       id: source.id,
       title: source.title,
       duration: source.durationSeconds,
+      live: isLive,
       formats: formats.length
     })
     return source
   }
 
   /**
-   * yt-dlp first, then Kick's own API.
+   * Re-ask the platform about a source already in the project.
    *
-   * yt-dlp's Kick extractor does not match /video/<uuid> links at all and needs
-   * its impersonation extra to get past Kick's bot check, so a working link can
-   * fail on an otherwise healthy install. Other platforms have no such fallback
-   * and surface the resolver's error directly.
+   * Two facts that go stale the moment they are read: whether the broadcast is
+   * still on air, and how long the recording is *now*. A project saved an hour
+   * ago holds neither — which is why a wall reopened from a saved project
+   * showed "Not recording at this moment" on every angle but the focused one,
+   * and why the timeline stopped where each broadcast was when it was added.
+   *
+   * One resolve per angle against the same document the original resolve used.
+   */
+  async liveStatus(source: VodSource, signal?: AbortSignal): Promise<LiveStatus | null> {
+    const { adapter, match } = this.registry.detect(source.url)
+    if (!adapter || !match) return null
+    try {
+      const raw = await this.resolveRaw(adapter.id, match, signal)
+      return {
+        durationSeconds: Number.isFinite(raw.duration) && (raw.duration ?? 0) > 0
+          ? (raw.duration as number)
+          : source.durationSeconds,
+        stillRecording: raw.still_recording === true
+      }
+    } catch {
+      // Best effort by design: an angle that cannot be re-asked keeps whatever
+      // the project already knew rather than losing it.
+      return null
+    }
+  }
+
+  /**
+   * The platform's own API first; yt-dlp only if that fails.
+   *
+   * Kick and Twitch are both resolved directly now, which leaves yt-dlp
+   * carrying YouTube alone — where its signature-cipher work genuinely cannot
+   * be reproduced cheaply, and where it earns the process spawn.
+   *
+   * These two used to be the other way round, and the log says what that cost:
+   * nineteen "yt-dlp could not read this Kick VOD; trying Kick directly"
+   * warnings, each one a process spawned, a bot check failed and a couple of
+   * seconds spent, before falling back to the path that was always going to be
+   * the one that worked. yt-dlp's Kick extractor does not match /video/<uuid>
+   * links at all and needs its impersonation extra to get past Kick's bot
+   * check; Kick's own API needs neither and is what the channel listing
+   * already uses.
+   *
+   * yt-dlp is kept as the fallback rather than removed: it is the one that
+   * handles the older /video/ link shapes if Kick ever changes the API shape
+   * underneath us.
    */
   private async resolveRaw(
     platform: string,
     match: UrlMatch,
     signal?: AbortSignal
   ): Promise<RawInfo> {
-    try {
-      return await this.resolver.resolve(match.canonicalUrl, { signal })
-    } catch (err) {
-      if (platform !== 'kick' || (err instanceof AppError && err.code === 'cancelled')) throw err
-      this.log.warn('source', 'yt-dlp could not read this Kick VOD; trying Kick directly', err)
+    const direct =
+      platform === 'kick'
+        ? resolveKickDirect
+        : platform === 'twitch'
+          ? resolveTwitchDirect
+          : null
+
+    if (direct) {
       try {
-        return await resolveKickDirect(match, this.log, signal)
-      } catch (fallbackErr) {
-        // Report whichever failure tells the user the most.
-        throw fallbackErr instanceof AppError && fallbackErr.code !== 'resolver-failed'
-          ? fallbackErr
-          : err
+        return await direct(match, this.log, signal)
+      } catch (err) {
+        if (err instanceof AppError && err.code === 'cancelled') throw err
+        // An authentication requirement is a real answer, not a reason to go
+        // and ask a second tool: yt-dlp without credentials will refuse a
+        // subscriber-only VOD too, and burying the honest error under a
+        // generic resolver failure is how "this VOD needs an account" turns
+        // into "something went wrong".
+        if (err instanceof AppError && err.code === 'auth-required') throw err
+        this.log.warn('source', `${platform} API could not read this VOD; trying yt-dlp`, err)
+        try {
+          return await this.resolver.resolve(match.canonicalUrl, {
+            signal,
+            cookiesFromBrowser: this.cookiesFromBrowser()
+          })
+        } catch (fallbackErr) {
+          // Report whichever failure tells the user the most.
+          throw fallbackErr instanceof AppError && fallbackErr.code !== 'resolver-failed'
+            ? fallbackErr
+            : err
+        }
       }
     }
+    return this.resolver.resolve(match.canonicalUrl, {
+      signal,
+      cookiesFromBrowser: this.cookiesFromBrowser()
+    })
   }
 
   /**
@@ -142,4 +247,18 @@ function kickSlug(url: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * Is this recording still being written, and how long is it now?
+ *
+ * Two facts that are only true for a moment. A broadcast opened as the VOD the
+ * platform is already making keeps growing, so its length is a floor rather
+ * than a limit — and a project saved an hour ago holds neither fact any more.
+ * Re-asking is one request per angle against the same document the resolve
+ * already used.
+ */
+export interface LiveStatus {
+  durationSeconds: number
+  stillRecording: boolean
 }

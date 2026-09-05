@@ -51,6 +51,11 @@ export type IconName =
   | 'music'
   | 'speech'
   | 'waveform'
+  | 'activity'
+  | 'broadcast'
+  | 'database'
+  | 'hourglass'
+  | 'queue'
   | 'target'
   | 'scissors'
   | 'grip'
@@ -81,9 +86,19 @@ export type IconName =
   | 'star'
   | 'briefcase'
   | 'list'
+  | 'eye'
+  | 'eye-off'
+  | 'lock'
+  | 'unlock'
+  | 'magnet'
 
 /** Path data only — every icon inherits the same stroke settings below. */
 const PATHS: Record<IconName, string> = {
+  eye: 'M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  'eye-off': 'M4 4l16 16M9.9 5.2A9.6 9.6 0 0 1 12 5c6.5 0 10 6 10 6a17 17 0 0 1-3.3 3.9M6.3 8.1C3.6 9.7 2 12 2 12s3.5 6 10 6a9.9 9.9 0 0 0 3.8-.7M9.9 9.9a3 3 0 0 0 4.2 4.2',
+  lock: 'M6 11h12v9H6zM9 11V7.5a3 3 0 0 1 6 0V11',
+  unlock: 'M6 11h12v9H6zM9 11V7.5a3 3 0 0 1 5.8-1',
+  magnet: 'M6 3v8a6 6 0 0 0 12 0V3h-4v8a2 2 0 0 1-4 0V3zM6 7h4M14 7h4',
   play: 'M7 4.5v15l13-7.5z',
   pause: 'M8 5v14M16 5v14',
   stop: 'M6 6h12v12H6z',
@@ -123,6 +138,13 @@ const PATHS: Record<IconName, string> = {
   music: 'M9 18V6l11-2v12M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z',
   speech: 'M12 3a4 4 0 0 1 4 4v4a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4zM5 11a7 7 0 0 0 14 0M12 18v3',
   waveform: 'M3 12h2M7 7v10M11 4v16M15 8v8M19 11h2',
+  activity: 'M3 12h3l2.5-7 3.5 14 3-9 2 2h4',
+  broadcast:
+    'M12 13.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3M8.5 8.5a5 5 0 0 0 0 7M15.5 15.5a5 5 0 0 0 0-7M5.5 5.5a9 9 0 0 0 0 13M18.5 18.5a9 9 0 0 0 0-13',
+  database:
+    'M12 7c4.4 0 8-1.1 8-2.5S16.4 2 12 2 4 3.1 4 4.5 7.6 7 12 7M4 4.5v15C4 20.9 7.6 22 12 22s8-1.1 8-2.5v-15M4 12c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5',
+  hourglass: 'M7 3h10M7 21h10M7 3c0 4 5 5.5 5 9s-5 5-5 9M17 3c0 4-5 5.5-5 9s5 5 5 9',
+  queue: 'M4 6h16M4 12h16M4 18h10',
   target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 2v3M12 19v3M2 12h3M19 12h3',
   scissors: 'M7 7l10 10M17 7L7 17M7.5 7.5a2.5 2.5 0 1 1-3.5-3.5 2.5 2.5 0 0 1 3.5 3.5zM7.5 16.5a2.5 2.5 0 1 0-3.5 3.5 2.5 2.5 0 0 0 3.5-3.5z',
   grip: 'M9 6h.5M9 12h.5M9 18h.5M15 6h.5M15 12h.5M15 18h.5',

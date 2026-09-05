@@ -20,9 +20,22 @@ export type SyncMethod =
   | 'media_metadata'
   | 'upload_metadata'
   | 'event_anchor'
-  | 'transcript_anchor'
   | 'audio_anchor'
+  /**
+   * Set by hand, sitting on a detected audio peak. Trusted enough to cut on
+   * without a safety margin — which is exactly why it is not what a nudge
+   * away from the peak produces. See `classifyManualAlignment`.
+   */
   | 'manual'
+  /**
+   * Set by hand, but NOT on the detected peak — or with no detection at all.
+   *
+   * A separate method rather than a flag on `manual`, because the two differ
+   * in what the exporter is allowed to do: an estimated mapping is padded,
+   * a locked one is cut tight. Collapsing them is how a mapping that was
+   * eyeballed produces silently wrong cuts in every POV derived from it.
+   */
+  | 'estimated'
   | 'unsynced'
 
 /** How reliable each method is on its own, before anchors refine it. */
@@ -32,9 +45,12 @@ export const METHOD_BASE_CONFIDENCE: Record<SyncMethod, number> = {
   media_metadata: 0.8,
   upload_metadata: 0.6,
   event_anchor: 0.9,
-  transcript_anchor: 0.75,
   audio_anchor: 0.85,
   manual: 1,
+  // Nominal only. An estimated mapping always carries its *measured*
+  // confidence, never this — the whole point is that it reports what it
+  // actually knows.
+  estimated: 0.5,
   unsynced: 0
 }
 
@@ -44,16 +60,16 @@ export const METHOD_LABEL: Record<SyncMethod, string> = {
   media_metadata: 'Media container timestamps',
   upload_metadata: 'Upload metadata',
   event_anchor: 'Event anchor',
-  transcript_anchor: 'Transcript alignment',
   audio_anchor: 'Audio cross-check',
-  manual: 'Manual',
+  manual: 'Locked by hand',
+  estimated: 'Estimated by hand',
   unsynced: 'Not synchronised'
 }
 
 /**
  * A confirmed correspondence between a real-world instant and a POV's local
- * VOD time. Anchors come from metadata, confirmed clips, manual pairing,
- * transcript matches or audio events, and are the evidence that survives.
+ * VOD time. Anchors come from metadata, confirmed clips, manual pairing
+ * or audio events, and are the evidence that survives.
  */
 export interface SyncAnchor {
   id: string
@@ -89,6 +105,89 @@ export interface VodTimeMapping {
   lastValidatedAt: string | null
   /** Set when the automatic result is uncertain and the editor should look. */
   warnings: string[]
+}
+
+/**
+ * How far from a detected audio peak a hand-set offset may sit and still be
+ * called locked.
+ *
+ * A quarter of a second is roughly the width of a confident cross-correlation
+ * peak at speech rates. Outside it, the alignment is the editor's judgement
+ * rather than a measurement, and must say so.
+ */
+export const LOCK_TOLERANCE_SECONDS = 0.25
+
+/** Confidence floor for an estimate, so a far-off nudge never reads as nothing. */
+const ESTIMATE_FLOOR = 0.2
+
+/** What an unmeasured, eyeballed alignment is worth. Deliberately modest. */
+const NO_DETECTION_CONFIDENCE = 0.35
+
+export interface ManualAlignment {
+  method: 'manual' | 'estimated'
+  /** Always the measured figure, never the method's nominal one. */
+  confidence: number
+  /** Distance from the detected peak, when a detection exists. */
+  offsetFromPeakSeconds: number | null
+  /** Stated on the mapping so the reason survives past the dialog. */
+  warnings: string[]
+}
+
+/**
+ * Decide whether a hand-set alignment is locked or estimated.
+ *
+ * **The correctness rule of the whole application.** The mapping written must
+ * match the confidence displayed: a falsely-locked mapping silently produces
+ * wrong cuts in every POV derived from it, and the editor has no way to
+ * discover this except by watching the exports. So locking requires sitting on
+ * something measured — a detected peak, within `LOCK_TOLERANCE_SECONDS`.
+ * Everything else is an estimate that carries the distance in words.
+ *
+ * Pure, and separate from the dialog, so the button's label and the value
+ * written cannot disagree: both come from here.
+ */
+export function classifyManualAlignment(input: {
+  /** The offset the editor is about to apply, in seconds. */
+  appliedOffsetSeconds: number
+  /** The detected peak, if Detect has been run and found one. */
+  detected: { offsetSeconds: number; confidence: number } | null
+}): ManualAlignment {
+  const { appliedOffsetSeconds, detected } = input
+
+  if (!detected) {
+    return {
+      method: 'estimated',
+      confidence: NO_DETECTION_CONFIDENCE,
+      offsetFromPeakSeconds: null,
+      warnings: [
+        'Set by eye: no audio match was detected for this POV, so nothing measured supports this offset.'
+      ]
+    }
+  }
+
+  const distance = Math.abs(appliedOffsetSeconds - detected.offsetSeconds)
+  if (distance <= LOCK_TOLERANCE_SECONDS) {
+    return {
+      method: 'manual',
+      // The measured figure, not 1. A peak the app is 61% sure of does not
+      // become certain because someone clicked on it.
+      confidence: detected.confidence,
+      offsetFromPeakSeconds: round3(distance),
+      warnings: []
+    }
+  }
+
+  // Confidence falls off with distance rather than dropping to a flat value:
+  // 0.3s off a strong peak is a different claim from 8s off one.
+  const falloff = LOCK_TOLERANCE_SECONDS / distance
+  return {
+    method: 'estimated',
+    confidence: Math.max(ESTIMATE_FLOOR, round3(detected.confidence * falloff)),
+    offsetFromPeakSeconds: round3(distance),
+    warnings: [
+      `Set ${round3(distance)}s away from the detected audio match, so this alignment is an estimate rather than a measurement.`
+    ]
+  }
 }
 
 export function unsyncedMapping(vodId: string): VodTimeMapping {
@@ -243,8 +342,13 @@ export function solveMapping(input: SolveInput): VodTimeMapping {
   const { vodId, evidence, previous } = input
   const anchors = input.anchors.filter((a) => a.vodId === vodId).sort((a, b) => a.localTime - b.localTime)
 
-  // A manual mapping is authoritative until the editor changes it.
-  if (previous?.method === 'manual' && previous.vodStartRealTime !== null) {
+  // A hand-set mapping is authoritative until the editor changes it — whether
+  // it was locked or estimated. What differs between the two is how much the
+  // exporter trusts it, not whether a later solve may overwrite it.
+  if (
+    (previous?.method === 'manual' || previous?.method === 'estimated') &&
+    previous.vodStartRealTime !== null
+  ) {
     return { ...previous, anchorIds: anchors.map((a) => a.id), lastValidatedAt: nowIso() }
   }
 

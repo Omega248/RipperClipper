@@ -27,13 +27,19 @@ function isTypingTarget(target: EventTarget | null): boolean {
  * because opening those dialogs is App-local UI state, the same as every
  * other dialog's open/close flag.
  */
-export function useShortcuts(onFindInPovs: () => void, onCommandPalette: () => void): void {
+export function useShortcuts(
+  onFindInPovs: () => void,
+  onCommandPalette: () => void,
+  onQueueExport: () => void
+): void {
   // Refs, not dependencies: an inline arrow prop would otherwise re-attach
   // the window listener on every render that passes a fresh closure.
   const onFindInPovsRef = useRef(onFindInPovs)
   onFindInPovsRef.current = onFindInPovs
   const onCommandPaletteRef = useRef(onCommandPalette)
   onCommandPaletteRef.current = onCommandPalette
+  const onQueueExportRef = useRef(onQueueExport)
+  onQueueExportRef.current = onQueueExport
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -50,6 +56,17 @@ export function useShortcuts(onFindInPovs: () => void, onCommandPalette: () => v
       if (binding === 'Ctrl+KeyK') {
         e.preventDefault()
         onCommandPaletteRef.current()
+        return
+      }
+
+      // The review run commits with E: queue this moment across every angle.
+      // Bound only while a run is going, so E means nothing outside one — and
+      // fixed rather than remappable, because the run strip states the key.
+      // exportEveryPov toasts when there is nothing to queue, so an empty
+      // clip is a refusal you can see rather than a silent nothing.
+      if (binding === 'KeyE' && state.reviewRun.length > 0) {
+        e.preventDefault()
+        onQueueExportRef.current()
         return
       }
 
@@ -114,6 +131,20 @@ export function useShortcuts(onFindInPovs: () => void, onCommandPalette: () => v
         )
         state.selectClip(ordered[next].id)
         playerBus.seek(ordered[next].startSeconds)
+        return
+      }
+      // Shift+M before M: the plain binding would otherwise swallow it, and
+       // marking every angle is the one you want in a multi-POV session.
+      if (match('addMarkerEverywhere')) {
+        e.preventDefault()
+        const marked = state.addMarkerEverywhere()
+        if (marked > 1) {
+          state.toast({
+            kind: 'success',
+            title: `Marked in ${marked} angles`,
+            message: 'The same instant, in every angle that was recording it.'
+          })
+        }
         return
       }
       if (match('addMarker')) {

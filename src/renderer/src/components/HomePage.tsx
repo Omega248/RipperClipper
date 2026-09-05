@@ -83,7 +83,7 @@ export default function HomePage({
                   ))}
                 </span>
                 <span>
-                  {project.sources.length} POV{project.sources.length === 1 ? '' : 's'}
+                  {project.sources.length} angle{project.sources.length === 1 ? '' : 's'}
                 </span>
                 <span className="dot-sep" aria-hidden="true">
                   ·
@@ -147,7 +147,7 @@ export default function HomePage({
                       </span>
                       <span className="home-clip-name ellipsis">{clip.name}</span>
                       <span className="home-clip-meta">
-                        {(clip.povMappings?.length ?? 0)} POVs · {workflowOf(clip)}
+                        {(clip.povMappings?.length ?? 0)} angles · {workflowOf(clip)}
                       </span>
                     </button>
                   ))}
