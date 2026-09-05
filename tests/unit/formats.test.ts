@@ -199,3 +199,83 @@ describe('resolver mapping', () => {
     expect(shortCodec('none')).toBe('')
   })
 })
+
+/*
+ * Auto-dubbed YouTube audio.
+ *
+ * The numbers below are taken from a real resolve of a video with 22 audio
+ * languages: the dubs really are encoded a little *above* the original, which
+ * is what made a quality-only ranking select one. Keeping the real figures
+ * means this test fails for the reason the bug happened, not for a made-up one.
+ */
+describe('auto-dubbed audio tracks', () => {
+  const DUBBED_YOUTUBE: StreamInfo[] = [
+    video({ id: '271', width: 2560, height: 1440, fps: 60, codec: 'vp09.00.50.08', bitrate: 18_000_000 }),
+    // Listed first by the resolver, and the largest of the m4a tier.
+    audio({ id: '140-0', codec: 'mp4a.40.2', bitrate: 129_476, sampleRate: 44100, channels: 2, language: 'de' }),
+    audio({ id: '251-20', codec: 'opus', bitrate: 132_243, sampleRate: 48000, channels: 2, language: 'ml' }),
+    audio({ id: '140-20', codec: 'mp4a.40.2', bitrate: 129_478, sampleRate: 44100, channels: 2, language: 'es' }),
+    // The original is listed last and is not the highest bitrate.
+    audio({
+      id: '140-21',
+      codec: 'mp4a.40.2',
+      bitrate: 129_476,
+      sampleRate: 44100,
+      channels: 2,
+      language: 'en',
+      originalAudio: true
+    })
+  ]
+
+  it('takes the original track, not the loudest-encoded dub', () => {
+    const selected = selectStreams(DUBBED_YOUTUBE, 'best')
+    expect(selected.audio?.id).toBe('140-21')
+    expect(selected.audio?.language).toBe('en')
+  })
+
+  it('takes the original for audio-only exports too', () => {
+    const selected = selectStreams(DUBBED_YOUTUBE, 'audio-only')
+    expect(selected.audio?.language).toBe('en')
+  })
+
+  it('still ranks purely on quality when nothing is marked original', () => {
+    const unmarked = DUBBED_YOUTUBE.map((f) =>
+      f.hasAudio ? ({ ...f, originalAudio: undefined } as StreamInfo) : f
+    )
+    // The highest bitrate wins again — the language key must not reorder a
+    // source that never claimed one track was the original.
+    expect(selectStreams(unmarked, 'audio-only').audio?.id).toBe('251-20')
+  })
+
+  it('reads the original marker out of yt-dlp JSON', () => {
+    const infos = toStreamInfos({
+      formats: [
+        {
+          format_id: '140-0',
+          url: 'https://example.invalid/de',
+          protocol: 'https',
+          acodec: 'mp4a.40.2',
+          vcodec: 'none',
+          abr: 129.476,
+          language: 'de',
+          language_preference: -1,
+          format_note: 'German, medium'
+        },
+        {
+          format_id: '140-21',
+          url: 'https://example.invalid/en',
+          protocol: 'https',
+          acodec: 'mp4a.40.2',
+          vcodec: 'none',
+          abr: 129.476,
+          language: 'en',
+          language_preference: 10,
+          format_note: 'English original (default), medium'
+        }
+      ]
+    })
+    expect(infos.find((f) => f.id === '140-0')?.originalAudio).toBeUndefined()
+    expect(infos.find((f) => f.id === '140-21')?.originalAudio).toBe(true)
+    expect(infos.find((f) => f.id === '140-21')?.language).toBe('en')
+  })
+})

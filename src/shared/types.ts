@@ -242,6 +242,19 @@ export interface StreamInfo {
   /** audio only */
   sampleRate?: number
   channels?: number
+  /** BCP-47-ish tag from the resolver, e.g. "en", "de", "zh-Hans". Audio tracks only. */
+  language?: string
+  /**
+   * This is the track the video was actually recorded in, not a dub.
+   *
+   * YouTube's auto-dubbing publishes one audio track per language, all encoded
+   * from the same ladder, and the dubs frequently come out at a *higher*
+   * bitrate than the original. Choosing audio on quality alone therefore picks
+   * a dub — see `rankAudio`. False here means either "a dub" or "the source
+   * never said", and those are deliberately not distinguished: only a positive
+   * claim of originality is allowed to change the ranking.
+   */
+  originalAudio?: boolean
   /** Estimated total bytes for the whole VOD in this format, when known. */
   filesize?: number
   /** How a byte range for this format can be obtained. */

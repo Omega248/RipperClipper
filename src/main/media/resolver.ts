@@ -22,6 +22,14 @@ export interface RawFormat {
   abr?: number
   asr?: number
   audio_channels?: number
+  /** Audio track language, e.g. "en", "de". Absent on single-track sources. */
+  language?: string
+  /**
+   * yt-dlp's own ranking of this track's language: 10 for the default/original
+   * track, -1 when it is a dub or when nothing is known. It is the only
+   * machine-readable signal that separates an original from a dub.
+   */
+  language_preference?: number
   filesize?: number
   filesize_approx?: number
   manifest_url?: string
@@ -290,6 +298,8 @@ export function toStreamInfos(raw: RawInfo): StreamInfo[] {
       bitrate,
       sampleRate: f.asr,
       channels: f.audio_channels,
+      language: f.language,
+      originalAudio: isOriginalAudio(f),
       filesize: f.filesize ?? f.filesize_approx,
       protocol,
       label: formatLabel(f, hasVideo, hasAudio),
@@ -301,6 +311,26 @@ export function toStreamInfos(raw: RawInfo): StreamInfo[] {
   }
 
   return out
+}
+
+/**
+ * Is this the track the video was actually recorded in?
+ *
+ * `language_preference` is the field to trust: yt-dlp sets it to 10 for the
+ * default/original audio track and leaves it at -1 for dubs. `format_note` is
+ * checked as a fallback only — it carries the same claim in words ("English
+ * original (default)") and survives on extractors that do not set the numeric
+ * preference, but it is display text and cannot be the primary signal.
+ *
+ * Undefined preference is NOT treated as original: on a single-track source
+ * every format is unmarked, and calling them all original would be a claim the
+ * data does not make. Nothing downstream needs it to — ranking only changes
+ * when at least one track is positively marked.
+ */
+function isOriginalAudio(f: RawFormat): boolean | undefined {
+  if (typeof f.language_preference === 'number' && f.language_preference >= 10) return true
+  if (f.format_note && /\boriginal\b/i.test(f.format_note)) return true
+  return undefined
 }
 
 function formatLabel(f: RawFormat, hasVideo: boolean, hasAudio: boolean): string {
